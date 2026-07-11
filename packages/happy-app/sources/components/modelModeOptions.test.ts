@@ -3,6 +3,7 @@ import {
     getAvailableModels,
     getAvailablePermissionModes,
     getCodexModelModes,
+    getClaudeModelModes,
     getClaudePermissionModes,
     getDefaultEffortKey,
     getDefaultModelKey,
@@ -46,6 +47,22 @@ describe('modelModeOptions', () => {
         expect(models[1].name).toBe('gpt-5.5');
     });
 
+    it('builds claude model fallbacks with fable 5', () => {
+        const models = getClaudeModelModes();
+        expect(models.map((model) => model.key)).toEqual([
+            'default',
+            'opus',
+            'fable',
+            'sonnet',
+            'haiku',
+        ]);
+        expect(models.find((model) => model.key === 'fable')).toEqual({
+            key: 'fable',
+            name: 'fable 5',
+            description: null,
+        });
+    });
+
     it('uses code defaults for agent defaults', () => {
         expect(getDefaultPermissionModeKey('claude')).toBe('bypassPermissions');
         expect(getDefaultModelKey('claude')).toBe('opus');
@@ -86,6 +103,7 @@ describe('modelModeOptions', () => {
         } as any, translate);
 
         expect(modes.map((mode) => mode.key)).toEqual(['default', 'read-only', 'safe-yolo', 'yolo']);
+        expect(modes.find((mode) => mode.key === 'safe-yolo')?.description).toBe('tr:agentInput.codexPermissionMode.safeYoloDescription');
     });
 
     it('applies hacks to metadata-provided operating modes', () => {

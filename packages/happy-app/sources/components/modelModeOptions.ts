@@ -58,10 +58,10 @@ export function getClaudePermissionModes(translate: Translate): PermissionMode[]
 
 export function getCodexPermissionModes(translate: Translate): PermissionMode[] {
     return [
-        { key: 'default', name: translate('agentInput.codexPermissionMode.default'), description: null },
-        { key: 'read-only', name: translate('agentInput.codexPermissionMode.readOnly'), description: null },
-        { key: 'safe-yolo', name: translate('agentInput.codexPermissionMode.safeYolo'), description: null },
-        { key: 'yolo', name: translate('agentInput.codexPermissionMode.yolo'), description: null },
+        { key: 'default', name: translate('agentInput.codexPermissionMode.default'), description: translate('agentInput.codexPermissionMode.defaultDescription') },
+        { key: 'read-only', name: translate('agentInput.codexPermissionMode.readOnly'), description: translate('agentInput.codexPermissionMode.readOnlyDescription') },
+        { key: 'safe-yolo', name: translate('agentInput.codexPermissionMode.safeYolo'), description: translate('agentInput.codexPermissionMode.safeYoloDescription') },
+        { key: 'yolo', name: translate('agentInput.codexPermissionMode.yolo'), description: translate('agentInput.codexPermissionMode.yoloDescription') },
     ];
 }
 
