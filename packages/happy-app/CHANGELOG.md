@@ -1,4 +1,4 @@
-# July 11 — GPT-5.6, Antigravity, subagents
+# July 11 — GPT-5.6, Antigravity, bugfixes
 
 New models, a new agent, and live subagent rendering.
 
