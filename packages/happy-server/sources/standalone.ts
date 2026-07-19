@@ -19,6 +19,7 @@ crypto.subtle.importKey = function (format: any, keyData: any, algorithm: any, e
 
 import * as fs from "fs";
 import * as path from "path";
+import { loadChimeraServerConfig } from "./app/chimera/config";
 import { createPGlite } from "./storage/pgliteLoader";
 
 const dataDir = process.env.DATA_DIR || "./data";
@@ -108,7 +109,9 @@ export async function runMigrations(opts: { pgliteDir: string; migrationsDir?: s
     await pg.close();
 }
 
-async function serve() {
+export async function serve(env: NodeJS.ProcessEnv = process.env) {
+    loadChimeraServerConfig(env);
+
     // Ensure DB_PROVIDER is set for db.ts
     process.env.DB_PROVIDER = process.env.DB_PROVIDER || "pglite";
     process.env.PGLITE_DIR = process.env.PGLITE_DIR || pgliteDir;
