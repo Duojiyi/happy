@@ -103,6 +103,8 @@ function validateArtifactRetention(deploySource) {
   const retain = deploySource.slice(start, end);
   assert.match(retain, /active_image="\$\(current_image\)"/);
   assert.match(retain, /image" != "\$active_image"/);
+  assert.match(retain, /previous_input="\$INPUT_ROOT\/\$previous_id"/);
+  assert.match(retain, /oci_retention_ready && return 1/);
   assert.match(retain, /name" != "\$active_id" && "\$name" != "\$previous_id"/);
   assert.match(retain, /id" != "\$active_id" && "\$id" != "\$previous_id"/);
   assert.match(retain, /\^\[a-f0-9\]\{40\}\$/);
@@ -111,6 +113,10 @@ function validateArtifactRetention(deploySource) {
   assert.match(retain, /free_bytes > MIN_FREE_BYTES/);
   assert.doesNotMatch(retain, /docker image prune|docker system prune/);
   return true;
+}
+
+function bootstrapRetentionFixture({ retentionReady, previousInputPresent }) {
+  return previousInputPresent || !retentionReady;
 }
 
 test('artifact retention keeps active and previous exact releases and enforces reserve space', () => {
@@ -123,6 +129,14 @@ test('artifact retention keeps active and previous exact releases and enforces r
   assert.ok(rollback.indexOf('retain_server_artifacts') < rollback.indexOf('retain_verified_snapshots'));
 });
 
+test('bootstrap fixture permits only the first OCI transition to retain an input-less legacy previous image', () => {
+  assert.equal(bootstrapRetentionFixture({ retentionReady: false, previousInputPresent: false }), true);
+  assert.equal(bootstrapRetentionFixture({ retentionReady: true, previousInputPresent: true }), true);
+  assert.equal(bootstrapRetentionFixture({ retentionReady: true, previousInputPresent: false }), false);
+  assert.match(source, /readonly OCI_RETENTION_READY="\$STATE_ROOT\/oci-retention-ready"/);
+  assert.match(source, /mark_oci_retention_ready/);
+});
+
 test('retention contract rejects protected-release, path-safety, and reserve mutations', () => {
   for (const mutated of [
     source.replace('"$name" != "$active_id" && ', ''),
@@ -130,6 +144,7 @@ test('retention contract rejects protected-release, path-safety, and reserve mut
     source.replace('"$id" != "$active_id" && ', ''),
     source.replace('&& "$id" != "$previous_id"', ''),
     source.replace('! -L "$entry" && ', ''),
+    source.replace('oci_retention_ready && return 1', ':'),
     source.replace('(( free_bytes > MIN_FREE_BYTES ))', ':'),
   ]) assert.throws(() => validateArtifactRetention(mutated));
 });
