@@ -1,0 +1,220 @@
+name: Chimera Upstream Sync
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: chimera-upstream-sync
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.result.outputs.status }}
+      branch: ${{ steps.result.outputs.branch }}
+      candidate-sha: ${{ steps.result.outputs.candidate-sha }}
+      upstream-sha: ${{ steps.result.outputs.upstream-sha }}
+      merge-sha: ${{ steps.result.outputs.merge-sha }}
+      classification: ${{ steps.result.outputs.classification }}
+      diff-sha256: ${{ steps.result.outputs.diff-sha256 }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: Prepare isolated upstream candidate
+        id: sync
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/chimera/sync-upstream.ps1 -ResultPath "$env:RUNNER_TEMP/sync/result.json" -BundlePath "$env:RUNNER_TEMP/sync/candidate.bundle"
+      - name: Export sanitized result
+        id: result
+        shell: pwsh
+        run: |
+          $r = Get-Content -Raw "$env:RUNNER_TEMP/sync/result.json" | ConvertFrom-Json
+          "status=$($r.status)" >> $env:GITHUB_OUTPUT
+          "branch=$($r.branch)" >> $env:GITHUB_OUTPUT
+          "candidate-sha=$($r.candidateTipSha)" >> $env:GITHUB_OUTPUT
+          "upstream-sha=$($r.upstreamSha)" >> $env:GITHUB_OUTPUT
+          "merge-sha=$($r.upstreamMergeCommitSha)" >> $env:GITHUB_OUTPUT
+          "classification=$($r.classification)" >> $env:GITHUB_OUTPUT
+          "diff-sha256=$($r.diffSha256)" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ always() }}
+        with:
+          name: chimera-sync-candidate
+          path: ${{ runner.temp }}/sync
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.status == 'candidate' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      pr-number: ${{ steps.pr.outputs.pr-number }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: chimera-sync-candidate, path: handoff }
+      - name: Verify bundle and publish deterministic branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate-sha }}
+          MERGE_SHA: ${{ needs.prepare.outputs.merge-sha }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream-sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BRANCH" =~ ^sync/upstream-[a-f0-9]{12}$ && "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          git init repository
+          git -C repository remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git -C repository fetch --no-tags origin main
+          git -C repository fetch ../handoff/candidate.bundle "$BRANCH:refs/heads/$BRANCH"
+          test "$(git -C repository rev-parse "$BRANCH")" = "$CANDIDATE_SHA"
+          test "$(git -C repository rev-parse "$MERGE_SHA^2")" = "$UPSTREAM_SHA"
+          git -C repository diff --quiet origin/main "$CANDIDATE_SHA" -- .github deploy/chimera scripts/chimera
+          git -C repository push --force-with-lease origin "$BRANCH:refs/heads/$BRANCH"
+      - name: Open or update merge-only PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream-sha }}
+          CLASSIFICATION: ${{ needs.prepare.outputs.classification }}
+        run: |
+          set -euo pipefail
+          PR=$(gh pr list --repo '${{ github.repository }}' --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if test -z "$PR"; then
+            gh pr create --repo '${{ github.repository }}' --base main --head "$BRANCH" --title "sync: upstream ${UPSTREAM_SHA:0:12}" --body "Automated ancestry-preserving upstream merge. Classification: $CLASSIFICATION" >/dev/null
+            PR=$(gh pr list --repo '${{ github.repository }}' --head "$BRANCH" --state open --json number --jq '.[0].number')
+          fi
+          gh pr edit "$PR" --repo '${{ github.repository }}' --add-label "upstream-sync,$(test "$CLASSIFICATION" = executable && echo manual-review-required || echo docs-only)"
+          echo "pr-number=$PR" >> "$GITHUB_OUTPUT"
+
+  dispatch:
+    needs: [prepare, publish]
+    if: ${{ needs.prepare.outputs.status == 'candidate' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch candidate build and independent audits
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate-sha }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream-sha }}
+          DIFF_SHA256: ${{ needs.prepare.outputs.diff-sha256 }}
+        run: |
+          set -euo pipefail
+          gh workflow run chimera-build.yml --repo '${{ github.repository }}' --ref "$BRANCH"
+          if test '${{ needs.prepare.outputs.classification }}' = executable; then
+            for WORKFLOW in chimera-sync-audit-security.yml chimera-sync-audit-maintainability.yml; do
+              gh workflow run "$WORKFLOW" --repo '${{ github.repository }}' --ref main -f candidate_sha="$CANDIDATE_SHA" -f upstream_sha="$UPSTREAM_SHA" -f diff_sha256="$DIFF_SHA256" -f trusted_workflow_sha='${{ github.sha }}'
+            done
+          fi
+
+  merge-docs:
+    needs: [prepare, publish]
+    if: ${{ needs.prepare.outputs.classification == 'docs-only' }}
+    runs-on: ubuntu-24.04
+    permissions: { contents: write, pull-requests: write }
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate-sha }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream-sha }}
+        run: |
+          set -euo pipefail
+          PR='${{ needs.publish.outputs.pr-number }}'
+          gh pr merge "$PR" --repo '${{ github.repository }}' --auto --merge
+          for attempt in $(seq 1 120); do test "$(gh pr view "$PR" --repo '${{ github.repository }}' --json state --jq .state)" = MERGED && break; sleep 30; done
+          test "$(gh pr view "$PR" --repo '${{ github.repository }}' --json state --jq .state)" = MERGED
+          [[ "$(gh api "repos/${{ github.repository }}/compare/$CANDIDATE_SHA...main" --jq .status)" =~ ^(ahead|identical)$ ]]
+          [[ "$(gh api "repos/${{ github.repository }}/compare/$UPSTREAM_SHA...main" --jq .status)" =~ ^(ahead|identical)$ ]]
+
+  gate-executable:
+    needs: [prepare, publish, dispatch]
+    if: ${{ needs.prepare.outputs.classification == 'executable' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: chimera-sync-review
+    permissions: { actions: read, attestations: read, contents: write, pull-requests: write }
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { ref: "${{ github.sha }}", persist-credentials: false }
+      - name: Wait for and verify two independent attested reports
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate-sha }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream-sha }}
+          DIFF_SHA256: ${{ needs.prepare.outputs.diff-sha256 }}
+          PR_NUMBER: ${{ needs.publish.outputs.pr-number }}
+        run: |
+          set -euo pipefail
+          mkdir reports
+          for SPEC in 'chimera-sync-audit-security.yml:sync-security-:chimera-sync-security-report:security-report.json' 'chimera-sync-audit-maintainability.yml:sync-maintainability-:chimera-sync-maintainability-report:maintainability-report.json'; do
+            IFS=: read -r WORKFLOW PREFIX ARTIFACT FILE <<<"$SPEC"
+            RUN=''
+            for attempt in $(seq 1 60); do
+              RUN=$(gh api "repos/${{ github.repository }}/actions/workflows/$WORKFLOW/runs?event=workflow_dispatch&branch=main&per_page=20" --jq ".workflow_runs[] | select(.display_title == \"${PREFIX}${CANDIDATE_SHA}\" and .conclusion == \"success\") | .id" | head -n 1)
+              test -n "$RUN" && break
+              sleep 30
+            done
+            [[ "$RUN" =~ ^[1-9][0-9]*$ ]]
+            gh api "repos/${{ github.repository }}/actions/runs/$RUN" > reports/run.json
+            jq -e --arg sha '${{ github.sha }}' '.event == "workflow_dispatch" and .head_sha == $sha and .conclusion == "success" and (.actor.login == "github-actions[bot]" or .actor.login == "Duojiyi") and (.triggering_actor.login == "github-actions[bot]" or .triggering_actor.login == "Duojiyi")' reports/run.json
+            CHECK_NAME='Chimera Sync Security Audit'
+            test "$FILE" = security-report.json || CHECK_NAME='Chimera Sync Maintainability Audit'
+            gh api "repos/${{ github.repository }}/actions/runs/$RUN/jobs" --jq "[.jobs[] | select(.name == \"$CHECK_NAME\" and .conclusion == \"success\")] | if length == 1 then .[0].id else error(\"exactly one trusted audit check required\") end" | grep -Eq '^[1-9][0-9]*$'
+            ARTIFACT_ID=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN/artifacts" --jq "[.artifacts[] | select(.name == \"$ARTIFACT\" and .expired == false)] | if length == 1 then .[0].id else empty end")
+            [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+            gh api "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" > reports/report.zip
+            unzip -q reports/report.zip -d reports/content
+            REPORT="reports/content/$FILE"
+            WORKFLOW_BLOB_SHA=$(gh api "repos/${{ github.repository }}/contents/.github/workflows/$WORKFLOW?ref=${{ github.sha }}" --jq .sha)
+            jq -e --arg run "$RUN" --arg workflow ".github/workflows/$WORKFLOW" --arg blob "$WORKFLOW_BLOB_SHA" '.runId == $run and .workflowPath == $workflow and .workflowSha == $blob' "$REPORT"
+            gh attestation verify "$REPORT" --repo '${{ github.repository }}' --cert-identity "https://github.com/${{ github.repository }}/.github/workflows/$WORKFLOW@refs/heads/main" --cert-oidc-issuer https://token.actions.githubusercontent.com --signer-workflow "${{ github.repository }}/.github/workflows/$WORKFLOW" --signer-digest '${{ github.sha }}' --source-digest '${{ github.sha }}' --source-ref refs/heads/main --deny-self-hosted-runners
+            jq --arg artifactId "$ARTIFACT_ID" '.artifactId=$artifactId' "$REPORT" >> reports/reports.jsonl
+            rm -rf reports/content reports/report.zip
+          done
+          export CHIMERA_AUDIT_REPORTS_JSON="$(jq -sc . reports/reports.jsonl)"
+          export CHIMERA_CANDIDATE_SHA="$CANDIDATE_SHA" CHIMERA_UPSTREAM_SHA="$UPSTREAM_SHA" CHIMERA_DIFF_SHA256="$DIFF_SHA256"
+          node scripts/chimera/verify-audit-checks.mjs
+          gh pr merge "$PR_NUMBER" --repo '${{ github.repository }}' --auto --merge
+          for attempt in $(seq 1 120); do test "$(gh pr view "$PR_NUMBER" --repo '${{ github.repository }}' --json state --jq .state)" = MERGED && break; sleep 30; done
+          test "$(gh pr view "$PR_NUMBER" --repo '${{ github.repository }}' --json state --jq .state)" = MERGED
+          [[ "$(gh api "repos/${{ github.repository }}/compare/$CANDIDATE_SHA...main" --jq .status)" =~ ^(ahead|identical)$ ]]
+          [[ "$(gh api "repos/${{ github.repository }}/compare/$UPSTREAM_SHA...main" --jq .status)" =~ ^(ahead|identical)$ ]]
+
+  blocked-issue:
+    needs: prepare
+    if: ${{ always() && needs.prepare.outputs.status == 'blocked' }}
+    runs-on: ubuntu-24.04
+    permissions: { actions: read, contents: read, issues: write }
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { name: chimera-sync-candidate, path: handoff }
+      - name: Upsert one sanitized blocked issue per upstream SHA
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -euo pipefail
+          SHA=$(jq -r .upstreamSha handoff/result.json)
+          [[ "$SHA" =~ ^[a-f0-9]{40}$ ]]
+          TITLE="Upstream sync blocked: ${SHA:0:12}"
+          BODY=$(jq -r '"Reason: " + .reason + "\n\nFiles:\n" + ((.files // []) | map("- `" + . + "`") | join("\n"))' handoff/result.json)
+          ISSUE=$(gh issue list --repo '${{ github.repository }}' --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if test -n "$ISSUE"; then gh issue edit "$ISSUE" --repo '${{ github.repository }}' --body "$BODY"; else gh issue create --repo '${{ github.repository }}' --title "$TITLE" --body "$BODY"; fi

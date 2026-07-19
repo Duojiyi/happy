@@ -1,0 +1,73 @@
+name: Chimera Sync Security Audit
+run-name: sync-security-${{ inputs.candidate_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha: { required: true, type: string }
+      upstream_sha: { required: true, type: string }
+      diff_sha256: { required: true, type: string }
+      trusted_workflow_sha: { required: true, type: string }
+
+concurrency:
+  group: chimera-sync-security-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  audit:
+    name: Chimera Sync Security Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions: { contents: read }
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Validate trusted workflow inputs
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          DIFF_SHA256: ${{ inputs.diff_sha256 }}
+          WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ && "$UPSTREAM_SHA" =~ ^[a-f0-9]{40}$ && "$DIFF_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          test '${{ github.ref }}' = refs/heads/main
+          test '${{ github.sha }}' = "$WORKFLOW_SHA"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with: { ref: "${{ inputs.candidate_sha }}", persist-credentials: false }
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with: { version: 10.11.0 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Run independent security gates
+        run: |
+          pnpm chimera:client:check
+          pnpm chimera:server:policy
+          node scripts/chimera/release-contract.test.mjs
+      - name: Write exact report
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          UPSTREAM_SHA: ${{ inputs.upstream_sha }}
+          DIFF_SHA256: ${{ inputs.diff_sha256 }}
+          WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+        run: |
+          mkdir audit
+          WORKFLOW_FILE_SHA=$(git hash-object .github/workflows/chimera-sync-audit-security.yml)
+          jq -n --arg reviewedSha "$CANDIDATE_SHA" --arg upstreamSha "$UPSTREAM_SHA" --arg diffSha256 "$DIFF_SHA256" --arg workflowSha "$WORKFLOW_FILE_SHA" \
+            '{reviewedSha:$reviewedSha,upstreamSha:$upstreamSha,diffSha256:$diffSha256,workflowPath:".github/workflows/chimera-sync-audit-security.yml",workflowSha:$workflowSha,checkName:"Chimera Sync Security Audit",auditorId:"chimera-sync-security-v1",runId:"${{ github.run_id }}",resolution:"PASS",findings:[],pathCategories:["executable"],references:[]}' > audit/security-report.json
+      - id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: { name: chimera-sync-security-report, path: audit/security-report.json, if-no-files-found: error, retention-days: 7 }
+  provenance:
+    needs: audit
+    runs-on: ubuntu-24.04
+    permissions: { contents: read, id-token: write, attestations: write }
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { artifact-ids: "${{ needs.audit.outputs.artifact-id }}", path: report }
+      - run: test "$(find report -type f | wc -l)" -eq 1
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with: { subject-path: report/security-report.json }

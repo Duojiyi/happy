@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "originUrl": "https://github.com/Duojiyi/happy.git",
+  "upstreamUrl": "https://github.com/slopus/happy.git",
+  "branch": "main",
+  "lastAcceptedSha": "3f161de70541b1cedaf0b7547ed70889d8dae22d",
+  "protectedPaths": [
+    ".github",
+    "brand/chimera",
+    "deploy/chimera",
+    "scripts/chimera"
+  ]
+}
