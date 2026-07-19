@@ -4,7 +4,6 @@ import * as React from 'react';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Fonts from 'expo-font';
 import { FontAwesome } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
 import { AuthCredentials, TokenStorage } from '@/auth/tokenStorage';
 import { AuthProvider } from '@/auth/AuthContext';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
@@ -16,7 +15,6 @@ import sodium from '@/encryption/libsodium.lib';
 import { View, Platform, AppState } from 'react-native';
 import { ModalProvider } from '@/modal';
 import { syncRestore } from '@/sync/sync';
-import { RealtimeProvider } from '@/realtime/RealtimeProvider';
 import { FaviconPermissionIndicator } from '@/components/web/FaviconPermissionIndicator';
 import { CommandPaletteProvider } from '@/components/CommandPalette/CommandPaletteProvider';
 import { StatusBarProvider } from '@/components/StatusBarProvider';
@@ -170,7 +168,6 @@ function getDevWebQueryCredentials(): AuthCredentials | null {
 export default function RootLayout() {
     useTauriZoom();
     useTauriDrag();
-    const router = useRouter();
     const { theme } = useUnistyles();
     const navigationTheme = React.useMemo(() => {
         if (theme.dark) {
@@ -239,88 +236,6 @@ export default function RootLayout() {
         }
     }, [initState]);
 
-    /* notification routing removed for Chimera */
-    /* const handleNotificationResponse = React.useCallback(async (response: any) => {
-        if (!response) {
-            console.log('[PUSH ROUTING] Notification response is null');
-            return;
-        }
-
-        console.log('[PUSH ROUTING] Full notification response:\n' + stringifyNotificationPayload(response));
-
-        const responseId = response.notification.request.identifier;
-        if (handledNotificationIds.current.has(responseId)) {
-            console.log(`[PUSH ROUTING] Duplicate notification response ignored: ${responseId}`);
-            return;
-        }
-
-        handledNotificationIds.current.add(responseId);
-
-        try {
-            if (response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) {
-                console.log(`[PUSH ROUTING] Ignoring non-default action: ${response.actionIdentifier}`);
-                return;
-            }
-
-            console.log(
-                '[PUSH ROUTING] notification.request.content.data:\n' +
-                stringifyNotificationPayload(response.notification.request.content.data)
-            );
-            const route = getSessionRouteFromNotificationResponse(response);
-            console.log(`[PUSH ROUTING] Computed route: ${route ?? 'null'}`);
-            if (!route) {
-                console.log('[PUSH ROUTING] No session route found in notification.request.content.data');
-                return;
-            }
-
-            const encodedSessionId = route.replace(/^\/session\//, '');
-            const sessionId = (() => {
-                try {
-                    return decodeURIComponent(encodedSessionId);
-                } catch {
-                    return encodedSessionId;
-                }
-            })();
-            console.log(`[PUSH ROUTING] Navigating to session: ${sessionId}`);
-            navigateToSession(router, sessionId);
-        } finally {
-            try {
-                await Notifications.clearLastNotificationResponseAsync();
-            } catch (error) {
-                console.log('Failed to clear last notification response:', error);
-            }
-        }
-    }, [router]); */
-
-    /* React.useEffect(() => {
-        if (!initState) {
-            return;
-        }
-
-        let active = true;
-        const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-            void handleNotificationResponse(response);
-        });
-
-        void (async () => {
-            try {
-                const response = await Notifications.getLastNotificationResponseAsync();
-                if (active) {
-                    await handleNotificationResponse(response);
-                }
-            } catch (error) {
-                console.log('Failed to read last notification response:', error);
-            }
-        })();
-
-        return () => {
-            active = false;
-            subscription.remove();
-        };
-    }, [handleNotificationResponse, initState]); */
-
-
-
     // Sync console output toggle from Dev screen
     const consoleLoggingEnabled = useLocalSetting('consoleLoggingEnabled');
     const devModeEnabled = __DEV__ || useLocalSetting('devModeEnabled');
@@ -351,11 +266,9 @@ export default function RootLayout() {
                             <ModalProvider>
                                 <BrowserNavigationShortcuts />
                                 <CommandPaletteProvider>
-                                    <RealtimeProvider>
-                                        <HorizontalSafeAreaWrapper>
-                                            <SidebarNavigator />
-                                        </HorizontalSafeAreaWrapper>
-                                    </RealtimeProvider>
+                                    <HorizontalSafeAreaWrapper>
+                                        <SidebarNavigator />
+                                    </HorizontalSafeAreaWrapper>
                                 </CommandPaletteProvider>
                             </ModalProvider>
                         </ThemeProvider>

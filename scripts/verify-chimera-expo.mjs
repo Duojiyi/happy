@@ -22,4 +22,19 @@ for (const relative of ['sync/pushRegistration.ts', 'track/index.ts', 'track/tra
 }
 const account = await readFile(new URL('app/(app)/settings/account.tsx', sourceRoot), 'utf8');
 assert(!/PushPermission|Registered Tokens|push notification/i.test(account), 'account still exposes push UI');
+const repositoryRoot = new URL('../', import.meta.url);
+const appPackage = await readFile(new URL('packages/happy-app/package.json', repositoryRoot), 'utf8');
+assert(!/eas build|auto-submit|release:build:appstore/i.test(appPackage), 'happy-app package still exposes EAS release commands');
+for (const relative of [
+  'packages/happy-app/eas.json',
+  'packages/happy-app/release.cjs',
+  'packages/happy-app/release-dev.sh',
+  'packages/happy-app/release-production.sh',
+]) {
+  await assert.rejects(readFile(new URL(relative, repositoryRoot)), `${relative} still exists`);
+}
+const storage = await readFile(new URL('sync/storage.ts', sourceRoot), 'utf8');
+assert(!/nativeUpdateStatus|applyNativeUpdateStatus/.test(storage), 'storage still exposes native update state');
+const layoutSource = await readFile(new URL('app/_layout.tsx', sourceRoot), 'utf8');
+assert(!/RealtimeProvider|PUSH ROUTING|push notification routing/i.test(layoutSource), 'root layout still mounts disabled integrations');
 console.log('Chimera Expo config verified');

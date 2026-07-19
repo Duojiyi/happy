@@ -168,7 +168,6 @@ interface StorageState {
     realtimeStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
     realtimeMode: 'idle' | 'agent-speaking' | 'user-speaking';
     voiceSessionGeneration: number;
-    nativeUpdateStatus: { available: boolean; updateUrl?: string } | null;
     socketStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
     socketLastConnectedAt: number | null;
     socketLastDisconnectedAt: number | null;
@@ -197,7 +196,6 @@ interface StorageState {
     setRealtimeMode: (mode: 'idle' | 'agent-speaking' | 'user-speaking', immediate?: boolean) => void;
     clearRealtimeModeDebounce: () => void;
     incrementVoiceSessionGeneration: () => void;
-    applyNativeUpdateStatus: (status: { available: boolean; updateUrl?: string } | null) => void;
     setSocketStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void;
     getActiveSessions: () => Session[];
     updateSessionDraft: (sessionId: string, draft: string | null) => void;
@@ -361,7 +359,6 @@ export const storage = create<StorageState>()((set, get) => {
         realtimeStatus: 'disconnected',
         realtimeMode: 'idle',
         voiceSessionGeneration: 0,
-        nativeUpdateStatus: null,
         socketStatus: 'disconnected',
         socketLastConnectedAt: null,
         socketLastDisconnectedAt: null,
@@ -906,7 +903,6 @@ export const storage = create<StorageState>()((set, get) => {
                 }
             }
         })),
-        applyNativeUpdateStatus: (status) => set({ nativeUpdateStatus: status }),
         setRealtimeStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => set((state) => ({
             ...state,
             realtimeStatus: status
