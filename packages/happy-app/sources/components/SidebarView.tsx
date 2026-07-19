@@ -3,8 +3,6 @@ import { Text, View, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useHeaderHeight } from '@/utils/responsive';
-import { VoiceAssistantStatusBar } from './VoiceAssistantStatusBar';
-import { useRealtimeStatus } from '@/sync/storage';
 import { MainView } from './MainView';
 import { StyleSheet } from 'react-native-unistyles';
 import { t } from '@/text';
@@ -64,7 +62,6 @@ export const SidebarView = React.memo(() => {
     const safeArea = useSafeAreaInsets();
     const router = useRouter();
     const headerHeight = useHeaderHeight();
-    const realtimeStatus = useRealtimeStatus();
 
     const handleNewSession = React.useCallback(() => {
         router.navigate('/new');
@@ -83,10 +80,6 @@ export const SidebarView = React.memo(() => {
                 <Ionicons name="create-outline" size={16} color={stylesheet.newSessionText.color} />
                 <Text style={styles.newSessionText}>{t('sidebar.newSession')}</Text>
             </Pressable>
-
-            {realtimeStatus !== 'disconnected' && (
-                <VoiceAssistantStatusBar variant="sidebar" />
-            )}
 
             {/* Sessions list */}
             <MainView variant="sidebar" />

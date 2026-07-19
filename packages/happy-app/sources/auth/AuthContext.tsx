@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, ReactNode } from
 import { TokenStorage, AuthCredentials } from '@/auth/tokenStorage';
 import { syncCreate } from '@/sync/sync';
 import { clearPersistence } from '@/sync/persistence';
+import { logoutProductionRuntime } from '@/chimera/productionRuntime';
 
 interface AuthContextType {
     isAuthenticated: boolean;
@@ -13,8 +14,10 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export async function clearAuthPersistence(): Promise<void> {
-    clearPersistence();
-    await TokenStorage.removeCredentials();
+    await logoutProductionRuntime({
+        clearPersistence,
+        removeCredentials: TokenStorage.removeCredentials,
+    });
 }
 
 export function AuthProvider({ children, initialCredentials }: { children: ReactNode; initialCredentials: AuthCredentials | null }) {

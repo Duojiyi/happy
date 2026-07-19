@@ -11,18 +11,15 @@
  * ├─ consoleOutputEnabled = true? (default for dev/preview, or toggled on)
  * │  ├─ call original console method ✅
  * │  ├─ capture to in-app buffer ✅
- * │  └─ send to remote log server (if configured) ✅
  * │
  * └─ console.error / console.warn (always, regardless of flag)
  *    ├─ call original console method ✅
  *    ├─ capture to in-app buffer ✅
- *    └─ send to remote log server (if configured) ✅
  */
 
 import { log } from '@/log';
 import { MAX_APP_LOG_ENTRIES } from '@/log';
 import { loadLocalSettings } from '@/sync/persistence';
-import { loadAppConfig } from '@/sync/appConfig';
 import { serializeForLogs } from '@/utils/truncateForLogs';
 
 let logBuffer: any[] = []
@@ -49,11 +46,10 @@ export function initConsoleLogging() {
     return
   }
 
-  // Determine initial state: user setting > build variant default > off
+  // Console output is controlled locally and never reads remote configuration.
   try {
     const settings = loadLocalSettings();
-    const config = loadAppConfig();
-    consoleOutputEnabled = settings.consoleLoggingEnabled || config.consoleLoggingDefault || false;
+    consoleOutputEnabled = settings.consoleLoggingEnabled;
   } catch {
     consoleOutputEnabled = false;
   }
@@ -90,7 +86,7 @@ export function initConsoleLogging() {
       // clickable stack traces, and multi-arg formatting in dev tools)
       originalConsole![level](...args)
 
-      // Serialize once for buffer + remote (but NOT for native console)
+      // Serialize once for the local buffer (but NOT for native console)
       const formatted = formatArgs(args)
       log.captureFormatted(level, formatted)
 

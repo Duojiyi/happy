@@ -15,6 +15,7 @@ import sodium from '@/encryption/libsodium.lib';
 import { View, Platform, AppState } from 'react-native';
 import { ModalProvider } from '@/modal';
 import { syncRestore } from '@/sync/sync';
+import { initializeProductionRuntime } from '@/chimera/productionRuntime';
 import { FaviconPermissionIndicator } from '@/components/web/FaviconPermissionIndicator';
 import { CommandPaletteProvider } from '@/components/CommandPalette/CommandPaletteProvider';
 import { StatusBarProvider } from '@/components/StatusBarProvider';
@@ -218,7 +219,7 @@ export default function RootLayout() {
                 }
 
                 if (credentials) {
-                    await syncRestore(credentials);
+                    await initializeProductionRuntime(credentials, syncRestore);
                 }
 
                 setInitState({ credentials });
