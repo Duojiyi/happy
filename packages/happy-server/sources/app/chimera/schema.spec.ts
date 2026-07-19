@@ -95,7 +95,7 @@ describe("Chimera Prisma security state", () => {
             await prisma.chimeraConfiguration.create({
                 data: { key: "singleton", value: { enabled: true } },
             });
-            await prisma.chimeraAttachmentReservation.create({
+            const reservation = await prisma.chimeraAttachmentReservation.create({
                 data: {
                     accountId: account.id,
                     bytes: 1024n,
@@ -103,6 +103,10 @@ describe("Chimera Prisma security state", () => {
                     expiresAt: new Date("2026-07-20T00:00:00.000Z"),
                 },
             });
+            expect(reservation.claimedAt).toBeNull();
+            const claimedAt = new Date("2026-07-20T00:00:00.000Z");
+            await prisma.chimeraAttachmentReservation.update({ where: { id: reservation.id }, data: { claimedAt } });
+            await expect(prisma.chimeraAttachmentReservation.findUnique({ where: { id: reservation.id } })).resolves.toMatchObject({ claimedAt });
 
             const session = await prisma.session.create({
                 data: { accountId: account.id, tag: "deleted-session", metadata: "encrypted-metadata" },

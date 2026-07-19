@@ -18,8 +18,19 @@ import { attachmentCleanupService } from "@/app/chimera/attachmentCleanup";
  * @param sessionId - ID of the session to delete
  * @returns true if deletion was successful, false if session not found or not owned by user
  */
-export async function sessionDelete(ctx: Context, sessionId: string): Promise<boolean> {
-    return await inTx(async (tx) => {
+export async function sessionDelete(ctx: Context, sessionId: string, dependencies: {
+    inTx?: typeof inTx;
+    afterTx?: typeof afterTx;
+    allocateUserSeq?: typeof allocateUserSeq;
+    emitUpdate?: typeof eventRouter.emitUpdate;
+    process?: (id: string) => Promise<boolean>;
+} = {}): Promise<boolean> {
+    const runTransaction = dependencies.inTx ?? inTx;
+    const registerAfterTransaction = dependencies.afterTx ?? afterTx;
+    const nextSequence = dependencies.allocateUserSeq ?? allocateUserSeq;
+    const emitUpdate = dependencies.emitUpdate ?? eventRouter.emitUpdate.bind(eventRouter);
+    const process = dependencies.process ?? attachmentCleanupService.process;
+    return await runTransaction(async (tx) => {
         // Verify session exists and belongs to the user
         const session = await tx.session.findFirst({
             where: {
@@ -63,12 +74,12 @@ export async function sessionDelete(ctx: Context, sessionId: string): Promise<bo
         });
 
         // Send notification and clean up storage after transaction commits
-        afterTx(tx, () => {
+        registerAfterTransaction(tx, () => {
             void (async () => {
-                const updSeq = await allocateUserSeq(ctx.uid);
+                const updSeq = await nextSequence(ctx.uid);
                 const updatePayload = buildDeleteSessionUpdate(sessionId, updSeq, randomKeyNaked(12));
-                eventRouter.emitUpdate({ userId: ctx.uid, payload: updatePayload, recipientFilter: { type: 'user-scoped-only' } });
-                await attachmentCleanupService.process(cleanup.id).catch(() => undefined);
+                emitUpdate({ userId: ctx.uid, payload: updatePayload, recipientFilter: { type: 'user-scoped-only' } });
+                await process(cleanup.id).catch(() => undefined);
             })();
         });
 

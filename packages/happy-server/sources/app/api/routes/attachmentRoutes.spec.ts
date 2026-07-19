@@ -21,8 +21,11 @@ const {
         s3PolicyMaxLength: 0,
         reservations: [] as Array<{ accountId: string; bytes: number; objectKey: string; id: string }>,
         claims: [] as Array<{ reservationId: string; accountId: string; objectKey: string; bytes: number }>,
+        claimedReservationIds: new Set<string>(),
         rollbacks: [] as Array<{ accountId: string; bytes: bigint }>,
         writeFailure: false,
+        finalizeFailure: false,
+        deleteFailure: false,
     };
 
     const resetState = () => {
@@ -32,8 +35,11 @@ const {
         state.s3PolicyMaxLength = 0;
         state.reservations = [];
         state.claims = [];
+        state.claimedReservationIds = new Set();
         state.rollbacks = [];
         state.writeFailure = false;
+        state.finalizeFailure = false;
+        state.deleteFailure = false;
     };
 
     const seedSession = (id: string, accountId: string) => {
@@ -85,6 +91,7 @@ const {
             if (state.writeFailure) throw new Error("disk write failed");
             state.uploads.set(filePath, data);
         }),
+        deleteAttachmentObject: vi.fn(async (filePath: string) => { if (state.deleteFailure) throw new Error("delete failed"); state.uploads.delete(filePath); }),
     };
 
     const quotaMock = {
@@ -94,10 +101,12 @@ const {
             return reservation;
         }),
         claim: vi.fn(async (reservationId: string, accountId: string, objectKey: string, bytes: number) => {
+            if (state.claimedReservationIds.has(reservationId)) throw new Error("claimed");
+            state.claimedReservationIds.add(reservationId);
             state.claims.push({ reservationId, accountId, objectKey, bytes });
             return { id: reservationId, accountId, bytes: BigInt(bytes) };
         }),
-        finalize: vi.fn(async () => undefined),
+        finalize: vi.fn(async () => { if (state.finalizeFailure) throw new Error("finalize failed"); }),
         rollback: vi.fn(async (claim: { accountId: string; bytes: bigint }) => { state.rollbacks.push(claim); }),
     };
 
@@ -316,6 +325,34 @@ describe("attachmentRoutes — PUT (local-mode upload)", () => {
         expect(res.statusCode).toBe(507);
         expect(state.rollbacks).toEqual([{ id: "r1", accountId: "u1", bytes: 9n }]);
         expect(state.uploads.size).toBe(0);
+    });
+
+    it.each([true, false])("removes the written %s blob before rolling back a finalize failure", async (local) => {
+        seedSession("s1", "u1"); state.useLocalStorage = local; state.finalizeFailure = true; app = await createApp();
+        const res = await app.inject({ method: "PUT", url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1", headers: { "x-user-id": "u1", "content-type": "application/octet-stream" }, payload: Buffer.from("encrypted") });
+        expect(res.statusCode).toBe(507);
+        expect(state.uploads.size).toBe(0);
+        expect(state.rollbacks).toHaveLength(1);
+    });
+
+    it("does not release a reservation when finalize cleanup cannot delete the blob", async () => {
+        seedSession("s1", "u1"); state.finalizeFailure = true; state.deleteFailure = true; app = await createApp();
+        const res = await app.inject({ method: "PUT", url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1", headers: { "x-user-id": "u1", "content-type": "application/octet-stream" }, payload: Buffer.from("encrypted") });
+        expect(res.statusCode).toBe(507);
+        expect(state.uploads.size).toBe(1);
+        expect(state.rollbacks).toHaveLength(0);
+    });
+
+    it("allows only one concurrent PUT to claim and write a reservation", async () => {
+        seedSession("s1", "u1"); app = await createApp();
+        const payload = Buffer.from("encrypted");
+        const [first, second] = await Promise.all([
+            app.inject({ method: "PUT", url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1", headers: { "x-user-id": "u1", "content-type": "application/octet-stream" }, payload }),
+            app.inject({ method: "PUT", url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1", headers: { "x-user-id": "u1", "content-type": "application/octet-stream" }, payload: Buffer.from("other") }),
+        ]);
+        expect([first.statusCode, second.statusCode].sort()).toEqual([200, 507]);
+        expect(state.claims).toHaveLength(1);
+        expect(state.uploads.get("sessions/s1/attachments/abc.enc")!.length).toBe(state.claims[0].bytes);
     });
 });
 
