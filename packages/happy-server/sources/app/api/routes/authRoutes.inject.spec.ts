@@ -73,12 +73,21 @@ describe("account auth HTTP routes", () => {
         await app.close();
     });
 
-    it("returns the same 429 envelope for every exhausted issuance cap", async () => {
+    it("returns the same 429 envelope for per-IP pending exhaustion", async () => {
         const { app } = testApp();
         const keys = Array.from({ length: 4 }, () => Buffer.from(nacl.sign.keyPair().publicKey).toString("base64"));
         for (const key of keys.slice(0, 3)) expect((await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey: key } })).statusCode).toBe(200);
         const limited = await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey: keys[3] } });
         expect(limited.statusCode).toBe(429); expect(limited.json()).toEqual({ error: "Too many requests" });
+        await app.close();
+    });
+
+    it("enforces a configurable global pending cap under concurrent requests", async () => {
+        const { app } = testApp(new Date(), 1);
+        const keys = Array.from({ length: 3 }, () => Buffer.from(nacl.sign.keyPair().publicKey).toString("base64"));
+        const results = await Promise.all(keys.map((publicKey) => app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })));
+        expect(results.filter((result) => result.statusCode === 200)).toHaveLength(1);
+        for (const result of results.filter((result) => result.statusCode === 429)) expect(result.json()).toEqual({ error: "Too many requests" });
         await app.close();
     });
 
@@ -90,7 +99,7 @@ describe("account auth HTTP routes", () => {
     });
 });
 
-function testApp(now = new Date()) {
+function testApp(now = new Date(), globalPendingCap?: number) {
     const rows: any[] = []; const tokens: string[] = [];
     const account = { id: "account", publicKey: Buffer.alloc(32).toString("hex") };
     const db: any = { chimeraAuthChallenge: {
@@ -100,6 +109,6 @@ function testApp(now = new Date()) {
         updateMany: async ({ where, data }: any) => { const r = rows.find((r) => r.id === where.id && !r.consumedAt && r.expiresAt > where.expiresAt.gt); if (!r) return { count: 0 }; Object.assign(r, data); return { count: 1 }; },
     }, account: { findUnique: async () => account } };
     const app = fastify({ trustProxy: isTrustedLoopbackProxy }); app.setValidatorCompiler(validatorCompiler); app.setSerializerCompiler(serializerCompiler);
-    authRoutes(app as any, { db, config, inTransaction: async (fn) => fn(db), issueToken: async () => { tokens.push("token"); return "token"; } });
+    authRoutes(app as any, { db, config, globalPendingCap, inTransaction: async (fn) => fn(db), issueToken: async () => { tokens.push("token"); return "token"; } });
     return { app, rows, tokens };
 }
