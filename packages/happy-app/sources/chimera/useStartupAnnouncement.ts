@@ -52,7 +52,8 @@ export function createStartupAnnouncementOrchestrator({
                 config = await fetchConfig(controller.signal);
             } catch {
                 if (!cancelled) {
-                    updateState({ settled: true, dismissed: false });
+                    // A missing config cannot block the updater; treat the startup gate as complete.
+                    updateState({ settled: true, dismissed: true });
                 }
                 return;
             }
@@ -60,7 +61,7 @@ export function createStartupAnnouncementOrchestrator({
                 return;
             }
             if (!config?.announcement.enabled) {
-                updateState({ settled: true, dismissed: false });
+                updateState({ settled: true, dismissed: true });
                 return;
             }
 

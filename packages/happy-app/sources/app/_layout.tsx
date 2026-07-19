@@ -28,6 +28,7 @@ import { useTauriZoom } from '@/hooks/useTauriZoom';
 import { useTauriDrag } from '@/hooks/useTauriDrag';
 import { BrowserNavigationShortcuts } from '@/hooks/useBrowserNavigationShortcuts';
 import { useStartupAnnouncement } from '@/chimera/useStartupAnnouncement';
+import { useAndroidUpdater } from '@/chimera/useAndroidUpdater';
 
 
 export {
@@ -63,7 +64,8 @@ function HorizontalSafeAreaWrapper({ children }: { children: React.ReactNode }) 
 }
 
 function StartupAnnouncement() {
-    useStartupAnnouncement();
+    const announcement = useStartupAnnouncement();
+    useAndroidUpdater(announcement);
     return null;
 }
 

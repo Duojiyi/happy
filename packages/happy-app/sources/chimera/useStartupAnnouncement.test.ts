@@ -44,11 +44,11 @@ describe('startup announcement orchestration', () => {
 
         const disabledAnnouncement = createStartupAnnouncementOrchestrator({ fetchConfig: async () => disabled, show });
         await disabledAnnouncement.start();
-        expect(disabledAnnouncement.getState()).toEqual({ settled: true, dismissed: false });
+        expect(disabledAnnouncement.getState()).toEqual({ settled: true, dismissed: true });
 
         const unavailableAnnouncement = createStartupAnnouncementOrchestrator({ fetchConfig: async () => null, show });
         await unavailableAnnouncement.start();
-        expect(unavailableAnnouncement.getState()).toEqual({ settled: true, dismissed: false });
+        expect(unavailableAnnouncement.getState()).toEqual({ settled: true, dismissed: true });
         expect(show).not.toHaveBeenCalled();
     });
 

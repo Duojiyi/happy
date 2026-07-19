@@ -35,7 +35,8 @@ describe('update manifest', () => {
 
         await expect(verifyUpdateManifest({ payload, signature }, { publicKey, origin: 'https://updates.example.test', commitSha: payload.commitSha })).resolves.toEqual(payload);
         await expect(verifyUpdateManifest({ payload: { ...payload, size: 1235 }, signature }, { publicKey, origin: 'https://updates.example.test', commitSha: payload.commitSha })).rejects.toThrow(/signature/i);
-        await expect(verifyUpdateManifest({ payload, signature: `${signature.slice(0, -1)}A` }, { publicKey, origin: 'https://updates.example.test', commitSha: payload.commitSha })).rejects.toThrow(/signature/i);
+        const changedSignature = `${signature.slice(0, -1)}${signature.endsWith('A') ? 'B' : 'A'}`;
+        await expect(verifyUpdateManifest({ payload, signature: changedSignature }, { publicKey, origin: 'https://updates.example.test', commitSha: payload.commitSha })).rejects.toThrow(/signature/i);
     });
 
     it('signs canonical payload bytes as a base64url Ed25519 signature', async () => {
