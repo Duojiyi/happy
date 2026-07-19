@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { ChimeraConfigSchema, fetchChimeraConfig } from './config';
 import { RELAY_ORIGIN } from './product.generated';
+import { SERVER_DISABLED_DEFAULT_CONFIG, SERVER_ENABLED_CONFIG } from './config.fixtures';
 
 const validConfig = {
     announcement: {
@@ -20,6 +21,11 @@ afterEach(() => {
 });
 
 describe('ChimeraConfigSchema', () => {
+    test('parses the server disabled default and enabled response fixtures', () => {
+        expect(ChimeraConfigSchema.parse(SERVER_DISABLED_DEFAULT_CONFIG)).toEqual(SERVER_DISABLED_DEFAULT_CONFIG);
+        expect(ChimeraConfigSchema.parse(SERVER_ENABLED_CONFIG)).toEqual(SERVER_ENABLED_CONFIG);
+    });
+
     test('accepts an enabled announcement with the fixed update manifest path', () => {
         expect(ChimeraConfigSchema.parse(validConfig)).toEqual(validConfig);
     });

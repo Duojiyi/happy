@@ -9,23 +9,23 @@ function plainText(maximumLength: number) {
     });
 }
 
-function requiredPlainText(maximumLength: number) {
-    return plainText(maximumLength).refine((value) => value.trim().length > 0, {
-        message: 'Must not be empty',
-    });
-}
-
 export const ChimeraConfigSchema = z.object({
     announcement: z.object({
         enabled: z.boolean(),
-        title: requiredPlainText(120),
+        title: plainText(120),
         body: plainText(4000),
-        primaryButtonLabel: requiredPlainText(40),
-        linkButtonLabel: requiredPlainText(40).nullable(),
+        primaryButtonLabel: plainText(40),
+        linkButtonLabel: plainText(40).nullable(),
         linkUrl: z.string().url().refine((value) => new URL(value).protocol === 'https:', {
             message: 'Must use HTTPS',
         }).nullable(),
     }).strict().superRefine((announcement, context) => {
+        if (announcement.enabled && (!announcement.title.trim() || !announcement.primaryButtonLabel.trim())) {
+            context.addIssue({ code: 'custom', message: 'Enabled announcements require title and primary button label' });
+        }
+        if (announcement.linkButtonLabel !== null && !announcement.linkButtonLabel.trim()) {
+            context.addIssue({ code: 'custom', message: 'Link label must not be empty' });
+        }
         if ((announcement.linkButtonLabel === null) !== (announcement.linkUrl === null)) {
             context.addIssue({ code: 'custom', message: 'Link label and URL must be supplied together' });
         }
