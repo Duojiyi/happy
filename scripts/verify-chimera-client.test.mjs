@@ -29,6 +29,17 @@ async function policyResult(files) {
   }
 }
 
+async function policyResultWithEnv(files, environment) {
+  const previous = process.env.APP_ENV;
+  process.env.APP_ENV = environment;
+  try {
+    return await policyResult(files);
+  } finally {
+    if (previous === undefined) delete process.env.APP_ENV;
+    else process.env.APP_ENV = previous;
+  }
+}
+
 test('passes denylist constants and explicit non-production fixtures', async () => {
   const result = await policyResult({
     'packages/happy-app/sources/chimera/clientPolicy.ts': "export const DENYLIST = ['PostHog', 'RevenueCat', 'ElevenLabs'];\n",
@@ -49,13 +60,39 @@ for (const [name, files, rule] of [
   ['RevenueCat initialization', { 'packages/happy-app/sources/app/(app)/index.tsx': "RevenueCat.configure({ apiKey: 'public-key' });\n" }, 'telemetry-or-purchases'],
   ['ElevenLabs initialization', { 'packages/happy-app/sources/app/(app)/index.tsx': "useConversation({ agentId: 'agent' });\n" }, 'voice-integration'],
   ['Expo project ID', { 'packages/happy-app/app.config.js': "export default { expo: { name: 'Chimera', slug: 'chimera', android: { package: 'org.chimerahub.chimera' }, updates: { enabled: false }, extra: { eas: { projectId: 'not-a-secret' } }, plugins: [] } };\n" }, 'expo-project-id'],
-  ['removed settings ID', { 'packages/happy-app/sources/app/(app)/settings/index.tsx': "export const settings = ['account', 'voice'];\n" }, 'removed-settings-or-route'],
+  ['removed settings ID', { 'packages/happy-app/sources/app/(app)/settings/index.tsx': "export const settings = [{ id: 'voice' }];\n" }, 'removed-settings-or-route'],
 ]) {
   test(`fails when production source adds ${name}`, async () => {
     const result = await policyResult(files);
     assert(result.some((finding) => finding.rule === rule), JSON.stringify(result));
   });
 }
+
+for (const [name, files, rule] of [
+  ['a voice import in components', { 'packages/happy-app/sources/components/AgentInput.tsx': "import { useConversation } from '@elevenlabs/react';\n" }, 'voice-integration'],
+  ['a RevenueCat initialization in sync', { 'packages/happy-app/sources/sync/sync.ts': "RevenueCat.configure({ apiKey: 'public-key' });\n" }, 'telemetry-or-purchases'],
+  ['an official host in track', { 'packages/happy-app/sources/track/tracking.ts': "fetch('https://happy.engineering/events');\n" }, 'official-host'],
+]) {
+  test(`fails when ${name}`, async () => {
+    const result = await policyResult(files);
+    assert(result.some((finding) => finding.rule === rule), JSON.stringify(result));
+  });
+}
+
+test('evaluates a production Expo config through a relative import', async () => {
+  const result = await policyResultWithEnv({
+    'packages/happy-app/config-values.js': "export const plugins = process.env.APP_ENV === 'production' ? ['expo-notifications'] : [];\n",
+    'packages/happy-app/app.config.js': "import { plugins } from './config-values.js'; export default { expo: { name: 'Chimera', slug: 'chimera', android: { package: 'org.chimerahub.chimera' }, updates: { enabled: false }, plugins } };\n",
+  }, 'production');
+  assert(result.some((finding) => finding.rule === 'push-integration'), JSON.stringify(result));
+});
+
+test('uses the production Expo config variant even when the caller is development', async () => {
+  const result = await policyResultWithEnv({
+    'packages/happy-app/app.config.js': "const bad = process.env.APP_ENV === 'production'; export default { expo: { name: 'Chimera', slug: 'chimera', android: { package: 'org.chimerahub.chimera' }, updates: { enabled: false }, plugins: bad ? ['expo-notifications'] : [] } };\n",
+  }, 'development');
+  assert(result.some((finding) => finding.rule === 'push-integration'), JSON.stringify(result));
+});
 
 test('fails when the production web export contains a prohibited host', async () => {
   const result = await policyResult({

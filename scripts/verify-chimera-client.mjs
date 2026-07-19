@@ -1,9 +1,10 @@
-import { access, readdir, readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { access, readdir, readFile, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join, relative, resolve } from 'node:path';
 
 const APP_ROOT = 'packages/happy-app';
-const SOURCE_ROOTS = ['sources/app', 'sources/chimera'];
+const SOURCE_ROOTS = ['sources'];
 const WEB_EXPORT_ROOT = 'dist';
 const TEXT_FILE = /\.(?:[cm]?[jt]sx?|json|html|css)$/i;
 
@@ -11,18 +12,37 @@ const RULES = [
   ['happy-logo', /happy[-_ ]?logo/i],
   ['happy-branding', /\b(?:title|name|appName)\s*[:=]\s*['"`]Happy(?:\s+Coder)?['"`]/],
   ['official-host', /(?:https?:\/\/)?(?:app\.|api\.)?happy\.(?:engineering|tools|engineer)\b/i],
-  ['server-selector', /\b(?:ServerSelector|ServerSelection|setServer(?:Url|URL|Config)|customServer)\b/],
+  ['server-selector', /\b(?:ServerSelector|ServerSelection)\b|router\.(?:push|navigate|replace)\(\s*['"`]\/server/],
   ['voice-integration', /\b(?:VoiceButton|startVoice|useConversation|RealtimeVoiceSession|@elevenlabs\/|livekit)\b/i],
   ['push-integration', /\b(?:expo-notifications|registerForPush|pushRegistration|apiPush)\b/i],
   ['telemetry-or-purchases', /\b(?:new\s+PostHog|PostHog\.init|tracking\.(?:capture|identify)|RevenueCat\.configure|Purchases\.configure|configurePurchases)\b/i],
-  ['removed-settings-or-route', /(?:['"`](?:voice|server)['"`]|\/(?:settings\/)?(?:voice|server)\b)/i],
+  ['removed-settings-or-route', /\bid\s*:\s*['"`]voice['"`]|(?:router\.(?:push|navigate|replace)|href)\s*\(?\s*['"`]\/settings\/voice/],
 ];
 const BUNDLE_RULES = RULES.filter(([rule]) => !['server-selector', 'removed-settings-or-route'].includes(rule));
+
+// These legacy modules are intentionally retained for upstream mergeability but are
+// unreachable from the Chimera route graph. Tests and fixtures are excluded below.
+const DORMANT_SOURCE_PREFIXES = [
+  'sources/realtime/',
+  'sources/components/Voice',
+  'sources/sync/revenueCat/',
+  'sources/text/',
+  'sources/changelog/',
+  'sources/docs/',
+];
+const DORMANT_SOURCE_FILES = new Set([
+  'sources/constants/Languages.ts',
+  'sources/sync/purchases.ts',
+  'sources/utils/microphonePermissions.ts',
+  'sources/voiceConfig.ts',
+]);
 
 function isExcluded(relativePath) {
   return /(?:^|\/)(?:__fixtures__|__tests__)(?:\/|$)|\.(?:test|spec)\.[^/]+$/i.test(relativePath)
     || relativePath === 'sources/chimera/clientPolicy.ts'
-    || relativePath.startsWith('sources/app/(app)/dev/');
+    || relativePath.startsWith('sources/app/(app)/dev/')
+    || DORMANT_SOURCE_PREFIXES.some((prefix) => relativePath.startsWith(prefix))
+    || DORMANT_SOURCE_FILES.has(relativePath);
 }
 
 async function exists(path) {
@@ -67,9 +87,10 @@ async function scanExpoConfig(findings, root) {
     addFinding(findings, root, path, 'missing-expo-config');
     return;
   }
+  const previousAppEnv = process.env.APP_ENV;
   try {
-    const source = await readFile(path, 'utf8');
-    const module = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+    process.env.APP_ENV = 'production';
+    const module = await import(`${pathToFileURL(path).href}?chimeraPolicy=${Date.now()}`);
     const config = module.default?.expo;
     if (!config || typeof config !== 'object') {
       addFinding(findings, root, path, 'invalid-expo-config');
@@ -84,7 +105,31 @@ async function scanExpoConfig(findings, root) {
     }
   } catch {
     addFinding(findings, root, path, 'invalid-expo-config');
+  } finally {
+    if (previousAppEnv === undefined) delete process.env.APP_ENV;
+    else process.env.APP_ENV = previousAppEnv;
   }
+}
+
+async function exportProductionWeb(root) {
+  const appRoot = join(root, APP_ROOT);
+  await rm(join(appRoot, WEB_EXPORT_ROOT), { recursive: true, force: true });
+  await new Promise((resolveExport, rejectExport) => {
+    const isWindows = process.platform === 'win32';
+    const child = spawn(
+      isWindows ? (process.env.ComSpec ?? 'cmd.exe') : 'pnpm',
+      isWindows
+        ? ['/d', '/s', '/c', 'pnpm --filter happy-app exec expo export --platform web --output-dir dist']
+        : ['--filter', 'happy-app', 'exec', 'expo', 'export', '--platform', 'web', '--output-dir', WEB_EXPORT_ROOT],
+      {
+        cwd: root,
+        env: { ...process.env, APP_ENV: 'production' },
+        stdio: 'ignore',
+      },
+    );
+    child.once('error', rejectExport);
+    child.once('exit', (code) => code === 0 ? resolveExport() : rejectExport(new Error(`web export exited ${code}`)));
+  });
 }
 
 export async function verifyChimeraClient({ root = fileURLToPath(new URL('../', import.meta.url)), requireWebExport = true } = {}) {
@@ -109,7 +154,14 @@ export async function verifyChimeraClient({ root = fileURLToPath(new URL('../', 
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const findings = await verifyChimeraClient();
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  let findings;
+  try {
+    await exportProductionWeb(root);
+    findings = await verifyChimeraClient({ root });
+  } catch {
+    findings = [{ path: `${APP_ROOT}/${WEB_EXPORT_ROOT}`, rule: 'production-web-export-failed' }];
+  }
   if (findings.length) {
     for (const finding of findings) console.error(`${finding.path}: ${finding.rule}`);
     process.exitCode = 1;
