@@ -37,10 +37,10 @@ export function disconnectAccountSockets(accountId: string) {
 export function startSocket(app: Fastify) {
     const io = new Server(app.server, {
         cors: {
-            origin: "*",
+            origin: "https://39.98.68.173",
             methods: ["GET", "POST", "OPTIONS"],
             credentials: true,
-            allowedHeaders: ["*"]
+            allowedHeaders: ["authorization", "content-type", "x-happy-client"]
         },
         transports: ['websocket', 'polling'],
         pingTimeout: 45000,
@@ -155,7 +155,7 @@ export function startSocket(app: Fastify) {
             });
         });
 
-        log({ module: 'websocket' }, `Token verified: ${userId}, clientType: ${clientType || 'user-scoped'}, client: ${labels.client}, sessionId: ${sessionId || 'none'}, machineId: ${machineId || 'none'}, socketId: ${socket.id}`);
+        log({ module: 'websocket' }, `Authenticated socket connected (${clientType || 'user-scoped'}, client: ${labels.client})`);
 
         // Store connection based on type
         const metadata = { clientType: clientType || 'user-scoped', sessionId, machineId };
@@ -219,7 +219,7 @@ export function startSocket(app: Fastify) {
             eventRouter.removeConnection(userId, connection);
             websocketConnectionsGauge.dec({ type: connection.connectionType, ...labels });
 
-            log({ module: 'websocket' }, `User disconnected: ${userId}`);
+            log({ module: 'websocket' }, 'Authenticated socket disconnected');
 
             // Broadcast daemon offline status
             if (connection.connectionType === 'machine-scoped') {
@@ -242,7 +242,7 @@ export function startSocket(app: Fastify) {
         accessKeyHandler(userId, socket);
 
         // Ready
-        log({ module: 'websocket' }, `User connected: ${userId}`);
+        log({ module: 'websocket' }, 'Authenticated socket ready');
     });
 
     onShutdown('api', async () => {

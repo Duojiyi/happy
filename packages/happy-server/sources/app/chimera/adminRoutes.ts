@@ -10,8 +10,7 @@ const COOKIE_NAME = "__Secure-chimera_admin";
 const ORIGIN = "https://39.98.68.173";
 const UNAUTHORIZED = { error: "Unauthorized" };
 const accountParams = { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", minLength: 43, maxLength: 43, pattern: "^[A-Za-z0-9_-]+$" } } };
-const noQuery = { type: "object", additionalProperties: false, properties: {} };
-const noBody = { type: "object", additionalProperties: false, maxProperties: 0, properties: {} };
+const noBody = { type: "object", additionalProperties: false, required: [] as string[], maxProperties: 0, properties: {} };
 const quotaBody = { type: "object", additionalProperties: false, required: ["attachmentQuotaBytes"], properties: { attachmentQuotaBytes: { type: "integer", minimum: MIN_ATTACHMENT_QUOTA_BYTES, maximum: MAX_ATTACHMENT_QUOTA_BYTES } } };
 
 type LoginLimits = { acquire(ip: string): boolean; release(): void };
@@ -81,7 +80,8 @@ export function adminRoutes(app: any, dependencies: { passwordHash?: string; ses
             : sessionId && await sessions.authenticate(sessionId);
         return allowed ? true : (unauthorised(reply), false);
     };
-    app.get("/chimera-control/api/accounts", { schema: { querystring: noQuery } }, async (request: any, reply: any) => {
+    app.get("/chimera-control/api/accounts", async (request: any, reply: any) => {
+        if (Object.keys(request.query ?? {}).length !== 0) return reply.code(400).send({ error: "Invalid request" });
         if (!await accountSession(request, reply)) return; return reply.send(await accounts.list());
     });
     app.post("/chimera-control/api/accounts/:id/disable", { schema: { params: accountParams, body: noBody } }, async (request: any, reply: any) => {
