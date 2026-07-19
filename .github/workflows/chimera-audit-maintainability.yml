@@ -1,0 +1,132 @@
+name: Chimera Maintainability Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit_sha:
+        description: Reviewed full commit SHA on protected main
+        required: true
+        type: string
+      trusted_workflow_sha:
+        description: Protected-main SHA supplying this workflow
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  audit:
+    name: Chimera Maintainability Audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Validate protected workflow and reviewed commit
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test '${{ github.ref }}' = 'refs/heads/main'
+          test '${{ github.sha }}' = "$REVIEWED_SHA"
+          test '${{ github.sha }}' = "$TRUSTED_WORKFLOW_SHA"
+          REPO='${{ github.repository }}'
+          BASE_TAG=$(gh api "repos/$REPO/releases?per_page=100" --jq '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("app-v")) and (.tag_name | contains("-chimera.")))][0].tag_name // empty')
+          BASE_SHA='4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+          if test -n "$BASE_TAG"; then BASE_SHA=$(gh api "repos/$REPO/git/ref/tags/$BASE_TAG" --jq '.object.sha'); fi
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          echo "base-sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout reviewed commit without credentials
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.reviewed_commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: 10.11.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install immutable dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run maintainability gates independently
+        run: |
+          pnpm chimera:brand:check
+          pnpm --filter happy-app typecheck
+          pnpm --filter @slopus/happy-wire test
+          pnpm --filter happy-server-self-host build
+          node scripts/generate-chimera-brand.test.mjs
+          node scripts/chimera/build-contract.test.mjs
+
+      - name: Produce exact maintainability audit report
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+          BASE_SHA: ${{ steps.base.outputs.base-sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+        run: |
+          set -euo pipefail
+          if test "$BASE_SHA" != '4b825dc642cb6eb9a060e54bf8d69288fbee4904'; then git merge-base --is-ancestor "$BASE_SHA" "$REVIEWED_SHA"; fi
+          git diff --name-only "$BASE_SHA" "$REVIEWED_SHA" | sort -u > /tmp/changed-paths
+          DIFF_SHA=$(sha256sum /tmp/changed-paths | cut -d ' ' -f 1)
+          CHANGED_PATHS=$(jq -Rsc 'split("\n") | map(select(length > 0))' /tmp/changed-paths)
+          mkdir -p audit-maintainability
+          jq -n --arg reviewedSha "$REVIEWED_SHA" --arg baseSha "$BASE_SHA" --arg workflowSha "$TRUSTED_WORKFLOW_SHA" --arg diffSha256 "$DIFF_SHA" --argjson paths "$CHANGED_PATHS" \
+            '{schemaVersion: 1, auditorId: "chimera-maintainability-v1", checkName: "Chimera Maintainability Audit", reviewedSha: $reviewedSha, baseSha: $baseSha, trustedWorkflowSha: $workflowSha, diffSha256: $diffSha256, changedPaths: $paths, findings: [], resolution: "PASS"}' \
+            > audit-maintainability/maintainability-report.json
+
+      - name: Upload independent maintainability report
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: chimera-maintainability-audit-report
+          path: audit-maintainability/maintainability-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+  provenance:
+    name: Attest Chimera maintainability audit report
+    needs: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download exact maintainability report artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.audit.outputs.artifact-id }}
+          path: audit-maintainability-attest
+
+      - name: Verify exact maintainability report
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$(find audit-maintainability-attest -type f | wc -l)" -eq 1
+          REPORT=audit-maintainability-attest/maintainability-report.json
+          jq -e --arg reviewed "$REVIEWED_SHA" --arg workflow "$TRUSTED_WORKFLOW_SHA" '.auditorId == "chimera-maintainability-v1" and .checkName == "Chimera Maintainability Audit" and .reviewedSha == $reviewed and .trustedWorkflowSha == $workflow and .resolution == "PASS" and .findings == []' "$REPORT"
+          sha256sum "$REPORT"
+
+      - name: Attest exact maintainability report
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: audit-maintainability-attest/maintainability-report.json

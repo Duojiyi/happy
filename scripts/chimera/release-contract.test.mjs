@@ -7,6 +7,8 @@ import { parse } from 'yaml';
 const root = path.resolve(import.meta.dirname, '../..');
 const releasePath = path.join(root, '.github/workflows/chimera-release.yml');
 const serverPath = path.join(root, '.github/workflows/chimera-server-release.yml');
+const securityAuditPath = path.join(root, '.github/workflows/chimera-audit-security.yml');
+const maintainabilityAuditPath = path.join(root, '.github/workflows/chimera-audit-maintainability.yml');
 const PINNED_ACTION = /^[^@\s]+@[0-9a-f]{40}$/;
 
 const steps = (job) => (job?.steps ?? []).filter((step) => step && typeof step === 'object');
@@ -16,6 +18,14 @@ const serialized = (job) => JSON.stringify(job);
 function assertPinned(workflow) {
   for (const step of Object.values(workflow.jobs ?? {}).flatMap(steps)) {
     if (step.uses) assert.match(step.uses, PINNED_ACTION, `action must use a full commit SHA: ${step.uses}`);
+  }
+}
+
+function assertNoDirectUntrustedShellExpressions(workflow) {
+  for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+    for (const step of steps(job)) {
+      if (step.run) assert.doesNotMatch(step.run, /\$\{\{\s*(?:inputs|steps|needs)\./, `${jobName} run must receive untrusted expressions through env`);
+    }
   }
 }
 
@@ -35,6 +45,16 @@ export function validateClientReleaseWorkflow(workflow) {
   assert.equal(workflow.concurrency?.group, 'chimera-production-release', 'client release must use repository-wide concurrency');
   assert.equal(workflow.concurrency?.['cancel-in-progress'], false, 'production release must never cancel in progress');
   assertPinned(workflow);
+  assertNoDirectUntrustedShellExpressions(workflow);
+
+  const classify = workflow.jobs?.classify;
+  assert.ok(classify, 'authoritative diff classification job is required');
+  assertNoCheckout(classify, 'classification');
+  assert.deepEqual(classify.permissions, { contents: 'read' });
+  assertContains(runs(classify), [/releases\?per_page/, /compare\/\$BASE_SHA\.\.\.\$REVIEWED_SHA/, /packages\/happy-app/, /packages\/happy-server/, /packages\/happy-wire/, /pnpm-lock/, /client-required/, /server-required/], 'classification');
+  const dispatchInputs = (workflow.on ?? workflow.true).workflow_dispatch.inputs;
+  assert.equal('client_release_required' in dispatchInputs, false, 'client requirement must not be supplied by dispatch');
+  assert.equal('server_deploy_required' in dispatchInputs, false, 'server requirement must not be supplied by dispatch');
 
   const signing = workflow.jobs?.signing;
   assert.ok(signing, 'signing job is required');
@@ -44,8 +64,8 @@ export function validateClientReleaseWorkflow(workflow) {
   const sign = runs(signing);
   assertContains(sign, [
     /artifact-ids|artifact_id/i,
-    /build_run_id/,
-    /trusted_build_workflow_sha/,
+    /BUILD_RUN_ID/,
+    /TRUSTED_BUILD_WORKFLOW_SHA/,
     /github\.repository|repository\.full_name/,
     /head_sha/,
     /gh attestation verify/,
@@ -60,8 +80,11 @@ export function validateClientReleaseWorkflow(workflow) {
     /check-runs/,
     /chimera-audit-security\.yml/,
     /chimera-audit-maintainability\.yml/,
+    /chimera-security-audit-report/,
+    /chimera-maintainability-audit-report/,
+    /diffSha256/,
     /35\.0\.0/,
-    /expected_signer_sha256/,
+    /EXPECTED_SIGNER_SHA256/,
     /CHIMERA_ANDROID_KEYSTORE_BASE64/,
     /CHIMERA_MANIFEST_PRIVATE_KEY_PKCS8_BASE64/,
     /chmod 600/,
@@ -76,6 +99,10 @@ export function validateClientReleaseWorkflow(workflow) {
     /ze6ngKGbk7dgWN5d6rXGO0YRE5y54hbLMULFoW5YTHc/,
     /versionCode/,
     /existing.*release|releases\/tags/i,
+    /gh release download[\s\S]*--dir \/tmp\/existing/,
+    /cmp \/tmp\/expected-apk\.sha256/,
+    /cmp "\$EXISTING_WEB" candidate\/web\/Chimera-web\.tar\.gz/,
+    /cmp \/tmp\/expected-web\.sha256/,
   ], 'signing job');
   assert.ok(steps(signing).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), 'signing must download by immutable artifact ID');
   assert.ok(steps(signing).some((step) => step.uses?.startsWith('actions/upload-artifact@')), 'signing must hand off signed bytes as an artifact');
@@ -101,7 +128,7 @@ export function validateClientReleaseWorkflow(workflow) {
     /sha256sum/,
     /releases\/tags|release view/,
     /git\/refs\/tags|git\/ref\/tags/,
-    /reviewed_commit_sha/,
+    /REVIEWED_SHA/,
     /versionCode/,
     /release create|releases/,
     /release create[\s\S]*Chimera-/,
@@ -110,9 +137,7 @@ export function validateClientReleaseWorkflow(workflow) {
     /chimera-release\.yml/,
   ], 'publication job');
   assert.doesNotMatch(publish, /--clobber|release delete|git push.*--force/i, 'publication must never replace immutable assets');
-  assert.match(serialized(workflow), /server_deploy_required/);
   assert.match(serialized(workflow), /server_release_run_id/);
-  assert.match(serialized(workflow), /client_release_required/);
   return true;
 }
 
@@ -123,6 +148,13 @@ export function validateServerReleaseWorkflow(workflow) {
   assert.equal(workflow.concurrency?.group, 'chimera-production-release', 'server release must share production concurrency');
   assert.equal(workflow.concurrency?.['cancel-in-progress'], false, 'server release must never cancel in progress');
   assertPinned(workflow);
+  assertNoDirectUntrustedShellExpressions(workflow);
+
+  const classify = workflow.jobs?.classify;
+  assert.ok(classify, 'server authoritative diff classification job is required');
+  assertNoCheckout(classify, 'server classification');
+  assert.deepEqual(classify.permissions, { contents: 'read' });
+  assertContains(runs(classify), [/releases\?per_page/, /compare\/\$BASE_SHA\.\.\.\$REVIEWED_SHA/, /packages\/happy-server/, /packages\/happy-wire/, /server-required/], 'server classification');
 
   const build = workflow.jobs?.build;
   assert.ok(build, 'server build job is required');
@@ -131,7 +163,7 @@ export function validateServerReleaseWorkflow(workflow) {
   assert.ok(steps(build).some((step) => step.uses?.startsWith('actions/checkout@') && step.with?.ref === '${{ inputs.reviewed_commit_sha }}' && step.with?.['persist-credentials'] === false), 'server build must checkout only the reviewed SHA without credentials');
   const buildRun = runs(build);
   assertContains(buildRun, [
-    /reviewed_commit_sha/,
+    /REVIEWED_SHA/,
     /pnpm install --frozen-lockfile/,
     /chimera:server:check/,
     /happy-wire.*test/,
@@ -172,14 +204,18 @@ export function validateServerReleaseWorkflow(workflow) {
   const publish = runs(publication);
   assertContains(publish, [
     /github\.repository|repository\.full_name/,
-    /head_sha|reviewed_commit_sha/,
-    /trusted_workflow_sha/,
+    /head_sha|REVIEWED_SHA/,
+    /TRUSTED_WORKFLOW_SHA|trustedWorkflowSha/,
     /github\.run_id|run_id/,
     /gh attestation verify/,
     /cert-identity/,
     /signer-digest/,
     /source-digest/,
     /source-ref/,
+    /--bundle \/tmp\/oci-attestations\.jsonl/,
+    /https:\/\/slsa\.dev\/provenance\/v1/,
+    /https:\/\/spdx\.dev\/Document\/v2\.3/,
+    /blobs\/sha256\/\$DIGEST_HEX/,
     /ghcr\.io\/duojiyi\/chimera-happy-server@\$IMAGE_DIGEST/,
     /skopeo.*copy/is,
     /--preserve-digests/,
@@ -191,9 +227,37 @@ export function validateServerReleaseWorkflow(workflow) {
   assert.equal(deploy.environment, 'server-release', 'server deployment must be protected');
   assertNoCheckout(deploy, 'server deployment');
   const deployRun = runs(deploy);
-  assertContains(deployRun, [/gh attestation verify/, /security_audit_run_id/, /maintainability_audit_run_id/, /check-runs/, /chimera-audit-security\.yml/, /chimera-audit-maintainability\.yml/, /ssh/, /sha256:/, /running.*digest|deployed.*digest/i], 'server deployment');
+  assertContains(deployRun, [/gh attestation verify/, /SECURITY_AUDIT_RUN_ID/, /MAINTAINABILITY_AUDIT_RUN_ID/, /check-runs/, /chimera-audit-security\.yml/, /chimera-audit-maintainability\.yml/, /chimera-security-audit-report/, /chimera-maintainability-audit-report/, /diffSha256/, /ssh/, /sha256:/, /running.*digest|deployed.*digest/i], 'server deployment');
   assert.ok(steps(deploy).some((step) => step.uses?.startsWith('docker/login-action@')), 'server deployment must authenticate before OCI attestation verification');
   assert.doesNotMatch(deployRun, /ghcr\.io\/[^\s"']+:(?:latest|main|production)/i, 'deployment must receive only an immutable digest');
+  return true;
+}
+
+export function validateAuditWorkflows(security, maintainability) {
+  const definitions = [
+    [security, 'Chimera Security Audit', 'chimera-security-audit-report', 'audit-security-attest/security-report.json'],
+    [maintainability, 'Chimera Maintainability Audit', 'chimera-maintainability-audit-report', 'audit-maintainability-attest/maintainability-report.json'],
+  ];
+  for (const [workflow, checkName, artifactName, subjectPath] of definitions) {
+    assert.deepEqual(Object.keys(workflow.on ?? workflow.true), ['workflow_dispatch'], `${checkName} must be explicitly dispatched`);
+    assertPinned(workflow);
+    assertNoDirectUntrustedShellExpressions(workflow);
+    assert.doesNotMatch(serialized(workflow), /\$\{\{\s*secrets\.|\bcontents\s*:\s*write|pull-requests\s*:\s*write/i, `${checkName} must be read-only and secretless`);
+    const audit = workflow.jobs?.audit;
+    assert.equal(audit?.name, checkName);
+    assert.deepEqual(audit?.permissions, { contents: 'read' });
+    assert.equal('base_commit_sha' in (workflow.on ?? workflow.true).workflow_dispatch.inputs, false, `${checkName} base must not be caller-controlled`);
+    assert.match(runs(audit), /releases\?per_page=100/, `${checkName} must derive accepted base from GitHub Releases`);
+    assert.ok(steps(audit).some((step) => step.uses?.startsWith('actions/checkout@') && step.with?.['persist-credentials'] === false), `${checkName} checkout must not persist credentials`);
+    assert.ok(steps(audit).some((step) => step.uses?.startsWith('actions/upload-artifact@') && step.with?.name === artifactName), `${checkName} artifact identity`);
+    const provenance = workflow.jobs?.provenance;
+    assertNoCheckout(provenance, `${checkName} provenance`);
+    assert.deepEqual(provenance?.permissions, { contents: 'read', 'id-token': 'write', attestations: 'write' });
+    assert.ok(steps(provenance).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), `${checkName} provenance must download by artifact ID`);
+    assert.ok(steps(provenance).some((step) => step.uses?.startsWith('actions/attest-build-provenance@') && step.with?.['subject-path'] === subjectPath), `${checkName} must attest exact report`);
+  }
+  assert.doesNotMatch(serialized(security), /chimera-audit-maintainability|maintainability-report/i, 'security audit must not depend on maintainability audit');
+  assert.doesNotMatch(serialized(maintainability), /chimera-audit-security|security-report/i, 'maintainability audit must not depend on security audit');
   return true;
 }
 
@@ -201,9 +265,11 @@ function stringify(value) {
   return JSON.stringify(value);
 }
 
-const [releaseSource, serverSource] = await Promise.all([
+const [releaseSource, serverSource, securityAuditSource, maintainabilityAuditSource] = await Promise.all([
   readFile(releasePath, 'utf8').catch(() => null),
   readFile(serverPath, 'utf8').catch(() => null),
+  readFile(securityAuditPath, 'utf8').catch(() => null),
+  readFile(maintainabilityAuditPath, 'utf8').catch(() => null),
 ]);
 
 test('Chimera client release workflow contract', () => {
@@ -214,6 +280,12 @@ test('Chimera client release workflow contract', () => {
 test('Chimera server release workflow contract', () => {
   assert.ok(serverSource, `missing ${path.relative(root, serverPath)}`);
   validateServerReleaseWorkflow(parse(serverSource));
+});
+
+test('Chimera independent audit workflow contracts', () => {
+  assert.ok(securityAuditSource, `missing ${path.relative(root, securityAuditPath)}`);
+  assert.ok(maintainabilityAuditSource, `missing ${path.relative(root, maintainabilityAuditPath)}`);
+  validateAuditWorkflows(parse(securityAuditSource), parse(maintainabilityAuditSource));
 });
 
 if (releaseSource && serverSource) {
@@ -266,5 +338,49 @@ if (releaseSource && serverSource) {
     const attestation = workflow.jobs['signed-provenance'].steps.find((step) => step.with?.['subject-path'] === 'signed-attest/Chimera.apk');
     attestation.with['subject-path'] = 'signed-attest/*.apk';
     assert.throws(() => validateClientReleaseWorkflow(workflow), /exact verified APK and manifest/);
+  });
+
+  test('rejects direct untrusted expressions in protected shell scripts', () => {
+    const workflow = parse(releaseSource);
+    workflow.jobs.signing.steps.push({ run: "echo '${{ inputs.reviewed_commit_sha }}'" });
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /through env/);
+  });
+
+  test('rejects direct upstream job outputs in deployment shell scripts', () => {
+    const workflow = parse(serverSource);
+    workflow.jobs.deploy.steps.push({ run: "echo '${{ needs.publication.outputs.image-digest }}'" });
+    assert.throws(() => validateServerReleaseWorkflow(workflow), /through env/);
+  });
+
+  test('rejects direct step outputs in signing shell scripts', () => {
+    const workflow = parse(releaseSource);
+    workflow.jobs.signing.steps.push({ run: "echo '${{ steps.metadata.outputs.tag }}'" });
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /through env/);
+  });
+
+  test('rejects no-op paths that do not compare existing Web bytes', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.signing.steps.find((item) => item.id === 'preflight');
+    step.run = step.run.replace('cmp "$EXISTING_WEB" candidate/web/Chimera-web.tar.gz', 'test -f "$EXISTING_WEB"');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /signing job missing/);
+  });
+
+  test('rejects caller-controlled release classification', () => {
+    const workflow = parse(releaseSource);
+    workflow.on.workflow_dispatch.inputs.client_release_required = { type: 'boolean', required: true };
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /must not be supplied/);
+  });
+
+  test('rejects publication without verified SPDX attestation', () => {
+    const workflow = parse(serverSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('oci-attestations.jsonl'));
+    step.run = step.run.replace('https://spdx.dev/Document/v2.3', 'https://example.invalid/unchecked');
+    assert.throws(() => validateServerReleaseWorkflow(workflow), /server publication missing/);
+  });
+
+  test('rejects audit workflow coupling', () => {
+    const security = parse(securityAuditSource);
+    security.jobs.audit.steps.push({ run: 'echo chimera-audit-maintainability.yml' });
+    assert.throws(() => validateAuditWorkflows(security, parse(maintainabilityAuditSource)), /must not depend/);
   });
 }
