@@ -103,6 +103,27 @@ describe("Chimera auth challenges", () => {
         expect(rows).toHaveLength(3); expect(rows.some((row) => row.id === "recent")).toBe(true); expect(rows.some((row) => row.id === "consumed")).toBe(true);
         service.stop();
     });
+
+    it("bounds rotating limiter identities and removes only safely idle entries", async () => {
+        const rows: any[] = [];
+        let current = new Date("2026-07-19T10:00:00.000Z");
+        const service = createAuthChallengeService({ config, db: fakeDb(rows), now: () => current, issueBucketCapacity: 10, limiterMaxEntries: 4 });
+        for (const [publicKey, clientIp] of [["key-1", "ip-1"], ["key-2", "ip-2"]]) {
+            const challenge = await service.issue({ publicKey, clientIp });
+            await service.consume(challenge.challengeId);
+        }
+        expect(service.getLimiterStats().size).toBe(4);
+        await expect(service.issue({ publicKey: "key-3", clientIp: "ip-3" })).rejects.toMatchObject({ code: "RATE_LIMITED" });
+        expect(rows).toHaveLength(2);
+
+        await service.cleanup();
+        expect(service.getLimiterStats().size).toBe(4);
+        current = new Date(current.getTime() + 6 * 60_000);
+        await service.cleanup();
+        expect(service.getLimiterStats().size).toBe(0);
+        await expect(service.issue({ publicKey: "key-3", clientIp: "ip-3" })).resolves.toBeTruthy();
+        service.stop();
+    });
 });
 
 function fakeDb(rows: any[]) {

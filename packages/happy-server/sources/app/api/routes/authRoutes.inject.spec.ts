@@ -3,13 +3,32 @@ import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod
 import nacl from "tweetnacl";
 import { describe, expect, it, vi } from "vitest";
 import { authRoutes } from "./authRoutes";
-import { createAuthPayload } from "@/app/chimera/authChallenge";
+import { createAuthChallengeService, createAuthPayload } from "@/app/chimera/authChallenge";
 import { createInvitation } from "@/app/chimera/invitations";
 import { isTrustedLoopbackProxy } from "../api";
 
 const config = { relayOrigin: "https://39.98.68.173" as const, adminSessionSecret: new Uint8Array(32).fill(4), invitationPepper: new Uint8Array(32).fill(9) };
 
 describe("account auth HTTP routes", () => {
+    it("stops its challenge service exactly once when Fastify closes", async () => {
+        const app = fastify();
+        const stop = vi.fn();
+        authRoutes(app as any, { config, challengeService: { stop } } as any);
+        await app.close();
+        expect(stop).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not run periodic cleanup after Fastify closes", async () => {
+        vi.useFakeTimers();
+        const findMany = vi.fn().mockResolvedValue([]);
+        const service = createAuthChallengeService({ config, db: { chimeraAuthChallenge: { findMany } } as any, cleanupIntervalMs: 10 });
+        const app = fastify();
+        authRoutes(app as any, { config, challengeService: service });
+        await app.close();
+        await vi.advanceTimersByTimeAsync(30);
+        expect(findMany).not.toHaveBeenCalled();
+        vi.useRealTimers();
+    });
     it("registers a new signing key with an invitation and consumes it once", async () => {
         const { app, tokens, invitationRows, rows, accounts } = testApp(new Date(), undefined, undefined, false);
         const invitation = createInvitation({ pepper: config.invitationPepper });
@@ -53,6 +72,16 @@ describe("account auth HTTP routes", () => {
         const signature = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), pair.secretKey)).toString("base64");
         expect((await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature, invitation: invitation.code } })).statusCode).toBe(401);
         expect(invitationRows[0].usedCount).toBe(0); expect(rows[0].consumedAt).toBeNull(); expect(tokens).toEqual([]); await app.close();
+    });
+
+    it("rolls back challenge consumption when token generation fails", async () => {
+        const { app, rows, tokens } = testApp(new Date(), undefined, undefined, true, false, false, true);
+        const pair = nacl.sign.keyPair(); const publicKey = Buffer.from(pair.publicKey).toString("base64");
+        const challenge = (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })).json();
+        const signature = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), pair.secretKey)).toString("base64");
+        expect((await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature } })).statusCode).toBe(401);
+        expect(rows[0].consumedAt).toBeNull(); expect(tokens).toEqual([]);
+        await app.close();
     });
     it("rolls back invite redemption when the challenge CAS loses", async () => {
         const { app, rows, invitationRows, accounts, tokens } = testApp(new Date(), undefined, undefined, false, false, true);
@@ -178,7 +207,7 @@ describe("account auth HTTP routes", () => {
     });
 });
 
-function testApp(now = new Date(), globalPendingCap?: number, issueBucketCapacity?: number, accountExists = true, createFails = false, casLose = false) {
+function testApp(now = new Date(), globalPendingCap?: number, issueBucketCapacity?: number, accountExists = true, createFails = false, casLose = false, tokenFails = false) {
     const rows: any[] = []; const invitationRows: any[] = []; const accounts: any[] = []; const tokens: string[] = [];
     const account = { id: "account", publicKey: Buffer.alloc(32).toString("hex") };
     const db: any = { chimeraAuthChallenge: {
@@ -191,6 +220,6 @@ function testApp(now = new Date(), globalPendingCap?: number, issueBucketCapacit
         create: async ({ data }: any) => { if (createFails) throw new Error("write failed"); const created = { id: "new-account", ...data }; accounts.push(created); return created; },
     } };
     const app = fastify({ trustProxy: isTrustedLoopbackProxy }); app.setValidatorCompiler(validatorCompiler); app.setSerializerCompiler(serializerCompiler);
-    authRoutes(app as any, { db, config, globalPendingCap, issueBucketCapacity, inTransaction: async (fn) => { const savedChallenges = rows.map((row) => ({ ...row })); const savedInvitations = invitationRows.map((row) => ({ ...row })); const savedAccounts = accounts.map((row) => ({ ...row })); try { return await fn(db); } catch (error) { rows.splice(0, rows.length, ...savedChallenges); invitationRows.splice(0, invitationRows.length, ...savedInvitations); accounts.splice(0, accounts.length, ...savedAccounts); throw error; } }, issueToken: async () => { tokens.push("token"); return "token"; } });
+    authRoutes(app as any, { db, config, globalPendingCap, issueBucketCapacity, inTransaction: async (fn) => { const savedChallenges = rows.map((row) => ({ ...row })); const savedInvitations = invitationRows.map((row) => ({ ...row })); const savedAccounts = accounts.map((row) => ({ ...row })); try { return await fn(db); } catch (error) { rows.splice(0, rows.length, ...savedChallenges); invitationRows.splice(0, invitationRows.length, ...savedInvitations); accounts.splice(0, accounts.length, ...savedAccounts); throw error; } }, issueToken: async () => { if (tokenFails) throw new Error("token failure"); tokens.push("token"); return "token"; } });
     return { app, rows, invitationRows, accounts, tokens };
 }

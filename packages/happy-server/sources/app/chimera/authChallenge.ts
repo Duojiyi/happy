@@ -5,6 +5,8 @@ const MAX_TTL_MS = 2 * 60 * 1000;
 const CONSUMED_RETENTION_MS = 5 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 100;
 const DEFAULT_GLOBAL_PENDING_CAP = 1_000;
+const LIMITER_IDLE_MS = 5 * 60 * 1000;
+const DEFAULT_LIMITER_MAX_ENTRIES = 10_000;
 
 export interface AuthChallengePayload {
     origin: string;
@@ -43,12 +45,14 @@ export function createAuthChallengeService(options: {
     cleanupIntervalMs?: number;
     onCleanupError?: (error: unknown) => void;
     issueBucketCapacity?: number;
+    limiterMaxEntries?: number;
 }) {
     const now = options.now ?? (() => new Date());
     const db = options.db;
     const limits = new Map<string, TokenBucket>();
     const globalPendingCap = options.globalPendingCap ?? DEFAULT_GLOBAL_PENDING_CAP;
     const bucketCapacity = options.issueBucketCapacity ?? 3;
+    const limiterMaxEntries = options.limiterMaxEntries ?? DEFAULT_LIMITER_MAX_ENTRIES;
     const timer = setInterval(() => { void cleanup().catch((error) => options.onCleanupError?.(error)); }, options.cleanupIntervalMs ?? 30_000);
     (timer as unknown as { unref?: () => void }).unref?.();
     let issuanceLock = Promise.resolve();
@@ -67,9 +71,12 @@ export function createAuthChallengeService(options: {
     }
 
     function allow(identity: string, current: number) {
-        const bucket = limits.get(identity) ?? { tokens: bucketCapacity, updatedAt: current };
+        const existing = limits.get(identity);
+        if (!existing && limits.size >= limiterMaxEntries) return false;
+        const bucket = existing ?? { tokens: bucketCapacity, updatedAt: current, lastSeen: current };
         bucket.tokens = Math.min(bucketCapacity, bucket.tokens + ((current - bucket.updatedAt) / 60_000) * bucketCapacity);
         bucket.updatedAt = current;
+        bucket.lastSeen = current;
         if (bucket.tokens < 1) { limits.set(identity, bucket); return false; }
         bucket.tokens--;
         limits.set(identity, bucket);
@@ -78,6 +85,9 @@ export function createAuthChallengeService(options: {
 
     async function cleanup() {
         const current = now();
+        for (const [identity, bucket] of limits) {
+            if (current.getTime() - bucket.lastSeen > LIMITER_IDLE_MS) limits.delete(identity);
+        }
         // Prisma deleteMany has no limit; select a bounded set first so cleanup is never unbounded.
         if (typeof db.chimeraAuthChallenge.findMany !== "function") return;
         const stale = await db.chimeraAuthChallenge.findMany({
@@ -141,7 +151,8 @@ export function createAuthChallengeService(options: {
         peek,
         stop() { clearInterval(timer); },
         cleanup,
+        getLimiterStats() { return { size: limits.size }; },
     };
 }
 
-interface TokenBucket { tokens: number; updatedAt: number; }
+interface TokenBucket { tokens: number; updatedAt: number; lastSeen: number; }
