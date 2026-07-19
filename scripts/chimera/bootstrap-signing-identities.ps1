@@ -55,6 +55,18 @@ function Assert-TemporaryTestPaths([string[]] $Paths, [string] $Message) {
     }
 }
 
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$productPath = if ($ProductPath) { $ProductPath } else { Join-Path $repoRoot 'brand\chimera\product.json' }
+$lockSignalEnabled = [bool]($env:CHIMERA_TEST_LOCK_READY_PATH -or $env:CHIMERA_TEST_LOCK_RELEASE_PATH)
+$faultInjectionEnabled = $env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -eq '1' -or $env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME -eq '1'
+if ($lockSignalEnabled) {
+    if (-not $env:CHIMERA_TEST_LOCK_READY_PATH -or -not $env:CHIMERA_TEST_LOCK_RELEASE_PATH) { throw 'Test lock signaling requires ready and release paths.' }
+    Assert-TemporaryTestPaths @($BackupRoot, $ProductPath, $env:CHIMERA_TEST_LOCK_READY_PATH, $env:CHIMERA_TEST_LOCK_RELEASE_PATH) 'Test lock signaling is only permitted for temporary paths.'
+}
+if ($faultInjectionEnabled) {
+    Assert-TemporaryTestPaths @($BackupRoot, $productPath) 'Test fault injection is only permitted for temporary paths.'
+}
+
 New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
 Protect-PrivatePath $BackupRoot $true
 $lockPath = Join-Path $BackupRoot '.chimera-signing-bootstrap.lock'
@@ -67,17 +79,6 @@ try {
         throw 'Signing identity bootstrap is already in progress.'
     }
     Protect-PrivatePath $lockPath
-    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-    $productPath = if ($ProductPath) { $ProductPath } else { Join-Path $repoRoot 'brand\chimera\product.json' }
-    $lockSignalEnabled = [bool]($env:CHIMERA_TEST_LOCK_READY_PATH -or $env:CHIMERA_TEST_LOCK_RELEASE_PATH)
-    $faultInjectionEnabled = $env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -eq '1' -or $env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME -eq '1'
-    if ($lockSignalEnabled) {
-        if (-not $env:CHIMERA_TEST_LOCK_READY_PATH -or -not $env:CHIMERA_TEST_LOCK_RELEASE_PATH) { throw 'Test lock signaling requires ready and release paths.' }
-        Assert-TemporaryTestPaths @($BackupRoot, $ProductPath, $env:CHIMERA_TEST_LOCK_READY_PATH, $env:CHIMERA_TEST_LOCK_RELEASE_PATH) 'Test lock signaling is only permitted for temporary paths.'
-    }
-    if ($faultInjectionEnabled) {
-        Assert-TemporaryTestPaths @($BackupRoot, $productPath) 'Test fault injection is only permitted for temporary paths.'
-    }
     if ($lockSignalEnabled) {
         $readyStream = [System.IO.File]::Open($env:CHIMERA_TEST_LOCK_READY_PATH, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         $readyStream.Dispose()

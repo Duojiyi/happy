@@ -135,8 +135,23 @@ try {
     Remove-Item Env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -ErrorAction SilentlyContinue
     Assert-True $escapedRejected 'normalized temp parent traversal is rejected for fault injection'
     Assert-True ((Get-Content -LiteralPath $escapedProductPath -Raw) -ceq $escapedProductBefore) 'rejected fault hook leaves product byte-for-byte unchanged'
-    $escapedArtifacts = @(Get-ChildItem -LiteralPath $escapedBackupRoot -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.pending$|transaction|private-signing-material|\.jks$|\.pem$|\.zip$' })
-    Assert-True ($escapedArtifacts.Count -eq 0) 'rejected fault hook persists no signing identity artifacts'
+    Assert-True (-not (Test-Path -LiteralPath $escapedBackupRoot)) 'rejected fault hook does not create a missing backup root'
+
+    $existingEscapedBackupRoot = Join-Path $escapedWorkspace 'existing-backups'
+    New-Item -ItemType Directory -Path $existingEscapedBackupRoot | Out-Null
+    $existingMarker = Join-Path $existingEscapedBackupRoot 'marker.bin'
+    [System.IO.File]::WriteAllBytes($existingMarker, [byte[]](0, 1, 2, 255))
+    $existingAclBefore = (Get-Acl -LiteralPath $existingEscapedBackupRoot).Sddl
+    $existingBytesBefore = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($existingMarker))
+    $env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME = '1'
+    $existingEscapedRejected = $false
+    try { & $bootstrap -BackupRoot $existingEscapedBackupRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $escapedProductPath @toolArgs | Out-Null }
+    catch { $existingEscapedRejected = $_.Exception.Message -match 'only permitted for temporary paths' }
+    Remove-Item Env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME -ErrorAction SilentlyContinue
+    Assert-True $existingEscapedRejected 'normalized traversal is rejected for a pre-existing backup root'
+    Assert-True ((Get-Acl -LiteralPath $existingEscapedBackupRoot).Sddl -ceq $existingAclBefore) 'rejected fault hook leaves pre-existing backup ACL unchanged'
+    Assert-True ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($existingMarker)) -ceq $existingBytesBefore) 'rejected fault hook leaves pre-existing backup content unchanged'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $existingEscapedBackupRoot '.chimera-signing-bootstrap.lock'))) 'rejected fault hook creates no lock in pre-existing backup root'
 
     $pendingFaultRoot = Join-Path $workspace 'pending-fault-backups'
     $pendingFaultProductPath = Join-Path $workspace 'pending-fault-product.json'
