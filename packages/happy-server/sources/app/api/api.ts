@@ -37,6 +37,10 @@ export function isTrustedLoopbackProxy(address: string): boolean {
     return address === '127.0.0.1' || address === '::1';
 }
 
+export function resolveApiHost(opts: StartApiOptions): string {
+    return opts.host ?? '127.0.0.1';
+}
+
 export async function buildApi(opts: StartApiOptions = {}) {
 
     // Configure
@@ -183,7 +187,7 @@ export async function startApi(opts: StartApiOptions = {}) {
 
     // Start HTTP
     const port = opts.port ?? (process.env.PORT ? parseInt(process.env.PORT, 10) : 3005);
-    const host = opts.host ?? '0.0.0.0';
+    const host = resolveApiHost(opts);
     await app.listen({ port, host });
     onShutdown('api', async () => {
         await app.close();

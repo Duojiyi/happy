@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { buildApi, isTrustedLoopbackProxy } from "./api";
+import { buildApi, isTrustedLoopbackProxy, resolveApiHost } from "./api";
 
 const chimeraEnv = {
     CHIMERA_ADMIN_PASSWORD_HASH: "$argon2id$v=19$m=65536,t=3,p=1$c29tZXNhbHQ$MDEyMzQ1Njc4OWFiY2RlZg",
@@ -25,6 +25,13 @@ describe("trusted proxy boundary", () => {
 
     it.each(["10.0.0.1", "::ffff:127.0.0.1", "203.0.113.10"])("does not trust spoofable proxy address %s", (address) => {
         expect(isTrustedLoopbackProxy(address)).toBe(false);
+    });
+});
+
+describe("listener binding", () => {
+    it("fails closed to loopback while allowing explicit local development overrides", () => {
+        expect(resolveApiHost({})).toBe("127.0.0.1");
+        expect(resolveApiHost({ host: "0.0.0.0" })).toBe("0.0.0.0");
     });
 });
 
