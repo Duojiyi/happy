@@ -51,6 +51,7 @@
             "@prisma/engines",
             "@shopify/react-native-skia",
             "@tailwindcss/oxide",
+            "argon2",
             "better-sqlite3",
             "electron",
             "esbuild",
