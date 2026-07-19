@@ -33,13 +33,13 @@ function run(args, env) {
     child.once('error', reject); child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`standalone ${args[0]} exited ${code}`)));
   });
 }
-async function stop(child) {
+export async function stop(child, graceMs = 5000) {
   if (child.exitCode !== null) return;
   const exited = new Promise((resolve) => child.once('exit', resolve));
   child.kill('SIGTERM');
-  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))]);
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, graceMs))]);
   if (child.exitCode !== null) return;
-  child.kill();
+  child.kill('SIGKILL');
   await Promise.race([exited, new Promise((_, reject) => setTimeout(() => reject(new Error('standalone did not exit after forced kill')), 5000))]);
 }
 
@@ -64,6 +64,15 @@ test('built standalone serves the Chimera public and control surfaces on loopbac
     for (const path of ['/v1/voice/conversations', '/v1/push-tokens']) assert.equal((await fetch(`${base}${path}`)).status, 404);
     await assert.rejects(fetch(`http://127.0.0.2:${port}/v1/chimera/config`));
   } finally { if (child) await stop(child); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('stop uses SIGKILL for the forced termination and waits for exit', async () => {
+  const signals = [];
+  let exitHandler;
+  const child = { exitCode: null, once(event, handler) { if (event === 'exit') exitHandler = handler; }, kill(signal) { signals.push(signal); if (signal === 'SIGKILL') { child.exitCode = 137; exitHandler(); } } };
+  await stop(child, 0);
+  assert.deepEqual(signals, ['SIGTERM', 'SIGKILL']);
+  assert.equal(child.exitCode, 137);
 });
 
 test('standalone environment drops inherited database and S3 settings', () => {

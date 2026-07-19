@@ -94,9 +94,6 @@ function attachmentPolicyFindings(sourceText) {
   visit(sourceFile);
   const findings = [];
   if (calls.has('presigned')) findings.push('attachment-presigned-post');
-  const isConstantFalse = (expression) => (expression.kind === ts.SyntaxKind.FalseKeyword)
-    || (ts.isNumericLiteral(expression) && expression.text === '0')
-    || (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken && isConstantFalse(expression.left));
   const callName = (node) => {
     if (ts.isIdentifier(node.expression)) return node.expression.text;
     if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)) return `${node.expression.expression.text}.${node.expression.name.text}`;
