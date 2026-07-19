@@ -113,6 +113,7 @@ model ChimeraAttachmentReservation {
     bytes     BigInt
     objectKey String
     expiresAt DateTime
+    claimedAt DateTime?
     createdAt DateTime @default(now())
     account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 

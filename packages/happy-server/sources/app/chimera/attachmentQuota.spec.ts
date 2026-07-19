@@ -7,7 +7,7 @@ import { putLocalFileAtomic } from "@/storage/files";
 
 function database() {
     const account = { id: "account", disabledAt: null as Date | null, attachmentQuotaBytes: 1_000n, attachmentUsedBytes: 100n, attachmentReservedBytes: 0n };
-    const reservations: Array<{ id: string; accountId: string; bytes: bigint; objectKey: string; expiresAt: Date; createdAt: Date }> = [];
+    const reservations: Array<{ id: string; accountId: string; bytes: bigint; objectKey: string; expiresAt: Date; createdAt: Date; claimedAt?: Date | null }> = [];
     let sequence = 0;
     const db: any = {
         account: {
@@ -26,6 +26,7 @@ function database() {
             create: async ({ data }: any) => { const row = { id: `r${++sequence}`, createdAt: new Date(), ...data }; reservations.push(row); return row; },
             findUnique: async ({ where }: any) => reservations.find((row) => row.id === where.id) ?? null,
             findMany: async ({ where, take }: any) => reservations.filter((row) => row.expiresAt < where.expiresAt.lt).slice(0, take),
+            updateMany: async ({ where, data }: any) => { const row = reservations.find((row) => row.id === where.id && row.accountId === where.accountId && row.objectKey === where.objectKey && row.claimedAt == null && row.expiresAt > where.expiresAt.gt); if (!row) return { count: 0 }; Object.assign(row, data); return { count: 1 }; },
             deleteMany: async ({ where }: any) => { const index = reservations.findIndex((row) => row.id === where.id && (!where.accountId || row.accountId === where.accountId)); if (index < 0) return { count: 0 }; reservations.splice(index, 1); return { count: 1 }; },
             aggregate: async ({ where }: any) => ({ _sum: { bytes: reservations.filter((row) => row.expiresAt > where.expiresAt.gt).reduce((total, row) => total + row.bytes, 0n) } }),
         },
@@ -99,6 +100,17 @@ describe("Chimera attachment quota", () => {
         expect(state.account.attachmentReservedBytes).toBe(0n);
         expect(state.reservations).toHaveLength(0);
     });
+
+    it("claims a reservation only once under concurrent callers", async () => {
+        const state = database();
+        const service = createAttachmentQuotaService({ db: state.db, runTransaction: state.runTransaction, inspectDisk: healthyDisk });
+        const reservation = await service.reserve("account", 400, "a.enc");
+        const claims = await Promise.allSettled([
+            service.claim(reservation.id, "account", "a.enc", 100),
+            service.claim(reservation.id, "account", "a.enc", 100),
+        ]);
+        expect(claims.filter((claim) => claim.status === "fulfilled")).toHaveLength(1);
+    });
 });
 
 describe("atomic local attachment writes", () => {
@@ -129,10 +141,32 @@ describe("atomic local attachment writes", () => {
         const updates: any[] = [];
         const db: any = {
             session: { findMany: async () => [{ id: "s1", accountId: "account" }] },
+            chimeraAttachmentReservation: { groupBy: async () => [] },
             account: { findMany: async () => [{ id: "account" }], update: async (input: any) => { updates.push(input); } },
         };
         await reconcileAttachmentStorage(root, { db, cleanupExpired: async () => 0 });
-        expect(updates).toEqual([{ where: { id: "account" }, data: { attachmentUsedBytes: 17n } }]);
+        expect(updates).toEqual([
+            { where: { id: "account" }, data: { attachmentUsedBytes: 17n } },
+            { where: { id: "account" }, data: { attachmentReservedBytes: 0n } },
+        ]);
         expect(await readdir(directory)).toEqual(["a.enc"]);
+    });
+
+    it("drains every expired cleanup batch and recomputes reserved bytes", async () => {
+        const root = await mkdtemp(join(tmpdir(), "chimera-attachment-")); roots.push(root);
+        const expired = Array.from({ length: 101 }, (_, index) => ({ id: `e${index}` }));
+        const updates: any[] = [];
+        const db: any = {
+            session: { findMany: async () => [] },
+            chimeraAttachmentReservation: { groupBy: async () => [{ accountId: "a1", _sum: { bytes: 9n } }] },
+            account: { findMany: async () => [{ id: "a1" }, { id: "a2" }], update: async (input: any) => { updates.push(input); } },
+        };
+        await reconcileAttachmentStorage(root, { db, cleanupExpired: async () => expired.splice(0, 100).length });
+        expect(updates).toEqual([
+            { where: { id: "a1" }, data: { attachmentUsedBytes: 0n } },
+            { where: { id: "a2" }, data: { attachmentUsedBytes: 0n } },
+            { where: { id: "a1" }, data: { attachmentReservedBytes: 9n } },
+            { where: { id: "a2" }, data: { attachmentReservedBytes: 0n } },
+        ]);
     });
 });

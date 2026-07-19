@@ -2,6 +2,7 @@ import { readdir, stat, statfs, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+import { inventoryAllSessionAttachments } from "@/storage/files";
 
 const DEFAULT_RESERVATION_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_MIN_FREE_BYTES = 15n * 1024n * 1024n * 1024n;
@@ -77,6 +78,10 @@ export function createAttachmentQuotaService(dependencies: {
                 const reservation = await tx.chimeraAttachmentReservation.findUnique({ where: { id: reservationId } });
                 const account = await tx.account.findUnique({ where: { id: accountId }, select: { disabledAt: true } });
                 if (!reservation || reservation.accountId !== accountId || reservation.objectKey !== objectKey || reservation.expiresAt <= now() || !account || account.disabledAt || BigInt(actualBytes) > reservation.bytes) throw new AttachmentQuotaError();
+                const claimed = await tx.chimeraAttachmentReservation.updateMany({
+                    where: { id: reservationId, accountId, objectKey, claimedAt: null, expiresAt: { gt: now() } }, data: { claimedAt: now() },
+                });
+                if (claimed.count !== 1) throw new AttachmentQuotaError();
                 return { id: reservation.id, accountId, bytes: BigInt(actualBytes) };
             });
         },
@@ -84,7 +89,7 @@ export function createAttachmentQuotaService(dependencies: {
             return runTransaction(async (tx) => {
                 const reservation = await tx.chimeraAttachmentReservation.findUnique({ where: { id: claim.id } });
                 if (!reservation || reservation.accountId !== claim.accountId) throw new AttachmentQuotaError();
-                const deleted = await tx.chimeraAttachmentReservation.deleteMany({ where: { id: claim.id, accountId: claim.accountId } });
+                const deleted = await tx.chimeraAttachmentReservation.deleteMany({ where: { id: claim.id, accountId: claim.accountId, claimedAt: { not: null } } });
                 if (deleted.count !== 1) throw new AttachmentQuotaError();
                 await tx.account.update({ where: { id: claim.accountId }, data: {
                     attachmentReservedBytes: { decrement: reservation.bytes }, attachmentUsedBytes: { increment: claim.bytes },
@@ -95,7 +100,7 @@ export function createAttachmentQuotaService(dependencies: {
             await runTransaction(async (tx) => {
                 const reservation = await tx.chimeraAttachmentReservation.findUnique({ where: { id: claim.id } });
                 if (!reservation || reservation.accountId !== claim.accountId) return;
-                const deleted = await tx.chimeraAttachmentReservation.deleteMany({ where: { id: claim.id, accountId: claim.accountId } });
+                const deleted = await tx.chimeraAttachmentReservation.deleteMany({ where: { id: claim.id, accountId: claim.accountId, claimedAt: { not: null } } });
                 if (deleted.count) await tx.account.update({ where: { id: claim.accountId }, data: { attachmentReservedBytes: { decrement: reservation.bytes } } });
             });
         },
@@ -107,7 +112,8 @@ export type AttachmentQuotaService = ReturnType<typeof createAttachmentQuotaServ
 export async function reconcileAttachmentStorage(root: string, dependencies: { db?: any; cleanupExpired?: () => Promise<number>; now?: () => Date } = {}) {
     const database = dependencies.db ?? db;
     const now = dependencies.now ?? (() => new Date());
-    await (dependencies.cleanupExpired ?? createAttachmentQuotaService({ db: database }).cleanupExpired)();
+    const cleanupExpired = dependencies.cleanupExpired ?? createAttachmentQuotaService({ db: database }).cleanupExpired;
+    while (await cleanupExpired() > 0) { /* bounded cleanup continues until exhausted */ }
 
     const removeStalePartials = async (directory: string): Promise<void> => {
         let entries;
@@ -137,6 +143,28 @@ export async function reconcileAttachmentStorage(root: string, dependencies: { d
             total += BigInt((await stat(join(directory, entry.name))).size);
         }
         totals.set(session.accountId, total);
+    }
+    const accounts = await database.account.findMany({ select: { id: true } });
+    for (const account of accounts) {
+        await database.account.update({ where: { id: account.id }, data: { attachmentUsedBytes: totals.get(account.id) ?? 0n } });
+    }
+    const reserved = await database.chimeraAttachmentReservation.groupBy({ by: ["accountId"], _sum: { bytes: true } });
+    const reservedByAccount = new Map<string, bigint>(reserved.map((row: any) => [row.accountId, row._sum.bytes ?? 0n]));
+    for (const account of accounts) {
+        await database.account.update({ where: { id: account.id }, data: { attachmentReservedBytes: reservedByAccount.get(account.id) ?? 0n } });
+    }
+}
+
+export async function reconcileS3AttachmentStorage(dependencies: { db?: any; inventoryAll?: () => Promise<Array<{ sessionId: string; size: bigint }>> } = {}) {
+    const database = dependencies.db ?? db;
+    const objects = await (dependencies.inventoryAll ?? inventoryAllSessionAttachments)();
+    const sessions = await database.session.findMany({ select: { id: true, accountId: true } });
+    const owners = new Map<string, string>(sessions.map((session: any): [string, string] => [session.id, session.accountId]));
+    const totals = new Map<string, bigint>();
+    for (const object of objects) {
+        const accountId = owners.get(object.sessionId);
+        if (!accountId || object.size < 0n) throw new Error("Attachment storage reconciliation failed");
+        totals.set(accountId, (totals.get(accountId) ?? 0n) + object.size);
     }
     const accounts = await database.account.findMany({ select: { id: true } });
     for (const account of accounts) {

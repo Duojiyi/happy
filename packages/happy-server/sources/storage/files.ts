@@ -41,6 +41,8 @@ export async function loadFiles() {
         await reconcileAttachmentStorage(localFilesDir);
     } else {
         await s3client.bucketExists(s3bucket);
+        const { reconcileS3AttachmentStorage } = await import("@/app/chimera/attachmentQuota");
+        await reconcileS3AttachmentStorage();
     }
     const { attachmentCleanupService, startAttachmentCleanupRetry, stopAttachmentCleanupRetry } = await import("@/app/chimera/attachmentCleanup");
     await attachmentCleanupService.drainPending();
@@ -192,12 +194,25 @@ export function createSessionAttachmentStorage(dependencies: { localRoot?: strin
         if (existing.length) await removeS3Objects(client, bucket, existing.map((object) => object.name));
         if ((await listS3Objects(client, bucket, prefix)).length) throw new Error("Attachment deletion incomplete");
     };
-    return { inventorySessionAttachments, deleteSessionAttachments };
+    const inventoryAllSessionAttachments = async (): Promise<Array<SessionAttachmentObject & { sessionId: string }>> => {
+        if (local) throw new Error("Attachment storage listing is not configured");
+        if (!client || !bucket) throw new Error("Attachment storage is not configured");
+        const objects = await listS3Objects(client, bucket, "sessions/");
+        const result: Array<SessionAttachmentObject & { sessionId: string }> = [];
+        for (const object of objects) {
+            const match = /^sessions\/([A-Za-z0-9_-]+)\/attachments\/([^/]+\.enc)$/.exec(object.name);
+            if (object.name.endsWith(".enc") && !match) throw new Error("Attachment storage listing failed");
+            if (match) result.push({ ...object, sessionId: match[1] });
+        }
+        return result;
+    };
+    return { inventorySessionAttachments, deleteSessionAttachments, inventoryAllSessionAttachments };
 }
 
 const sessionAttachmentStorage = createSessionAttachmentStorage();
 export const inventorySessionAttachments = sessionAttachmentStorage.inventorySessionAttachments;
 export const deleteSessionAttachments = sessionAttachmentStorage.deleteSessionAttachments;
+export const inventoryAllSessionAttachments = sessionAttachmentStorage.inventoryAllSessionAttachments;
 
 export type ImageRef = {
     width: number;
