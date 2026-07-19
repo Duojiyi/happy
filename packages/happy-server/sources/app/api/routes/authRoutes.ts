@@ -61,11 +61,12 @@ export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any;
             body: z.object({
                 challengeId: z.string().min(1).max(256),
                 signature: z.string().min(1).max(256),
-                invitation: z.string().min(1).max(256).optional(),
+                invitation: z.string().max(256).optional(),
             }).strict()
         }
     }, async (request, reply) => {
-        const result = await transaction(async (tx) => {
+        let result: any;
+        try { result = await transaction(async (tx) => {
             const challenge = await challengeService.peek(request.body.challengeId, tx);
             if (!challenge) return null;
             if (!await verifyAuthChallengeSignature({ ...challenge, signature: request.body.signature })) return null;
@@ -84,7 +85,7 @@ export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any;
             if (redeemed !== 1) return null;
             if (!await challengeService.consume(request.body.challengeId, tx)) throw new Error("challenge race");
             return tx.account.create({ data: { publicKey } });
-        });
+        }); } catch { return reply.code(401).send({ error: 'Unauthorized' }); }
         if (!result) return reply.code(401).send({ error: 'Unauthorized' });
         return reply.send({ token: await issueToken(result.id) });
     });

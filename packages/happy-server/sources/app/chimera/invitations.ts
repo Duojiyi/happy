@@ -25,3 +25,25 @@ export function createInvitation(input: InvitationInput & { pepper: Uint8Array; 
     const code = raw.match(/.{1,8}/g)!.join(".");
     return { code, data: { ...data, codeDigest: digestInvitation(code, pepper) } };
 }
+
+type InvitationDb = { chimeraInvitation: { create(args: any): Promise<any>; findMany(args: any): Promise<any[]>; update(args: any): Promise<any> } };
+
+export function createInvitationService({ pepper, db, now = () => new Date() }: { pepper: Uint8Array; db: InvitationDb; now?: () => Date }) {
+    return {
+        async create(input: InvitationInput = {}) {
+            const generated = createInvitation({ ...input, pepper, now: now() });
+            const row = await db.chimeraInvitation.create({ data: generated.data });
+            const { codeDigest: _digest, ...metadata } = row;
+            return { code: generated.code, invitation: metadata };
+        },
+        async list() {
+            const rows = await db.chimeraInvitation.findMany({ orderBy: { createdAt: "desc" } });
+            return rows.map(({ codeDigest: _digest, ...metadata }) => metadata);
+        },
+        async revoke(id: string) {
+            const row = await db.chimeraInvitation.update({ where: { id }, data: { revokedAt: now() } });
+            const { codeDigest: _digest, ...metadata } = row;
+            return metadata;
+        },
+    };
+}
