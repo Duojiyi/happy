@@ -9,6 +9,10 @@ import { disconnectAccountSockets } from "@/app/api/socket";
 const COOKIE_NAME = "__Secure-chimera_admin";
 const ORIGIN = "https://39.98.68.173";
 const UNAUTHORIZED = { error: "Unauthorized" };
+const accountParams = { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", minLength: 43, maxLength: 43, pattern: "^[A-Za-z0-9_-]+$" } } };
+const noQuery = { type: "object", additionalProperties: false, properties: {} };
+const noBody = { type: "object", additionalProperties: false, maxProperties: 0, properties: {} };
+const quotaBody = { type: "object", additionalProperties: false, required: ["attachmentQuotaBytes"], properties: { attachmentQuotaBytes: { type: "integer", minimum: MIN_ATTACHMENT_QUOTA_BYTES, maximum: MAX_ATTACHMENT_QUOTA_BYTES } } };
 
 type LoginLimits = { acquire(ip: string): boolean; release(): void };
 export function createLoginLimits(now = () => Date.now(), maxConcurrent = 10, maxIdentities = 10_000): LoginLimits {
@@ -77,19 +81,19 @@ export function adminRoutes(app: any, dependencies: { passwordHash?: string; ses
             : sessionId && await sessions.authenticate(sessionId);
         return allowed ? true : (unauthorised(reply), false);
     };
-    app.get("/chimera-control/api/accounts", async (request: any, reply: any) => {
+    app.get("/chimera-control/api/accounts", { schema: { querystring: noQuery } }, async (request: any, reply: any) => {
         if (!await accountSession(request, reply)) return; return reply.send(await accounts.list());
     });
-    app.post("/chimera-control/api/accounts/:id/disable", async (request: any, reply: any) => {
+    app.post("/chimera-control/api/accounts/:id/disable", { schema: { params: accountParams, body: noBody } }, async (request: any, reply: any) => {
         if (!await accountSession(request, reply, true)) return; try { return reply.send(await accounts.disable(request.params.id)); } catch { return reply.code(404).send({ error: "Account not found" }); }
     });
-    app.post("/chimera-control/api/accounts/:id/restore", async (request: any, reply: any) => {
+    app.post("/chimera-control/api/accounts/:id/restore", { schema: { params: accountParams, body: noBody } }, async (request: any, reply: any) => {
         if (!await accountSession(request, reply, true)) return; try { return reply.send(await accounts.restore(request.params.id)); } catch { return reply.code(404).send({ error: "Account not found" }); }
     });
-    app.post("/chimera-control/api/accounts/:id/revoke-tokens", async (request: any, reply: any) => {
+    app.post("/chimera-control/api/accounts/:id/revoke-tokens", { schema: { params: accountParams, body: noBody } }, async (request: any, reply: any) => {
         if (!await accountSession(request, reply, true)) return; try { return reply.send(await accounts.revokeTokens(request.params.id)); } catch { return reply.code(404).send({ error: "Account not found" }); }
     });
-    app.put("/chimera-control/api/accounts/:id/quota", async (request: any, reply: any) => {
+    app.put("/chimera-control/api/accounts/:id/quota", { schema: { params: accountParams, body: quotaBody } }, async (request: any, reply: any) => {
         if (!await accountSession(request, reply, true)) return;
         const bytes = request.body?.attachmentQuotaBytes;
         if (!Number.isSafeInteger(bytes) || bytes < MIN_ATTACHMENT_QUOTA_BYTES || bytes > MAX_ATTACHMENT_QUOTA_BYTES) return reply.code(400).send({ error: "Invalid attachment quota" });
