@@ -58,12 +58,20 @@ export function setServerUrl(url: string | null): void {
 }
 
 export function getLogServerUrl(): string | null {
+    if (!isDevelopment()) {
+        return null;
+    }
+
     return serverConfigStorage.getString(LOG_SERVER_KEY) ||
            process.env.EXPO_PUBLIC_LOG_SERVER_URL ||
            null;
 }
 
 export function setLogServerUrl(url: string | null): void {
+    if (!isDevelopment()) {
+        throw new Error('Remote log URLs are only available in development builds');
+    }
+
     if (url && url.trim()) {
         serverConfigStorage.set(LOG_SERVER_KEY, url.trim());
     } else {

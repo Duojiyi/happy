@@ -21,16 +21,13 @@
 
 import { log } from '@/log';
 import { MAX_APP_LOG_ENTRIES } from '@/log';
-import { getLogServerUrl } from '@/sync/serverConfig';
 import { loadLocalSettings } from '@/sync/persistence';
 import { loadAppConfig } from '@/sync/appConfig';
-import { Platform } from 'react-native';
 import { serializeForLogs } from '@/utils/truncateForLogs';
 
 let logBuffer: any[] = []
 const MAX_BUFFER_SIZE = MAX_APP_LOG_ENTRIES
 let isConsolePatched = false
-let remoteLogServerUrl: string | null = null
 let consoleOutputEnabled = false
 let originalConsole: {
   log: typeof console.log,
@@ -51,8 +48,6 @@ export function initConsoleLogging() {
   if (isConsolePatched) {
     return
   }
-
-  remoteLogServerUrl = getLogServerUrl();
 
   // Determine initial state: user setting > build variant default > off
   try {
@@ -79,24 +74,6 @@ export function initConsoleLogging() {
       if (typeof a !== 'object') return serializeForLogs(a)
       try { return serializeForLogs(a) } catch { return String(a) }
     }).join(' ')
-  }
-
-  function sendLog(level: string, formatted: string) {
-    if (!remoteLogServerUrl) {
-      return
-    }
-
-    void fetch(remoteLogServerUrl + '/logs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level,
-        message: formatted,
-        source: 'mobile',
-        platform: Platform.OS,
-      })
-    }).catch(() => {})
   }
 
   // Patch console methods
@@ -126,7 +103,6 @@ export function initConsoleLogging() {
         logBuffer.shift()
       }
 
-      sendLog(level, formatted)
     }
   })
 

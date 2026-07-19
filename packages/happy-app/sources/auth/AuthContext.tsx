@@ -12,6 +12,11 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+export async function clearAuthPersistence(): Promise<void> {
+    clearPersistence();
+    await TokenStorage.removeCredentials();
+}
+
 export function AuthProvider({ children, initialCredentials }: { children: ReactNode; initialCredentials: AuthCredentials | null }) {
     const [isAuthenticated, setIsAuthenticated] = useState(!!initialCredentials);
     const [credentials, setCredentials] = useState<AuthCredentials | null>(initialCredentials);
@@ -34,8 +39,7 @@ export function AuthProvider({ children, initialCredentials }: { children: React
     };
 
     const logout = async () => {
-        clearPersistence();
-        await TokenStorage.removeCredentials();
+        await clearAuthPersistence();
         
         // Update React state to ensure UI consistency
         setCredentials(null);

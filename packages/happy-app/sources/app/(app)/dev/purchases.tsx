@@ -212,8 +212,8 @@ export default function PurchasesDevScreen() {
                 {/* Debug Info */}
                 <ItemGroup title="Debug Info">
                     <Item
-                        title="RevenueCat Status"
-                        detail={sync.revenueCatInitialized ? "Initialized" : "Not Initialized"}
+                        title="Purchase Status"
+                        detail="Disabled"
                         showChevron={false}
                     />
                     <Item
