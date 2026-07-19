@@ -69,10 +69,13 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
 
     $server = $Sources.server
     foreach ($pattern in @(
-        '\^deploy-server\\ ', '\^rollback-server\\ ', 'tarfile|tar --list', 'maintenance', 'pglite', 'snapshot',
-        'data_bytes \* 12 / 10', '15 \* 1024|16106127360', 'health', 'rollback|restore', 'sync -f|fsync'
+        '\^deploy-server\\ ', '\^rollback-server\\ ', 'server-image\.oci', 'server-release-input\.json', 'server-archive-attestation\.jsonl',
+        'gh attestation verify', '--bundle "\$incoming/server-archive-attestation\.jsonl"', 'skopeo copy --preserve-digests',
+        'maintenance', 'pglite', 'snapshot', 'data_bytes \* 12 / 10', '15 \* 1024|16106127360', 'health',
+        'rollback_failed_deploy', 'rollback_failed_rollback', '--network host', 'sync -f|fsync'
     )) { Assert-Match $server $pattern "Server deployment missing: $pattern" }
-    Assert-NoMatch $server 'eval|bash\s+-c|sh\s+-c' 'Server deployment permits shell fragments'
+    Assert-NoMatch $server 'eval|bash\s+-c|sh\s+-c|docker build|Dockerfile\.server|deploy/chimera/docker-compose' 'Server deployment executes candidate source or shell fragments'
+    Assert-Match $android 'if ! ln "\$release/\$filename" "\$downloads/\$filename"[\s\S]*cmp --silent' 'Android APK target must be immutable or byte-identical'
 
     Assert-Match $Sources.caddy 'tls /etc/chimera/config/tls/ip-cert\.pem /etc/chimera/config/tls/ip-key\.pem' 'Caddy must require a pre-provisioned public IP certificate'
     foreach ($pattern in @('-checkip 39\.98\.68\.173', 'verify_args=\(-purpose sslserver -CAfile', 'openssl verify "\$\{verify_args\[@\]\}"', '-checkend 172800', 'Certificate/private key mismatch')) {

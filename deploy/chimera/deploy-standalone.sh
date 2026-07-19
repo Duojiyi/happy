@@ -57,8 +57,11 @@ done
 [[ "$healthy" -eq 1 ]] || exit 1
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 10 https://39.98.68.173/health >/dev/null
 printf 'chimera-relay:%s\n' "$id" > "$ROOT/state/current-image.next"
+docker image inspect --format '{{.Id}}' "chimera-relay:$id" > "$ROOT/state/current-digest.next"
 sync -f "$ROOT/state/current-image.next"
+sync -f "$ROOT/state/current-digest.next"
 mv -f -- "$ROOT/state/current-image.next" "$ROOT/state/current-image"
+mv -f -- "$ROOT/state/current-digest.next" "$ROOT/state/current-digest"
 sync -f "$ROOT/state"
 rm -f -- "$frozen"
 trap - EXIT

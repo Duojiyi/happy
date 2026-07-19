@@ -343,7 +343,7 @@ jobs:
 
   deploy:
     name: Deploy attested server digest
-    needs: [classify, publication]
+    needs: [classify, build, publication]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: server-release
@@ -360,6 +360,12 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
+
+      - name: Download exact attested OCI deployment inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: deploy-input
 
       - name: Reverify OCI attestation and independent audit checks online
         env:
@@ -380,6 +386,36 @@ jobs:
           [[ "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_DIFF_SHA256" =~ ^[0-9a-f]{64}$ ]]
           IMAGE_REF="oci://ghcr.io/duojiyi/chimera-happy-server@$IMAGE_DIGEST"
+          test "$(find deploy-input -type f | wc -l)" -eq 3
+          test -f deploy-input/server-image.tar
+          test -f deploy-input/server-release-input.json
+          IMAGE_ARCHIVE_SHA=$(sha256sum deploy-input/server-image.tar | cut -d ' ' -f 1)
+          INDEX_DIGEST=$(tar -xOf deploy-input/server-image.tar index.json | jq -er 'if (.manifests | length) == 1 then .manifests[0].digest else error("exactly one OCI manifest required") end')
+          test "$INDEX_DIGEST" = "$IMAGE_DIGEST"
+          jq -e --arg repository '${{ github.repository }}' --arg commit "$REVIEWED_SHA" --arg workflow "$TRUSTED_WORKFLOW_SHA" --arg digest "$IMAGE_DIGEST" --arg archive "$IMAGE_ARCHIVE_SHA" '
+            .schemaVersion == 1 and .repository == $repository and .commitSha == $commit and
+            .trustedWorkflowSha == $workflow and .imageDigest == $digest and .imageArchiveSha256 == $archive
+          ' deploy-input/server-release-input.json
+          gh attestation verify deploy-input/server-image.tar --repo '${{ github.repository }}' \
+            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
+            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --signer-repo '${{ github.repository }}' \
+            --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
+            --signer-digest "$TRUSTED_WORKFLOW_SHA" \
+            --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
+            --deny-self-hosted-runners
+          gh api "repos/${{ github.repository }}/attestations/sha256:$IMAGE_ARCHIVE_SHA" \
+            --jq '.attestations[].bundle' > deploy-input/server-archive-attestation.jsonl
+          test "$(wc -l < deploy-input/server-archive-attestation.jsonl)" -ge 1
+          gh attestation verify deploy-input/server-image.tar --repo '${{ github.repository }}' \
+            --bundle deploy-input/server-archive-attestation.jsonl \
+            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
+            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --signer-repo '${{ github.repository }}' \
+            --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
+            --signer-digest "$TRUSTED_WORKFLOW_SHA" \
+            --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
+            --deny-self-hosted-runners
           for PREDICATE in 'https://slsa.dev/provenance/v1' 'https://spdx.dev/Document/v2.3'; do
             gh attestation verify "$IMAGE_REF" --repo '${{ github.repository }}' --predicate-type "$PREDICATE" \
               --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
@@ -425,15 +461,17 @@ jobs:
               --deny-self-hosted-runners
           done
 
-      - name: Pass only digest to restricted deployment identity and confirm running digest
+      - name: Transfer exact attested OCI bytes to restricted server identity and confirm running digest
         env:
           CHIMERA_SERVER_DEPLOY_SSH_KEY: ${{ secrets.CHIMERA_SERVER_DEPLOY_SSH_KEY }}
           CHIMERA_SERVER_DEPLOY_HOST_KEY: ${{ secrets.CHIMERA_SERVER_DEPLOY_HOST_KEY }}
           EXPECTED_IMAGE_DIGEST: ${{ needs.publication.outputs.image-digest }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
         run: |
           set -euo pipefail
           IMAGE_DIGEST="$EXPECTED_IMAGE_DIGEST"
           [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
           KEY="$RUNNER_TEMP/chimera-server-deploy"
           KNOWN="$RUNNER_TEMP/chimera-server-known-hosts"
           cleanup() { shred -u "$KEY" "$KNOWN" 2>/dev/null || true; }
@@ -441,7 +479,11 @@ jobs:
           printf '%s\n' "$CHIMERA_SERVER_DEPLOY_SSH_KEY" > "$KEY"
           printf '%s\n' "$CHIMERA_SERVER_DEPLOY_HOST_KEY" > "$KNOWN"
           chmod 600 "$KEY" "$KNOWN"
-          RESULT=$(ssh -i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN" chimera-deploy@39.98.68.173 "$IMAGE_DIGEST")
+          SSH_ARGS=(-i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN")
+          scp "${SSH_ARGS[@]}" deploy-input/server-image.tar "chimera-server-deploy@39.98.68.173:.chimera-staging/server/$REVIEWED_SHA.oci.partial"
+          scp "${SSH_ARGS[@]}" deploy-input/server-release-input.json "chimera-server-deploy@39.98.68.173:.chimera-staging/server/$REVIEWED_SHA.json.partial"
+          scp "${SSH_ARGS[@]}" deploy-input/server-archive-attestation.jsonl "chimera-server-deploy@39.98.68.173:.chimera-staging/server/$REVIEWED_SHA.attestation.partial"
+          RESULT=$(ssh "${SSH_ARGS[@]}" chimera-server-deploy@39.98.68.173 "deploy-server $REVIEWED_SHA $IMAGE_DIGEST")
           printf '%s\n' "$RESULT"
           DEPLOYED_DIGEST=$(printf '%s\n' "$RESULT" | sed -n 's/^deployed digest=//p')
           RUNNING_DIGEST=$(printf '%s\n' "$RESULT" | sed -n 's/^running digest=//p')

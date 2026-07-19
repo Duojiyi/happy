@@ -6,7 +6,7 @@ server_key_file="$1"
 android_key_file="$2"
 web_key_file="$3"
 [[ "${EUID:-$(id -u)}" == 0 ]] || { printf 'installer must run as root\n' >&2; exit 1; }
-for tool in python3 openssl docker curl flock fuser sync java; do command -v "$tool" >/dev/null 2>&1 || { printf 'missing required host tool: %s\n' "$tool" >&2; exit 1; }; done
+for tool in python3 openssl docker skopeo gh curl flock fuser sync java; do command -v "$tool" >/dev/null 2>&1 || { printf 'missing required host tool: %s\n' "$tool" >&2; exit 1; }; done
 docker compose version >/dev/null 2>&1 || { printf 'Docker Compose plugin is required\n' >&2; exit 1; }
 [[ -x /opt/android-sdk/build-tools/35.0.0/aapt2 && -x /opt/android-sdk/build-tools/35.0.0/apksigner ]] || { printf 'Android Build Tools 35.0.0 must be provisioned first\n' >&2; exit 1; }
 

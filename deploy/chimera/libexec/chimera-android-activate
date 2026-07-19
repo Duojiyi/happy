@@ -67,8 +67,10 @@ mv -- "$incoming" "$release"
 sync -f "$downloads/releases"
 sync_path "$release/$filename"
 sync_path "$release/chimera-update.json"
-ln "$release/$filename" "$downloads/.$filename.next"
-mv -f -- "$downloads/.$filename.next" "$downloads/$filename"
+if ! ln "$release/$filename" "$downloads/$filename" 2>/dev/null; then
+  [[ -f "$downloads/$filename" && ! -L "$downloads/$filename" ]] || die
+  cmp --silent "$release/$filename" "$downloads/$filename" || die
+fi
 sync_path "$downloads/$filename"
 if [[ -f "$downloads/chimera-update.json" ]]; then
   install -m 0644 "$downloads/chimera-update.json" "$downloads/.previous-update.json.next"
