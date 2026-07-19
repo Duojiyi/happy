@@ -1,6 +1,7 @@
 import { access, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join, relative, resolve } from 'node:path';
+import ts from 'typescript';
 
 const SERVER = 'packages/happy-server';
 const checks = [
@@ -10,9 +11,6 @@ const checks = [
   ['sources/app/api/api.ts', 'required-admin-control', /adminRoutes\(typed\)/],
   ['sources/app/api/routes/authRoutes.ts', 'required-server-challenge', /['"]\/v1\/auth\/challenge['"]/],
   ['sources/app/api/routes/authRoutes.ts', 'required-challenge-completion', /challengeId:\s*z\.string/],
-  ['sources/app/chimera/adminRoutes.ts', 'required-invitation-control', /\/chimera-control\/api\/invitations/],
-  ['sources/app/chimera/adminRoutes.ts', 'required-account-control', /\/chimera-control\/api\/accounts/],
-  ['sources/app/chimera/publicConfig.ts', 'required-startup-config', /['"]\/v1\/chimera\/config['"]/],
   ['sources/app/api/socket.ts', 'required-socket-event-guard', /socket\.use\(/],
   ['sources/app/api/socket.ts', 'required-socket-origin', /origin:\s*['"]https:\/\/39\.98\.68\.173['"]/],
   ['sources/app/api/routes/attachmentRoutes.ts', 'required-quota-reservation', /quota\.reserve\(/],
@@ -23,6 +21,46 @@ const checks = [
   ['sources/app/api/api.ts', 'required-loopback-default', /opts\.host \?\? ['"]127\.0\.0\.1['"]/],
   ['sources/utils/log.ts', 'required-log-url-redaction', /request\.url\.split\(['"]\?['"]/],
 ];
+
+// This is intentionally a method/path manifest, rather than a text search.  It
+// makes comments, dead strings and computed paths unable to satisfy policy.
+export const requiredRoutes = {
+  'sources/app/chimera/publicConfig.ts': ['GET /v1/chimera/config', 'GET /chimera-control/api/config', 'PUT /chimera-control/api/config'],
+  'sources/app/chimera/adminRoutes.ts': [
+    'GET /chimera-control', 'GET /chimera-control/', 'GET /chimera-control/control.css', 'GET /chimera-control/control.js',
+    'POST /chimera-control/api/session', 'GET /chimera-control/api/session', 'DELETE /chimera-control/api/session', 'POST /chimera-control/api/session/revoke-all',
+    'GET /chimera-control/api/invitations', 'POST /chimera-control/api/invitations', 'POST /chimera-control/api/invitations/:id/revoke',
+    'GET /chimera-control/api/accounts', 'POST /chimera-control/api/accounts/:id/disable', 'POST /chimera-control/api/accounts/:id/restore',
+    'POST /chimera-control/api/accounts/:id/revoke-tokens', 'PUT /chimera-control/api/accounts/:id/quota',
+  ],
+  'sources/app/api/routes/attachmentRoutes.ts': [
+    'POST /v1/sessions/:sessionId/attachments/request-upload', 'PUT /v1/sessions/:sessionId/attachments/:attachmentFile',
+    'POST /v1/sessions/:sessionId/attachments/request-download', 'GET /v1/sessions/:sessionId/attachments/:attachmentFile',
+  ],
+};
+
+function staticRoutes(sourceText, fileName) {
+  const sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  const routes = [];
+  const isDeadBranch = (node) => {
+    for (let parent = node.parent; parent; parent = parent.parent) {
+      if (ts.isIfStatement(parent) && parent.expression.kind === ts.SyntaxKind.FalseKeyword
+        && node.pos >= parent.thenStatement.pos && node.end <= parent.thenStatement.end) return true;
+    }
+    return false;
+  };
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'app'
+      && ['get', 'post', 'put', 'patch', 'delete'].includes(node.expression.name.text)) {
+      const argument = node.arguments[0];
+      if (argument && ts.isStringLiteralLike(argument) && !isDeadBranch(node)) routes.push(`${node.expression.name.text.toUpperCase()} ${argument.text}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return routes;
+}
 
 async function exists(path) { try { await access(path); return true; } catch { return false; } }
 async function source(root, relativePath) {
@@ -39,6 +77,26 @@ export async function verifyChimeraServer({ root = fileURLToPath(new URL('../', 
     if (!cache.has(path)) cache.set(path, await source(repositoryRoot, path));
     const value = cache.get(path);
     if (value === null || !pattern.test(value)) findings.push(finding(repositoryRoot, path, rule));
+  }
+
+  for (const [path, required] of Object.entries(requiredRoutes)) {
+    if (!cache.has(path)) cache.set(path, await source(repositoryRoot, path));
+    const value = cache.get(path);
+    // Fixtures used by this verifier deliberately omit unrelated files.
+    if (value === null) continue;
+    const actual = staticRoutes(value, path);
+    const counts = new Map(actual.map((route) => [route, actual.filter((item) => item === route).length]));
+    for (const route of required) {
+      const [method, routePath] = route.split(' ', 2);
+      if (!counts.has(route)) findings.push(finding(repositoryRoot, path, `missing-route:${method.toLowerCase()}:${routePath}`));
+      else if (counts.get(route) !== 1) findings.push(finding(repositoryRoot, path, `duplicate-route:${method.toLowerCase()}:${routePath}`));
+    }
+    for (const route of counts.keys()) {
+      if (!required.includes(route)) {
+        const [method, routePath] = route.split(' ', 2);
+        findings.push(finding(repositoryRoot, path, `unexpected-route:${method.toLowerCase()}:${routePath}`));
+      }
+    }
   }
 
   const api = cache.get('sources/app/api/api.ts') ?? '';
