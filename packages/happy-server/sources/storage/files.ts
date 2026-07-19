@@ -35,6 +35,8 @@ if (!useLocalStorage) {
 export { s3client, s3bucket, s3host };
 
 export async function loadFiles() {
+    const { attachmentCleanupService, startAttachmentCleanupRetry, stopAttachmentCleanupRetry } = await import("@/app/chimera/attachmentCleanup");
+    await attachmentCleanupService.drainPending();
     if (useLocalStorage) {
         fs.mkdirSync(localFilesDir, { recursive: true });
         const { reconcileAttachmentStorage } = await import('@/app/chimera/attachmentQuota');
@@ -44,8 +46,6 @@ export async function loadFiles() {
         const { reconcileS3AttachmentStorage } = await import("@/app/chimera/attachmentQuota");
         await reconcileS3AttachmentStorage();
     }
-    const { attachmentCleanupService, startAttachmentCleanupRetry, stopAttachmentCleanupRetry } = await import("@/app/chimera/attachmentCleanup");
-    await attachmentCleanupService.drainPending();
     startAttachmentCleanupRetry();
     if (!cleanupRetryShutdownRegistered) {
         cleanupRetryShutdownRegistered = true;
