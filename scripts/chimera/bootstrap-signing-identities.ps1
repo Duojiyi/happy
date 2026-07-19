@@ -6,8 +6,6 @@ param(
     [string] $ProductPath,
     [string] $KeytoolPath,
     [string] $OpenSslPath,
-    [string] $KeytoolSha256,
-    [string] $OpenSslSha256,
     [switch] $OfflineRecoveryRotation
 )
 
@@ -42,13 +40,21 @@ function Write-ProductAtomic([string] $Path, $Value) {
     }
 }
 
+function Assert-ExactKeys($Value, [string[]] $Keys, [string] $Name) {
+    $actual = @($Value.psobject.Properties.Name | Sort-Object)
+    if (($actual -join '|') -ne (($Keys | Sort-Object) -join '|')) { throw "$Name has an invalid schema." }
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $productPath = if ($ProductPath) { $ProductPath } else { Join-Path $repoRoot 'brand\chimera\product.json' }
-$product = Get-Content -LiteralPath $productPath -Raw | ConvertFrom-Json
+$inputProduct = Get-Content -LiteralPath $productPath -Raw | ConvertFrom-Json
+$productKeys = @('productName','slug','androidApplicationId','deepLinkSchemes','relayOrigin','repository','upstreamAppVersion','chimeraRevision','androidVersionCode','updatePublicKey','androidSignerSha256')
+Assert-ExactKeys $inputProduct $productKeys 'Product metadata'
+$product = [ordered]@{ productName=[string]$inputProduct.productName; slug=[string]$inputProduct.slug; androidApplicationId=[string]$inputProduct.androidApplicationId; deepLinkSchemes=@($inputProduct.deepLinkSchemes); relayOrigin=[string]$inputProduct.relayOrigin; repository=[string]$inputProduct.repository; upstreamAppVersion=[string]$inputProduct.upstreamAppVersion; chimeraRevision=[int]$inputProduct.chimeraRevision; androidVersionCode=[int]$inputProduct.androidVersionCode; updatePublicKey=[string]$inputProduct.updatePublicKey; androidSignerSha256=[string]$inputProduct.androidSignerSha256 }
 $keytool = if ($KeytoolPath) { $KeytoolPath } elseif (Get-Command keytool.exe -ErrorAction SilentlyContinue) { (Get-Command keytool.exe).Source } else { throw 'KeytoolPath is required when keytool is not on PATH.' }
 $openssl = if ($OpenSslPath) { $OpenSslPath } elseif (Get-Command openssl.exe -ErrorAction SilentlyContinue) { (Get-Command openssl.exe).Source } else { throw 'OpenSslPath is required when openssl is not on PATH.' }
-if (-not $KeytoolSha256 -or -not (Test-Path -LiteralPath $keytool) -or (Get-FileHash -LiteralPath $keytool -Algorithm SHA256).Hash -ne $KeytoolSha256.ToUpperInvariant()) { throw 'Keytool binary hash did not match the approved tool.' }
-if (-not $OpenSslSha256 -or -not (Test-Path -LiteralPath $openssl) -or (Get-FileHash -LiteralPath $openssl -Algorithm SHA256).Hash -ne $OpenSslSha256.ToUpperInvariant()) { throw 'OpenSSL binary hash did not match the approved tool.' }
+if (-not (Test-Path -LiteralPath $keytool) -or @('681280FC4B87B3D8366AD76103CA67421DAEBE4F579851A2193E3866D0F8E617') -notcontains (Get-FileHash -LiteralPath $keytool -Algorithm SHA256).Hash) { throw 'Keytool binary hash did not match the approved tool.' }
+if (-not (Test-Path -LiteralPath $openssl) -or @('822034DA8A01558C17CBE53F42F33985A6EAF7C89E21273779F9C6560D8C4D78') -notcontains (Get-FileHash -LiteralPath $openssl -Algorithm SHA256).Hash) { throw 'OpenSSL binary hash did not match the approved tool.' }
 $opensslVersion = & $openssl version 2>&1
 if ($LASTEXITCODE -ne 0 -or $opensslVersion -notmatch '^OpenSSL 3\.') { throw 'Pinned OpenSSL does not provide required OpenSSL 3.x Ed25519 support.' }
 
@@ -74,6 +80,8 @@ try {
     Protect-PrivatePath $BackupRoot $true
     if ($hasTransaction -and -not $OfflineRecoveryRotation) {
         $transaction = Get-Content -LiteralPath $transactionPath -Raw | ConvertFrom-Json
+        Assert-ExactKeys $transaction @('schemaVersion','status','expectedProduct','pendingBundlePath','finalBundlePath','pendingBundleSha256','finalBundleSha256') 'Transaction record'
+        Assert-ExactKeys $transaction.expectedProduct $productKeys 'Transaction expected product'
         if ($transaction.schemaVersion -ne 1 -or $transaction.status -ne 'bundle-final-product-pending' -or $transaction.finalBundlePath -ne $bundlePath -or -not (Test-Path -LiteralPath $bundlePath)) { throw 'Incomplete signing transaction record is invalid.' }
         if ((Get-FileHash -LiteralPath $bundlePath -Algorithm SHA256).Hash -ne $transaction.finalBundleSha256) { throw 'Incomplete signing transaction bundle digest does not match.' }
         $resumeArchive = Join-Path $staging 'resume.zip'
@@ -90,8 +98,9 @@ try {
         & $openssl pkey -in (Join-Path $resumeMaterial 'manifest-ed25519-private.pem') -pubout -outform DER -out $resumeDer 2>$null
         $resumePublic = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($resumeDer))
         $expected = $transaction.expectedProduct
-        if ($expected.updatePublicKey -ne $resumePublic -or $expected.androidSignerSha256 -ne $resumeSha -or $expected.productName -ne 'Chimera' -or $expected.slug -ne 'chimera' -or $expected.androidApplicationId -ne 'org.chimerahub.chimera') { throw 'Incomplete signing transaction public identity validation failed.' }
-        Write-ProductAtomic $productPath $expected
+        $fixed = [ordered]@{ productName='Chimera'; slug='chimera'; androidApplicationId='org.chimerahub.chimera'; deepLinkSchemes=@('chimera','happy'); relayOrigin='https://39.98.68.173'; repository='Duojiyi/happy'; upstreamAppVersion='1.7.0'; chimeraRevision=1; androidVersionCode=1; updatePublicKey=$resumePublic; androidSignerSha256=$resumeSha }
+        if (($expected | ConvertTo-Json -Depth 8 -Compress) -ne ($fixed | ConvertTo-Json -Depth 8 -Compress)) { throw 'Incomplete signing transaction public identity validation failed.' }
+        Write-ProductAtomic $productPath $fixed
         Remove-Item -LiteralPath $transactionPath -Force
         [pscustomobject]@{ encryptedPrivateBundle = $bundlePath; androidKeystore = $bundlePath; updatePublicKey = $resumePublic; androidSignerSha256 = $resumeSha; resumed = $true } | ConvertTo-Json -Compress
         return

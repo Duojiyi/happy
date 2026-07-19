@@ -10,7 +10,7 @@ $productPath = Join-Path $repoRoot 'brand\chimera\product.json'
 $originalProduct = Get-Content -Raw $productPath
 $keytool = 'D:\Desktop\Hack\tools\jdk21\bin\keytool.exe'
 $openssl = 'D:\Scoop\apps\git\2.55.0.3\mingw64\bin\openssl.exe'
-$toolArgs = @{ KeytoolPath = $keytool; OpenSslPath = $openssl; KeytoolSha256 = (Get-FileHash $keytool -Algorithm SHA256).Hash; OpenSslSha256 = (Get-FileHash $openssl -Algorithm SHA256).Hash }
+$toolArgs = @{ KeytoolPath = $keytool; OpenSslPath = $openssl }
 
 function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "Assertion failed: $Message" }
@@ -55,6 +55,10 @@ try {
     Assert-True ($product.androidVersionCode -eq 1) 'version code'
     Assert-True ($product.updatePublicKey -eq $inventory.updatePublicKey) 'public update key persisted'
     Assert-True ($product.androidSignerSha256 -eq $inventory.androidSignerSha256) 'certificate fingerprint persisted'
+    $wrongToolRejected = $false
+    try { & $bootstrap -BackupRoot (Join-Path $workspace 'wrong-tool') -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $productPath -KeytoolPath $keytool -OpenSslPath $keytool | Out-Null }
+    catch { $wrongToolRejected = $_.Exception.Message -match 'OpenSSL binary hash' }
+    Assert-True $wrongToolRejected 'unapproved tool binary is rejected'
     Assert-True ((Get-Item $inventory.encryptedPrivateBundle).Length -gt 0) 'encrypted bundle exists'
     $expectedAclSids = @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544') | Sort-Object -Unique
     Assert-True ((Get-ExactAclSids $inventory.encryptedPrivateBundle) -join ',' -eq ($expectedAclSids -join ',')) 'encrypted bundle ACL is exact allowlist'
