@@ -59,6 +59,7 @@ model Account {
     UserKVStore         UserKVStore[]
     VoiceConversation   VoiceConversation[]
     chimeraReservations ChimeraAttachmentReservation[]
+    chimeraAttachmentCleanups ChimeraAttachmentCleanup[]
 }
 
 model ChimeraAuthChallenge {
@@ -116,6 +117,20 @@ model ChimeraAttachmentReservation {
     account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
     @@index([accountId, expiresAt])
+}
+
+model ChimeraAttachmentCleanup {
+    id               String    @id @default(cuid())
+    sessionId        String    @unique
+    accountId        String
+    plannedBytes     BigInt?
+    storageDeletedAt DateTime?
+    accountedAt      DateTime?
+    createdAt        DateTime  @default(now())
+    updatedAt        DateTime  @updatedAt
+    account          Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+    @@index([accountId])
 }
 
 model TerminalAuthRequest {

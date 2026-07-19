@@ -103,6 +103,29 @@ describe("Chimera Prisma security state", () => {
                     expiresAt: new Date("2026-07-20T00:00:00.000Z"),
                 },
             });
+
+            const session = await prisma.session.create({
+                data: { accountId: account.id, tag: "deleted-session", metadata: "encrypted-metadata" },
+            });
+            const cleanup = await prisma.chimeraAttachmentCleanup.create({
+                data: { sessionId: session.id, accountId: account.id },
+            });
+            expect(cleanup).toMatchObject({
+                sessionId: session.id,
+                accountId: account.id,
+                plannedBytes: null,
+                storageDeletedAt: null,
+                accountedAt: null,
+            });
+            expect(cleanup.createdAt).toBeInstanceOf(Date);
+            expect(cleanup.updatedAt).toBeInstanceOf(Date);
+            await expect(prisma.chimeraAttachmentCleanup.create({
+                data: { sessionId: session.id, accountId: account.id, plannedBytes: 12n },
+            })).rejects.toMatchObject({ code: "P2002" });
+            await prisma.session.delete({ where: { id: session.id } });
+            await expect(prisma.chimeraAttachmentCleanup.findUnique({ where: { sessionId: session.id } })).resolves.toMatchObject({ id: cleanup.id });
+            await prisma.account.delete({ where: { id: account.id } });
+            await expect(prisma.chimeraAttachmentCleanup.findUnique({ where: { sessionId: session.id } })).resolves.toBeNull();
         } finally {
             await prisma.$disconnect();
             await pg.close();
