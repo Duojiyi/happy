@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $bootstrap = Join-Path $PSScriptRoot 'bootstrap-signing-identities.ps1'
-$workspace = Join-Path ([System.IO.Path]::GetTempPath()) ("chimera-signing-test-" + [guid]::NewGuid())
+$workspace = Join-Path ([System.IO.Path]::GetTempPath()) ("chimera signing test " + [guid]::NewGuid())
 $backupRoot = Join-Path $workspace 'backups'
 $passwordFile = Join-Path $workspace 'store-password.protected'
 $keyPasswordFile = Join-Path $workspace 'key-password.protected'
@@ -145,31 +145,48 @@ try {
     $testProduct.updatePublicKey = ''
     $testProduct.androidSignerSha256 = ''
     $testProduct | ConvertTo-Json | Set-Content -LiteralPath $concurrentProductPath
-    $runner = Join-Path $workspace 'concurrent-runner.ps1'
-    @'
-param($Bootstrap,$BackupRoot,$StorePasswordFile,$KeyPasswordFile,$ProductPath,$KeytoolPath,$OpenSslPath,$OutputPath)
-$ErrorActionPreference = 'Stop'
-try {
-    $result = & $Bootstrap -BackupRoot $BackupRoot -StorePasswordFile $StorePasswordFile -KeyPasswordFile $KeyPasswordFile -ProductPath $ProductPath -KeytoolPath $KeytoolPath -OpenSslPath $OpenSslPath 2>&1
-    [pscustomobject]@{ ok = $true; output = ($result -join "`n") } | ConvertTo-Json -Compress | Set-Content -LiteralPath $OutputPath
-} catch {
-    [pscustomobject]@{ ok = $false; output = $_.Exception.Message } | ConvertTo-Json -Compress | Set-Content -LiteralPath $OutputPath
-}
-'@ | Set-Content -LiteralPath $runner
     $shell = (Get-Process -Id $PID).Path
     $output1 = Join-Path $workspace 'concurrent-1.json'
     $output2 = Join-Path $workspace 'concurrent-2.json'
-    $commonArgs = @('-NoProfile','-File',$runner,$bootstrap,$concurrentRoot,$passwordFile,$keyPasswordFile,$concurrentProductPath,$keytool,$openssl)
-    $env:CHIMERA_TEST_HOLD_LOCK_MS = '1500'
-    $process1 = Start-Process -FilePath $shell -ArgumentList ($commonArgs + $output1) -PassThru -WindowStyle Hidden
-    Start-Sleep -Milliseconds 150
-    $process2 = Start-Process -FilePath $shell -ArgumentList ($commonArgs + $output2) -PassThru -WindowStyle Hidden
-    $process1.WaitForExit()
+    $readyPath = Join-Path $workspace 'lock ready.signal'
+    $releasePath = Join-Path $workspace 'lock release.signal'
+    $childCommand = @'
+$ErrorActionPreference = 'Stop'
+try {
+    $result = & $env:CHIMERA_CHILD_BOOTSTRAP -BackupRoot $env:CHIMERA_CHILD_BACKUP -StorePasswordFile $env:CHIMERA_CHILD_STORE_PASSWORD -KeyPasswordFile $env:CHIMERA_CHILD_KEY_PASSWORD -ProductPath $env:CHIMERA_CHILD_PRODUCT -KeytoolPath $env:CHIMERA_CHILD_KEYTOOL -OpenSslPath $env:CHIMERA_CHILD_OPENSSL 2>&1
+    [pscustomobject]@{ ok = $true; output = ($result -join "`n"); exitCode = 0 } | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:CHIMERA_CHILD_OUTPUT
+} catch {
+    [pscustomobject]@{ ok = $false; output = $_.Exception.Message; exitCode = 1 } | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:CHIMERA_CHILD_OUTPUT
+    exit 1
+}
+'@
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+    $env:CHIMERA_CHILD_BOOTSTRAP = $bootstrap
+    $env:CHIMERA_CHILD_BACKUP = $concurrentRoot
+    $env:CHIMERA_CHILD_STORE_PASSWORD = $passwordFile
+    $env:CHIMERA_CHILD_KEY_PASSWORD = $keyPasswordFile
+    $env:CHIMERA_CHILD_PRODUCT = $concurrentProductPath
+    $env:CHIMERA_CHILD_KEYTOOL = $keytool
+    $env:CHIMERA_CHILD_OPENSSL = $openssl
+    $env:CHIMERA_TEST_LOCK_READY_PATH = $readyPath
+    $env:CHIMERA_TEST_LOCK_RELEASE_PATH = $releasePath
+    $env:CHIMERA_CHILD_OUTPUT = $output1
+    $process1 = Start-Process -FilePath $shell -ArgumentList '-NoProfile','-EncodedCommand',$encodedCommand -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while (-not (Test-Path -LiteralPath $readyPath)) {
+        if ($process1.HasExited -or [DateTime]::UtcNow -gt $deadline) { throw 'First bootstrap did not signal that it holds the lock.' }
+        Start-Sleep -Milliseconds 25
+    }
+    $env:CHIMERA_CHILD_OUTPUT = $output2
+    $process2 = Start-Process -FilePath $shell -ArgumentList '-NoProfile','-EncodedCommand',$encodedCommand -PassThru -WindowStyle Hidden
     $process2.WaitForExit()
-    Remove-Item Env:CHIMERA_TEST_HOLD_LOCK_MS -ErrorAction SilentlyContinue
+    Assert-True ($process2.ExitCode -ne 0) 'competing bootstrap process exits nonzero'
+    New-Item -ItemType File -Path $releasePath | Out-Null
+    $process1.WaitForExit()
+    Remove-Item Env:CHIMERA_TEST_LOCK_READY_PATH, Env:CHIMERA_TEST_LOCK_RELEASE_PATH -ErrorAction SilentlyContinue
     $concurrentResults = @((Get-Content -Raw $output1 | ConvertFrom-Json), (Get-Content -Raw $output2 | ConvertFrom-Json))
     Assert-True (@($concurrentResults | Where-Object ok).Count -eq 1) 'exactly one concurrent bootstrap succeeds'
-    Assert-True (@($concurrentResults | Where-Object { -not $_.ok -and $_.output -match 'already exist|in progress' }).Count -eq 1) 'other concurrent bootstrap is safely rejected'
+    Assert-True (@($concurrentResults | Where-Object { -not $_.ok -and $_.output -match 'already in progress' }).Count -eq 1) 'other concurrent bootstrap is rejected by the held lock'
     $concurrentProduct = Get-Content -Raw $concurrentProductPath | ConvertFrom-Json
     $successfulInventory = ($concurrentResults | Where-Object ok).output | ConvertFrom-Json
     Assert-True ($concurrentProduct.updatePublicKey -eq $successfulInventory.updatePublicKey) 'concurrent product public key matches bundle inventory'

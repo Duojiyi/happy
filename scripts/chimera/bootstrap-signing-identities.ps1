@@ -57,9 +57,21 @@ try {
         throw 'Signing identity bootstrap is already in progress.'
     }
     Protect-PrivatePath $lockPath
-    if ($env:CHIMERA_TEST_HOLD_LOCK_MS -match '^\d+$') {
-        if ($BackupRoot -notlike "$([System.IO.Path]::GetTempPath())*") { throw 'Test lock delay is only permitted for temporary paths.' }
-        Start-Sleep -Milliseconds ([int]$env:CHIMERA_TEST_HOLD_LOCK_MS)
+    if ($env:CHIMERA_TEST_LOCK_READY_PATH -or $env:CHIMERA_TEST_LOCK_RELEASE_PATH) {
+        $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+        $testPaths = @($BackupRoot, $ProductPath, $env:CHIMERA_TEST_LOCK_READY_PATH, $env:CHIMERA_TEST_LOCK_RELEASE_PATH)
+        if ($testPaths -contains $null -or @($testPaths | Where-Object { -not [System.IO.Path]::GetFullPath($_).StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) }).Count -ne 0) {
+            throw 'Test lock signaling is only permitted for temporary paths.'
+        }
+        if (-not $env:CHIMERA_TEST_LOCK_READY_PATH -or -not $env:CHIMERA_TEST_LOCK_RELEASE_PATH) { throw 'Test lock signaling requires ready and release paths.' }
+        $readyStream = [System.IO.File]::Open($env:CHIMERA_TEST_LOCK_READY_PATH, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $readyStream.Dispose()
+        Protect-PrivatePath $env:CHIMERA_TEST_LOCK_READY_PATH
+        $releaseDeadline = [DateTime]::UtcNow.AddSeconds(30)
+        while (-not (Test-Path -LiteralPath $env:CHIMERA_TEST_LOCK_RELEASE_PATH)) {
+            if ([DateTime]::UtcNow -gt $releaseDeadline) { throw 'Timed out waiting for test lock release signal.' }
+            Start-Sleep -Milliseconds 25
+        }
     }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
