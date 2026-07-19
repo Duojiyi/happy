@@ -4,9 +4,13 @@
 
 https://39.98.68.173 {
     import /etc/chimera/config/maintenance.caddy
-    # Public IP certificates are provisioned out of band and must pass
-    # install-tls-certificate.sh (trusted chain + IP SAN + key match).
-    tls /etc/chimera/config/tls/ip-cert.pem /etc/chimera/config/tls/ip-key.pem {
+    # Let's Encrypt short-lived IP certificates are renewed automatically in
+    # Caddy's persistent data volume. Port 80 must remain publicly reachable.
+    tls {
+        issuer acme {
+            dir https://acme-v02.api.letsencrypt.org/directory
+            profile shortlived
+        }
         protocols tls1.2 tls1.3
     }
     encode zstd gzip

@@ -38,9 +38,9 @@ find "$incoming" -type f -exec chmod 0640 {} +
 mv -- "$incoming" "$release"
 sync -f "$ROOT/releases"
 
-[[ -s "$ROOT/config/production.env" && -s "$ROOT/config/update-manifest-public.pem" && -s "$ROOT/proxy-config/tls/ip-cert.pem" && -s "$ROOT/proxy-config/tls/ip-key.pem" ]] || exit 1
+[[ -s "$ROOT/config/production.env" && -s "$ROOT/config/update-manifest-public.pem" ]] || exit 1
 [[ -f "$ROOT/web/current/index.html" ]] || exit 1
-chmod 0600 "$ROOT/config/production.env" "$ROOT/proxy-config/tls/ip-key.pem"
+chmod 0600 "$ROOT/config/production.env"
 install -m 0640 "$release/deploy/chimera/docker-compose.yml" "$ROOT/docker-compose.yml"
 install -m 0644 "$release/deploy/chimera/Caddyfile" "$ROOT/Caddyfile"
 [[ -f "$ROOT/proxy-config/maintenance.caddy" ]] || printf '# writes enabled\n' > "$ROOT/proxy-config/maintenance.caddy"

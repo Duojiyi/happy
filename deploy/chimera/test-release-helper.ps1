@@ -77,7 +77,10 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-NoMatch $server 'eval|bash\s+-c|sh\s+-c|docker build|Dockerfile\.server|deploy/chimera/docker-compose' 'Server deployment executes candidate source or shell fragments'
     Assert-Match $android 'if ! ln "\$release/\$filename" "\$downloads/\$filename"[\s\S]*cmp --silent' 'Android APK target must be immutable or byte-identical'
 
-    Assert-Match $Sources.caddy 'tls /etc/chimera/config/tls/ip-cert\.pem /etc/chimera/config/tls/ip-key\.pem' 'Caddy must require a pre-provisioned public IP certificate'
+    foreach ($pattern in @('issuer acme', 'acme-v02\.api\.letsencrypt\.org/directory', 'profile shortlived', 'protocols tls1\.2 tls1\.3')) {
+        Assert-Match $Sources.caddy $pattern "Caddy automatic trusted IP certificate configuration missing: $pattern"
+    }
+    Assert-NoMatch $Sources.caddy 'tls\s+[^\r\n]*ip-(?:cert|key)\.pem|tls\s+internal' 'Caddy must not depend on a static or self-signed IP certificate'
     foreach ($pattern in @('-checkip 39\.98\.68\.173', 'verify_args=\(-purpose sslserver -CAfile', 'openssl verify "\$\{verify_args\[@\]\}"', '-checkend 172800', 'Certificate/private key mismatch')) {
         Assert-Match $Sources.tls $pattern "TLS provisioning missing: $pattern"
     }
@@ -90,6 +93,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     foreach ($pattern in @('\^\[a-f0-9\]\{40\}\$', 'path\.is_absolute\(\)', 'member\.issym\(\)', 'current-image\.next', 'curl.*127\.0\.0\.1:3000/health')) {
         Assert-Match $Sources.bootstrap $pattern "bootstrap deployment missing: $pattern"
     }
+    Assert-NoMatch $Sources.bootstrap 'ip-(?:cert|key)\.pem' 'bootstrap must let Caddy provision and renew the IP certificate automatically'
     return $true
 }
 
@@ -126,5 +130,8 @@ Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'Web activation'
 $mutated = $sources.Clone()
 $mutated.sudoers = $sources.sudoers + "`nchimera-web-deploy ALL=(root) NOPASSWD: ALL"
 Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'arbitrary command'
+$mutated = $sources.Clone()
+$mutated.caddy = $sources.caddy.Replace('profile shortlived', 'tls internal')
+Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'automatic trusted IP certificate'
 
 Write-Output 'Chimera release helper contract and mutation tests passed.'

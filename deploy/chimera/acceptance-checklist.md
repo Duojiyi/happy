@@ -20,7 +20,7 @@ cookies, invitations, private keys, or master secrets.
 ## Required acceptance
 
 - [ ] TLS certificate is valid for IP SAN `39.98.68.173`.
-- [ ] A publicly trusted fullchain/private key was installed with `install-tls-certificate.sh`; Caddy does not use an internal/self-signed fallback.
+- [ ] Caddy obtained and automatically renews a Let's Encrypt short-lived IP certificate; no internal/self-signed fallback is enabled.
 - [ ] Only SSH, HTTP, and HTTPS are publicly reachable.
 - [ ] Health, WebSocket, Web, control panel, and update routes pass smoke checks.
 - [ ] Invitation create/use/expire/revoke flows pass.
@@ -32,11 +32,12 @@ cookies, invitations, private keys, or master secrets.
 - [ ] Android update downgrade, hash, signer, package, and version failures are rejected.
 - [ ] The pinned Ed25519 public key and Android Build Tools 35.0.0 were provisioned before enabling the Android deploy identity.
 - [ ] Web and server rollback procedures pass.
-- [ ] Backup identifier and certificate expiry are recorded below.
+- [ ] Backup identifier, certificate expiry, and automatic renewal evidence are recorded below.
 
 ## Evidence
 
 - Certificate expiry: pending
+- Certificate renewal: pending
 - Backup identifier: pending
 - Rollback release: pending
 - Local gate result: pending
