@@ -86,6 +86,20 @@ jobs:
       - name: Generate clean Android project
         run: pnpm --filter happy-app exec expo prebuild --platform android --clean
 
+      - name: Remove generated release signing
+        working-directory: packages/happy-app
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs'
+
+          const file = 'android/app/build.gradle'
+          const source = readFileSync(file, 'utf8')
+          const pattern = /(\n\s*release\s*\{[\s\S]*?\n\s*)signingConfig signingConfigs\.debug/
+          const matches = source.match(new RegExp(pattern.source, 'g')) ?? []
+          if (matches.length !== 1) throw new Error(`Expected one generated release signing config, found ${matches.length}`)
+          writeFileSync(file, source.replace(pattern, '$1signingConfig null'))
+          NODE
+
       - name: Assemble unsigned release APK
         working-directory: packages/happy-app/android
         env:

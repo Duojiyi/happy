@@ -58,6 +58,7 @@ export function validateBuildWorkflow(workflow) {
     /pnpm\s+(?:chimera:client:test|run\s+chimera:client:test)/,
     /pnpm\s+(?:chimera:client:check|run\s+chimera:client:check)/,
     /expo\s+prebuild\s+--platform\s+android\s+--clean/,
+    /signingConfig null/,
     /gradlew\s+assembleRelease/,
     /(?:apksigner|APKSIGNER)[\s\S]*?verify/i,
     /(?:aapt2|AAPT2)[\s\S]*?dump\s+badging/i,
