@@ -7,22 +7,23 @@ const COOKIE_NAME = "__Secure-chimera_admin";
 const ORIGIN = "https://39.98.68.173";
 const UNAUTHORIZED = { error: "Unauthorized" };
 
-type LoginLimits = { consume(ip: string): boolean };
-export function createLoginLimits(now = () => Date.now()): LoginLimits {
+type LoginLimits = { acquire(ip: string): boolean; release(): void };
+export function createLoginLimits(now = () => Date.now(), maxConcurrent = 10): LoginLimits {
     const attempts = new Map<string, number[]>();
-    return { consume(ip) {
+    let active = 0;
+    return { acquire(ip) {
         const floor = now() - 15 * 60 * 1000;
         const global = (attempts.get("*") ?? []).filter((at) => at > floor);
         const perIp = (attempts.get(ip) ?? []).filter((at) => at > floor);
-        if (global.length >= 100 || perIp.length >= 5) return false;
-        const at = now(); attempts.set("*", [...global, at]); attempts.set(ip, [...perIp, at]); return true;
-    } };
+        if (active >= maxConcurrent || global.length >= 100 || perIp.length >= 5) return false;
+        const at = now(); active++; attempts.set("*", [...global, at]); attempts.set(ip, [...perIp, at]); return true;
+    }, release() { active = Math.max(0, active - 1); } };
 }
 
 function cookie(request: { headers: Record<string, unknown> }) {
     const header = request.headers.cookie;
     if (typeof header !== "string") return null;
-    return header.split(/;\\s*/).map((part) => part.split("=", 2)).find(([name]) => name === COOKIE_NAME)?.[1] ?? null;
+    return header.split(/;\s*/).map((part) => part.split("=", 2)).find(([name]) => name === COOKIE_NAME)?.[1] ?? null;
 }
 
 export function adminRoutes(app: any, dependencies: { passwordHash?: string; sessions?: ReturnType<typeof createAdminSessionService>; verifyPassword?: (password: string, hash: string) => Promise<boolean>; loginLimits?: LoginLimits } = {}) {
@@ -33,10 +34,10 @@ export function adminRoutes(app: any, dependencies: { passwordHash?: string; ses
     const limits = dependencies.loginLimits ?? createLoginLimits();
     const unauthorised = (reply: any) => reply.code(401).send(UNAUTHORIZED);
     app.post("/chimera-control/api/session", async (request: any, reply: any) => {
-        if (!limits.consume(request.ip) || !request.body || typeof request.body !== "object" || Array.isArray(request.body)
+        if (!limits.acquire(request.ip) || !request.body || typeof request.body !== "object" || Array.isArray(request.body)
             || Object.keys(request.body).length !== 1 || typeof request.body.password !== "string" || request.body.password.length > 1024) return unauthorised(reply);
         let verified = false;
-        try { verified = await verifyPassword(request.body.password, passwordHash); } catch { verified = false; }
+        try { verified = await verifyPassword(request.body.password, passwordHash); } catch { verified = false; } finally { limits.release(); }
         if (!verified) return unauthorised(reply);
         const session = await sessions.create();
         reply.header("set-cookie", `${COOKIE_NAME}=${session.sessionId}; Path=/chimera-control; HttpOnly; Secure; SameSite=Strict`);

@@ -53,6 +53,9 @@ describe("Chimera admin sessions", () => {
     it("rejects revoked and CSRF-mismatched sessions without touching them", async () => {
         const fixture = service();
         const created = await fixture.value.create();
+        const lastSeen = fixture.rows[0].lastSeenAt;
+        expect(await fixture.value.authorizeMutation(created.sessionId, "wrong")).toBeNull();
+        expect(fixture.rows[0].lastSeenAt).toEqual(lastSeen);
         await fixture.value.revoke(created.sessionId);
 
         expect(await fixture.value.authenticate(created.sessionId)).toBeNull();

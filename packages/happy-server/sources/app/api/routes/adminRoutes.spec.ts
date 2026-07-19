@@ -1,6 +1,6 @@
 import fastify from "fastify";
 import { describe, expect, it } from "vitest";
-import { adminRoutes } from "@/app/chimera/adminRoutes";
+import { adminRoutes, createLoginLimits } from "@/app/chimera/adminRoutes";
 
 const passwordHash = "$argon2id$v=19$m=65536,t=3,p=1$c29tZXNhbHQ$MDEyMzQ1Njc4OWFiY2RlZg";
 
@@ -13,7 +13,7 @@ function app() {
         revoke: async () => undefined,
         revokeAll: async () => undefined,
     };
-    adminRoutes(server as any, { passwordHash, sessions: sessions as any, verifyPassword: async (password, hash) => password === "correct" && hash === passwordHash, loginLimits: { consume: () => true } });
+    adminRoutes(server as any, { passwordHash, sessions: sessions as any, verifyPassword: async (password, hash) => password === "correct" && hash === passwordHash, loginLimits: { acquire: () => true, release: () => undefined } });
     return server;
 }
 
@@ -41,7 +41,24 @@ describe("Chimera admin routes", () => {
         for (const headers of [{ cookie: "__Secure-chimera_admin=session", "x-chimera-csrf": "csrf" }, { cookie: "__Secure-chimera_admin=session", origin: "https://example.test", "x-chimera-csrf": "csrf" }, { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "wrong" }]) {
             expect((await server.inject({ method: "DELETE", url: "/chimera-control/api/session", headers })).statusCode).toBe(401);
         }
-        expect((await server.inject({ method: "DELETE", url: "/chimera-control/api/session", headers: { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" } })).statusCode).toBe(204);
+        expect((await server.inject({ method: "DELETE", url: "/chimera-control/api/session", headers: { cookie: "foo=bar; __Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" } })).statusCode).toBe(204);
         await server.close();
+    });
+
+    it("authenticates GET sessions and supports revoke-all mutations", async () => {
+        const server = app();
+        expect((await server.inject({ method: "GET", url: "/chimera-control/api/session", headers: { cookie: "foo=bar; __Secure-chimera_admin=session" } })).statusCode).toBe(200);
+        expect((await server.inject({ method: "GET", url: "/chimera-control/api/session" })).statusCode).toBe(401);
+        expect((await server.inject({ method: "POST", url: "/chimera-control/api/session/revoke-all", headers: { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" } })).statusCode).toBe(204);
+        await server.close();
+    });
+
+    it("bounds per-IP windows and global concurrent logins", async () => {
+        let now = 0; const limits = createLoginLimits(() => now, 2);
+        expect(limits.acquire("a")).toBe(true); expect(limits.acquire("b")).toBe(true); expect(limits.acquire("c")).toBe(false);
+        limits.release(); limits.release();
+        for (let i = 0; i < 5; i++) { expect(limits.acquire("ip")).toBe(true); limits.release(); }
+        expect(limits.acquire("ip")).toBe(false); now = 15 * 60 * 1000 + 1;
+        expect(limits.acquire("ip")).toBe(true); limits.release();
     });
 });
