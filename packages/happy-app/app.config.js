@@ -10,6 +10,6 @@ export default { expo: {
   android: { versionCode: ANDROID_VERSION_CODE, adaptiveIcon: { foregroundImage: `${generated}/icon-adaptive.png`, monochromeImage: `${generated}/icon-monochrome.png`, backgroundColor: '#18171C' }, package: 'org.chimerahub.chimera', permissions: ['android.permission.CAMERA'], blockedPermissions: [] },
   web: { bundler: 'metro', output: 'single', favicon: `${generated}/favicon.png` },
   plugins: [['expo-router', { root: './sources/app' }], 'expo-asset', 'expo-localization', 'expo-secure-store', 'expo-web-browser', './plugins/withChimeraUpdater', ['expo-camera', { cameraPermission: 'Allow $(PRODUCT_NAME) to scan QR codes and share photos.' }], ['expo-splash-screen', { image: `${generated}/splash-android-light.png`, backgroundColor: '#F5F5F5' }]],
-  updates: { enabled: false }, experiments: { typedRoutes: true },
+  updates: { enabled: false }, autolinking: { nativeModulesDir: './modules' }, experiments: { typedRoutes: true },
   extra: { router: { root: './sources/app' }, app: { buildCommitSha: commitSha, buildCommitTimestamp: commitTimestamp } }
 } };

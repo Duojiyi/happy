@@ -1,17 +1,17 @@
 import { requireNativeModule } from 'expo-modules-core';
 
-export type ApkInspection = {
+export type InspectedApk = {
   packageName: string;
   versionName: string | null;
-  versionCode: string;
-  signerSha256: string[];
+  versionCode: number;
+  signerSha256: string;
 };
 
 type ChimeraUpdaterModule = {
-  inspectApk(uri: string): Promise<ApkInspection>;
-  canRequestPackageInstalls(): boolean;
-  openInstallPermissionSettings(): void;
-  launchInstaller(uri: string): void;
+  inspectApk(uri: string): Promise<InspectedApk>;
+  canRequestPackageInstalls(): Promise<boolean>;
+  openInstallPermissionSettings(): Promise<void>;
+  launchInstaller(uri: string): Promise<void>;
 };
 
 export default requireNativeModule<ChimeraUpdaterModule>('ChimeraUpdater');

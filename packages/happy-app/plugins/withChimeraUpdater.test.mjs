@@ -40,3 +40,27 @@ test('is idempotent and does not introduce broad external storage paths', () => 
   assert.equal(providers.length, 1);
   assert.equal(manifest['uses-permission'].some((entry) => /EXTERNAL_STORAGE|MANAGE_EXTERNAL_STORAGE/.test(entry.$['android:name'])), false);
 });
+
+test('repairs unsafe duplicate update providers without changing unrelated providers', () => {
+  const fixture = androidManifestFixture();
+  fixture.manifest.application[0].provider = [
+    { $: { 'android:name': 'com.example.UnsafeProvider', 'android:authorities': '${applicationId}.chimera.updates', 'android:exported': 'true' } },
+    { $: { 'android:name': 'com.example.DuplicateProvider', 'android:authorities': '${applicationId}.chimera.updates', 'android:grantUriPermissions': 'false' } },
+    { $: { 'android:name': 'com.example.UnrelatedProvider', 'android:authorities': '${applicationId}.other', 'android:exported': 'true' } },
+  ];
+
+  const result = applyPlugin(applyPlugin(fixture));
+  const providers = result.manifest.application[0].provider;
+  const updates = providers.filter((provider) => provider.$['android:authorities'] === '${applicationId}.chimera.updates');
+
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0].$, {
+    'android:name': 'androidx.core.content.FileProvider',
+    'android:authorities': '${applicationId}.chimera.updates',
+    'android:exported': 'false',
+    'android:grantUriPermissions': 'true',
+  });
+  assert.equal(updates[0]['meta-data'].length, 1);
+  assert.equal(updates[0]['meta-data'][0].$['android:resource'], '@xml/chimera_update_paths');
+  assert.equal(providers.some((provider) => provider.$['android:authorities'] === '${applicationId}.other'), true);
+});

@@ -13,8 +13,17 @@ android {
   defaultConfig {
     minSdkVersion rootProject.ext.minSdkVersion
   }
+
+  // The config plugin copies the implementation into the app source set.
+  sourceSets {
+    main {
+      java.srcDirs = []
+      res.srcDirs = []
+    }
+  }
 }
 
 dependencies {
   implementation project(':expo-modules-core')
+  implementation 'androidx.core:core:1.15.0'
 }

@@ -7,30 +7,28 @@ const PROVIDER_AUTHORITY = '${applicationId}.chimera.updates';
 const PROVIDER_NAME = 'androidx.core.content.FileProvider';
 
 function applyToManifest(manifest) {
-    manifest['uses-permission'] ??= [];
-    if (!manifest['uses-permission'].some((permission) => permission.$?.['android:name'] === INSTALL_PERMISSION)) {
-      manifest['uses-permission'].push({ $: { 'android:name': INSTALL_PERMISSION } });
-    }
+  manifest['uses-permission'] ??= [];
+  if (!manifest['uses-permission'].some((permission) => permission.$?.['android:name'] === INSTALL_PERMISSION)) {
+    manifest['uses-permission'].push({ $: { 'android:name': INSTALL_PERMISSION } });
+  }
 
-    manifest.application ??= [{ $: { 'android:name': '.MainApplication' } }];
-    const application = manifest.application[0];
-    application.provider ??= [];
-    if (!application.provider.some((provider) => provider.$?.['android:authorities'] === PROVIDER_AUTHORITY)) {
-      application.provider.push({
-        $: {
-          'android:name': PROVIDER_NAME,
-          'android:authorities': PROVIDER_AUTHORITY,
-          'android:exported': 'false',
-          'android:grantUriPermissions': 'true',
-        },
-        'meta-data': [{
-          $: {
-            'android:name': 'android.support.FILE_PROVIDER_PATHS',
-            'android:resource': '@xml/chimera_update_paths',
-          },
-        }],
-      });
-    }
+  manifest.application ??= [{ $: { 'android:name': '.MainApplication' } }];
+  const application = manifest.application[0];
+  const unrelatedProviders = (application.provider ?? []).filter((provider) => provider.$?.['android:authorities'] !== PROVIDER_AUTHORITY);
+  application.provider = [...unrelatedProviders, {
+    $: {
+      'android:name': PROVIDER_NAME,
+      'android:authorities': PROVIDER_AUTHORITY,
+      'android:exported': 'false',
+      'android:grantUriPermissions': 'true',
+    },
+    'meta-data': [{
+      $: {
+        'android:name': 'android.support.FILE_PROVIDER_PATHS',
+        'android:resource': '@xml/chimera_update_paths',
+      },
+    }],
+  }];
   return manifest;
 }
 

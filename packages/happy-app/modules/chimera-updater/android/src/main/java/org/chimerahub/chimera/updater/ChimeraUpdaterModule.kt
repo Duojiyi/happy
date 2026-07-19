@@ -23,23 +23,23 @@ class ChimeraUpdaterModule : Module() {
       mapOf(
         "packageName" to packageInfo.packageName,
         "versionName" to packageInfo.versionName,
-        "versionCode" to versionCode(packageInfo).toString(),
-        "signerSha256" to signerDigests(packageInfo)
+        "versionCode" to versionCode(packageInfo),
+        "signerSha256" to signerDigest(packageInfo)
       )
     }
 
-    Function("canRequestPackageInstalls") {
+    AsyncFunction("canRequestPackageInstalls") {
       Build.VERSION.SDK_INT < Build.VERSION_CODES.O || appContext.reactContext?.packageManager?.canRequestPackageInstalls() == true
     }
 
-    Function("openInstallPermissionSettings") {
+    AsyncFunction("openInstallPermissionSettings") {
       val context = requireContext()
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         context.startActivity(Intent("android.settings.MANAGE_UNKNOWN_APP_SOURCES", Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
       }
     }
 
-    Function("launchInstaller") { fileUri: String ->
+    AsyncFunction("launchInstaller") { fileUri: String ->
       val context = requireContext()
       val apk = requireCachedApk(fileUri)
       val contentUri = FileProvider.getUriForFile(context, "${context.packageName}.chimera.updates", apk)
@@ -74,10 +74,11 @@ class ChimeraUpdaterModule : Module() {
   private fun versionCode(info: PackageInfo): Long = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
 
   @Suppress("DEPRECATION")
-  private fun signerDigests(info: PackageInfo): List<String> {
+  private fun signerDigest(info: PackageInfo): String {
     val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.signingInfo?.apkContentsSigners else info.signatures
-    return signatures?.map { signature ->
-      MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()).joinToString("") { byte -> "%02x".format(byte) }
-    } ?: emptyList()
+    if (signatures == null || signatures.size != 1) {
+      throw CodedException("E_APK_SIGNERS", "APK must contain exactly one signing certificate.", null)
+    }
+    return MessageDigest.getInstance("SHA-256").digest(signatures[0].toByteArray()).joinToString("") { byte -> "%02X".format(byte) }
   }
 }
