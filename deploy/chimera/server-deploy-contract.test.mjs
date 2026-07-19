@@ -41,7 +41,7 @@ test('workflow, forced command, and privileged helper share one immutable OCI pr
 test('server imports only root-frozen OCI bytes bound to commit digest and metadata', () => {
   for (const pattern of [
     /server-image\.oci/, /server-release-input\.json/, /imageArchiveSha256/, /archive_hash=hashlib\.sha256/, /stream\.read\(1024\*1024\)/,
-    /index\.get\("manifests"/, /blobs\/sha256/, /calculated\.hexdigest\(\)/, /server-archive-attestation\.jsonl/, /gh attestation verify/, /--bundle "\$incoming\/server-archive-attestation\.jsonl"/, /skopeo copy --preserve-digests/, /docker-daemon:chimera-relay:\$id/,
+    /index\.get\("manifests"/, /blobs\/sha256/, /calculated\.hexdigest\(\)/, /server-archive-attestation\.jsonl/, /gh attestation verify/, /--bundle "\$incoming\/server-archive-attestation\.jsonl"/, /--predicate-type 'https:\/\/slsa\.dev\/provenance\/v1'/, /skopeo copy --preserve-digests/, /docker-daemon:chimera-relay:\$id/,
   ]) assert.match(source, pattern);
   assert.ok(source.indexOf('install -m 0600 "$source_archive"') < source.indexOf('python3 - "$incoming/server-image.oci"'));
   assert.doesNotMatch(source, /docker build|Dockerfile\.server|tar --extract|RELEASE_ROOT|deploy\/chimera\/docker-compose/);

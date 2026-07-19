@@ -108,6 +108,7 @@ PY
   [[ "$(stat -c '%s' "$incoming/server-archive-attestation.jsonl")" -le 10485760 ]] || die
   gh attestation verify "$incoming/server-image.oci" --repo 'Duojiyi/happy' \
     --bundle "$incoming/server-archive-attestation.jsonl" \
+    --predicate-type 'https://slsa.dev/provenance/v1' \
     --cert-identity 'https://github.com/Duojiyi/happy/.github/workflows/chimera-server-release.yml@refs/heads/main' \
     --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
     --signer-repo 'Duojiyi/happy' --signer-workflow 'Duojiyi/happy/.github/workflows/chimera-server-release.yml' \

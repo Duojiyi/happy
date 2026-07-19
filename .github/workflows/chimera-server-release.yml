@@ -397,6 +397,7 @@ jobs:
             .trustedWorkflowSha == $workflow and .imageDigest == $digest and .imageArchiveSha256 == $archive
           ' deploy-input/server-release-input.json
           gh attestation verify deploy-input/server-image.tar --repo '${{ github.repository }}' \
+            --predicate-type 'https://slsa.dev/provenance/v1' \
             --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
             --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
             --signer-repo '${{ github.repository }}' \
@@ -409,6 +410,7 @@ jobs:
           test "$(wc -l < deploy-input/server-archive-attestation.jsonl)" -ge 1
           gh attestation verify deploy-input/server-image.tar --repo '${{ github.repository }}' \
             --bundle deploy-input/server-archive-attestation.jsonl \
+            --predicate-type 'https://slsa.dev/provenance/v1' \
             --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
             --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
             --signer-repo '${{ github.repository }}' \
