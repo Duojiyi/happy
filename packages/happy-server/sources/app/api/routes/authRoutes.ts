@@ -30,9 +30,9 @@ export async function verifyAuthChallengeSignature(input: { origin: string; purp
     } catch { return false; }
 }
 
-export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any; globalPendingCap?: number; issueToken?: (id: string) => Promise<string>; inTransaction?: <T>(fn: (tx: any) => Promise<T>) => Promise<T> } = {}) {
+export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any; globalPendingCap?: number; issueBucketCapacity?: number; issueToken?: (id: string) => Promise<string>; inTransaction?: <T>(fn: (tx: any) => Promise<T>) => Promise<T> } = {}) {
     const routeDb = dependencies.db ?? db;
-    const challengeService = createAuthChallengeService({ config: dependencies.config ?? loadChimeraServerConfig(process.env), db: routeDb, globalPendingCap: dependencies.globalPendingCap });
+    const challengeService = createAuthChallengeService({ config: dependencies.config ?? loadChimeraServerConfig(process.env), db: routeDb, globalPendingCap: dependencies.globalPendingCap, issueBucketCapacity: dependencies.issueBucketCapacity });
     const transaction = dependencies.inTransaction ?? inTx;
     const issueToken = dependencies.issueToken ?? ((id: string) => auth.createToken(id));
 

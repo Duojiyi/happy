@@ -91,6 +91,15 @@ describe("account auth HTTP routes", () => {
         await app.close();
     });
 
+    it("isolates concurrent per-IP pending cap from token buckets", async () => {
+        const { app, rows } = testApp(new Date(), undefined, 10);
+        const requests = Array.from({ length: 4 }, () => app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey: Buffer.from(nacl.sign.keyPair().publicKey).toString("base64") } }));
+        const results = await Promise.all(requests);
+        expect(results.filter((r) => r.statusCode === 200)).toHaveLength(3); expect(rows).toHaveLength(3);
+        for (const result of results.filter((r) => r.statusCode === 429)) expect(result.json()).toEqual({ error: "Too many requests" });
+        await app.close();
+    });
+
     it("uses XFF only from a loopback proxy", async () => {
         const app = fastify({ trustProxy: isTrustedLoopbackProxy }); app.get("/ip", (req) => ({ ip: req.ip }));
         expect((await app.inject({ method: "GET", url: "/ip", headers: { "x-forwarded-for": "198.51.100.7" }, remoteAddress: "127.0.0.1" })).json().ip).toBe("198.51.100.7");
@@ -99,7 +108,7 @@ describe("account auth HTTP routes", () => {
     });
 });
 
-function testApp(now = new Date(), globalPendingCap?: number) {
+function testApp(now = new Date(), globalPendingCap?: number, issueBucketCapacity?: number) {
     const rows: any[] = []; const tokens: string[] = [];
     const account = { id: "account", publicKey: Buffer.alloc(32).toString("hex") };
     const db: any = { chimeraAuthChallenge: {
@@ -109,6 +118,6 @@ function testApp(now = new Date(), globalPendingCap?: number) {
         updateMany: async ({ where, data }: any) => { const r = rows.find((r) => r.id === where.id && !r.consumedAt && r.expiresAt > where.expiresAt.gt); if (!r) return { count: 0 }; Object.assign(r, data); return { count: 1 }; },
     }, account: { findUnique: async () => account } };
     const app = fastify({ trustProxy: isTrustedLoopbackProxy }); app.setValidatorCompiler(validatorCompiler); app.setSerializerCompiler(serializerCompiler);
-    authRoutes(app as any, { db, config, globalPendingCap, inTransaction: async (fn) => fn(db), issueToken: async () => { tokens.push("token"); return "token"; } });
+    authRoutes(app as any, { db, config, globalPendingCap, issueBucketCapacity, inTransaction: async (fn) => fn(db), issueToken: async () => { tokens.push("token"); return "token"; } });
     return { app, rows, tokens };
 }
