@@ -78,9 +78,14 @@ export function validateBuildWorkflow(workflow) {
   assert.doesNotMatch(runText(provenance), /pnpm\s+install|npm\s+install|node\s+scripts\//, 'provenance must not execute candidate code');
   assert.ok(allSteps(provenance).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), 'provenance must download immutable build artifacts');
   assert.match(runText(provenance), /sha256sum|sha256/i, 'provenance must verify artifact digests');
+  assert.match(runText(provenance), /find provenance\/android -type f \| wc -l/, 'provenance must reject extra Android files');
+  assert.match(runText(provenance), /find provenance\/web -type f \| wc -l/, 'provenance must reject extra Web files');
   const attestations = allSteps(provenance).filter((step) => step.uses?.startsWith('actions/attest-build-provenance@'));
   assert.equal(attestations.length, 2, 'provenance must attest APK and Web artifacts separately');
-  for (const step of attestations) assert.ok(step.with?.['subject-path'], 'attestation must bind a subject path');
+  assert.deepEqual(attestations.map((step) => step.with?.['subject-path']).sort(), [
+    'provenance/android/Chimera-unsigned.apk',
+    'provenance/web/Chimera-web.tar.gz',
+  ], 'attestations must bind the exact files verified above');
 
   const steps = Object.values(jobs).flatMap(allSteps);
   for (const step of steps) {
@@ -122,5 +127,12 @@ if (!source) {
     const step = workflow.jobs.android.steps.find((item) => item.run?.includes('chimera:client:check'));
     step.run = step.run.replace(/pnpm\s+(?:chimera:client:check|run\s+chimera:client:check)/, 'echo skipped');
     assert.throws(() => validateBuildWorkflow(workflow), /android missing/);
+  });
+
+  test('contract rejects a broader attestation glob', () => {
+    const workflow = parse(source);
+    const step = workflow.jobs.provenance.steps.find((item) => item.with?.['subject-path'] === 'provenance/android/Chimera-unsigned.apk');
+    step.with['subject-path'] = 'provenance/android/**/*.apk';
+    assert.throws(() => validateBuildWorkflow(workflow), /exact files verified/);
   });
 }

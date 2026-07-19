@@ -157,14 +157,14 @@ jobs:
           pnpm --filter happy-app typecheck
 
       - name: Export Web bundle
-        run: pnpm --filter happy-app exec expo export --platform web --output-dir dist/chimera-web/site
+        run: pnpm --filter happy-app exec expo export --platform web --output-dir dist/chimera-web-site
 
       - name: Create immutable Web archive and release input
         run: |
           VERSION_NAME=$(node --input-type=module -e "import p from './brand/chimera/product.json' with {type:'json'}; console.log(p.upstreamAppVersion + '-chimera.' + p.chimeraRevision)")
           mkdir -p dist/chimera-web
-          tar -C dist/chimera-web/site -czf "dist/chimera-web/Chimera-${VERSION_NAME}-web.tar.gz" .
-          WEB_ARCHIVE=$(find dist/chimera-web -maxdepth 1 -type f -name '*.tar.gz' | head -n 1)
+          tar -C dist/chimera-web-site -czf dist/chimera-web/Chimera-web.tar.gz .
+          WEB_ARCHIVE=dist/chimera-web/Chimera-web.tar.gz
           WEB_SHA=$(sha256sum "$WEB_ARCHIVE" | cut -d ' ' -f 1)
           WEB_SIZE=$(stat -c '%s' "$WEB_ARCHIVE")
           VERSION_CODE=$(node --input-type=module -e "import p from './brand/chimera/product.json' with {type:'json'}; console.log(p.androidVersionCode)")
@@ -213,9 +213,11 @@ jobs:
       - name: Verify artifact digests and provenance binding
         run: |
           set -euo pipefail
-          APK=$(find provenance/android -type f -name '*.apk' | head -n 1)
-          WEB=$(find provenance/web -type f -name '*.tar.gz' | head -n 1)
-          test -n "$APK" && test -n "$WEB"
+          test "$(find provenance/android -type f | wc -l)" -eq 2
+          test "$(find provenance/web -type f | wc -l)" -eq 2
+          APK=provenance/android/Chimera-unsigned.apk
+          WEB=provenance/web/Chimera-web.tar.gz
+          test -f "$APK" && test -f "$WEB"
           APK_SHA=$(sha256sum "$APK" | cut -d ' ' -f 1)
           WEB_SHA=$(sha256sum "$WEB" | cut -d ' ' -f 1)
           jq -e --arg sha "$APK_SHA" --arg commit "${{ github.sha }}" --arg run "${{ github.run_id }}" \
@@ -228,9 +230,9 @@ jobs:
       - name: Attest unsigned Android APK
         uses: actions/attest-build-provenance@bd77c077858b8d561b7a36cbe48ef4cc642ca39d
         with:
-          subject-path: provenance/android/**/*.apk
+          subject-path: provenance/android/Chimera-unsigned.apk
 
       - name: Attest immutable Web archive
         uses: actions/attest-build-provenance@bd77c077858b8d561b7a36cbe48ef4cc642ca39d
         with:
-          subject-path: provenance/web/**/*.tar.gz
+          subject-path: provenance/web/Chimera-web.tar.gz
