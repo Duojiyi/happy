@@ -37,7 +37,7 @@ export function isTrustedLoopbackProxy(address: string): boolean {
     return address === '127.0.0.1' || address === '::1';
 }
 
-export async function startApi(opts: StartApiOptions = {}) {
+export async function buildApi(opts: StartApiOptions = {}) {
 
     // Configure
     log('Starting API...');
@@ -49,7 +49,7 @@ export async function startApi(opts: StartApiOptions = {}) {
         trustProxy: isTrustedLoopbackProxy,
     });
     app.register(import('@fastify/cors'), {
-        origin: 'https://39.98.68.173',
+        origin: (origin, callback) => callback(null, origin === 'https://39.98.68.173'),
         credentials: true,
         allowedHeaders: ['Content-Type', 'Authorization', 'X-Chimera-CSRF'],
         methods: ['GET', 'POST', 'PUT', 'DELETE']
@@ -175,6 +175,12 @@ export async function startApi(opts: StartApiOptions = {}) {
         });
     }
 
+    return typed;
+}
+
+export async function startApi(opts: StartApiOptions = {}) {
+    const app = await buildApi(opts);
+
     // Start HTTP
     const port = opts.port ?? (process.env.PORT ? parseInt(process.env.PORT, 10) : 3005);
     const host = opts.host ?? '0.0.0.0';
@@ -184,7 +190,7 @@ export async function startApi(opts: StartApiOptions = {}) {
     });
 
     // Start Socket
-    startSocket(typed);
+    startSocket(app);
 
     // End
     log(`API ready on http://${host}:${port}`);
