@@ -10,8 +10,8 @@ export interface ChimeraServerConfig {
 type Environment = Record<string, string | undefined>;
 
 const RELAY_ORIGIN = "https://39.98.68.173" as const;
-const ARGON2ID_PHC = /^\$argon2id\$v=19\$m=65536,t=3,p=1\$[A-Za-z0-9+/]+\$[A-Za-z0-9+/]+$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
+const BASE64_STANDARD = /^[A-Za-z0-9+/]+$/;
 
 export function loadChimeraServerConfig(env: Environment): ChimeraServerConfig {
     const adminPasswordHash = env.CHIMERA_ADMIN_PASSWORD_HASH;
@@ -20,7 +20,7 @@ export function loadChimeraServerConfig(env: Environment): ChimeraServerConfig {
     const accountPseudonymKey = decodeSecret(env.CHIMERA_ACCOUNT_PSEUDONYM_KEY);
     const updatePublicKey = decodeSecret(env.CHIMERA_UPDATE_PUBLIC_KEY, 32, 32);
 
-    if (!adminPasswordHash || !ARGON2ID_PHC.test(adminPasswordHash)
+    if (!adminPasswordHash || !isValidArgon2idPhc(adminPasswordHash)
         || !adminSessionSecret || !invitationPepper || !accountPseudonymKey || !updatePublicKey) {
         throw new Error("Invalid Chimera server configuration");
     }
@@ -28,11 +28,38 @@ export function loadChimeraServerConfig(env: Environment): ChimeraServerConfig {
     return Object.freeze({
         relayOrigin: RELAY_ORIGIN,
         adminPasswordHash,
-        adminSessionSecret,
-        invitationPepper,
-        accountPseudonymKey,
-        updatePublicKey,
+        get adminSessionSecret() {
+            return new Uint8Array(adminSessionSecret);
+        },
+        get invitationPepper() {
+            return new Uint8Array(invitationPepper);
+        },
+        get accountPseudonymKey() {
+            return new Uint8Array(accountPseudonymKey);
+        },
+        get updatePublicKey() {
+            return new Uint8Array(updatePublicKey);
+        },
     });
+}
+
+function isValidArgon2idPhc(value: string): boolean {
+    const parts = value.split("$");
+    if (parts.length !== 6 || parts[0] !== "" || parts[1] !== "argon2id"
+        || parts[2] !== "v=19" || parts[3] !== "m=65536,t=3,p=1") {
+        return false;
+    }
+
+    return isCanonicalStandardBase64(parts[4], 8) && isCanonicalStandardBase64(parts[5], 16);
+}
+
+function isCanonicalStandardBase64(value: string, minimumLength: number): boolean {
+    if (!BASE64_STANDARD.test(value)) {
+        return false;
+    }
+
+    const decoded = Buffer.from(value, "base64");
+    return decoded.length >= minimumLength && decoded.toString("base64").replace(/=+$/, "") === value;
 }
 
 function decodeSecret(value: string | undefined, minLength = 32, maxLength = Number.POSITIVE_INFINITY): Uint8Array | undefined {

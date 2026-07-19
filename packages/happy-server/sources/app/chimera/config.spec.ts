@@ -24,6 +24,16 @@ describe("loadChimeraServerConfig", () => {
         expect(Object.isFrozen(config)).toBe(true);
     });
 
+    it("keeps retained secret bytes isolated from caller mutation", () => {
+        const config = loadChimeraServerConfig(validEnv());
+        const firstRead = config.adminSessionSecret;
+        firstRead[0] = 99;
+
+        expect(config.adminSessionSecret).toEqual(new Uint8Array(32).fill(1));
+        expect(config.adminSessionSecret).not.toBe(firstRead);
+        expect(Object.isFrozen(config)).toBe(true);
+    });
+
     it.each([
         "CHIMERA_ADMIN_PASSWORD_HASH",
         "CHIMERA_ADMIN_SESSION_SECRET",
@@ -45,6 +55,11 @@ describe("loadChimeraServerConfig", () => {
         "$argon2id$v=19$m=65536,t=2,p=1$c29tZXNhbHQ$MDEyMzQ1Njc4OWFiY2RlZg",
         "$argon2id$v=19$m=65536,t=3,p=2$c29tZXNhbHQ$MDEyMzQ1Njc4OWFiY2RlZg",
         "$argon2id$v=19$t=3,m=65536,p=1$c29tZXNhbHQ$MDEyMzQ1Njc4OWFiY2RlZg",
+        "$argon2id$v=19$m=65536,t=3,p=1$A$A",
+        "$argon2id$v=19$m=65536,t=3,p=1$c29tZXNhbHQ=$MDEyMzQ1Njc4OWFiY2RlZg",
+        "$argon2id$v=19$m=65536,t=3,p=1$c29tZXNhbHQ$MDEyMzQ1Njc4OWFiY2RlZg$extra",
+        "$argon2id$v=19$m=65536,t=3,p=1$c29tZXNhbHQ",
+        "$argon2id$v=19$m=65536,t=3,p=1$!!!!$MDEyMzQ1Njc4OWFiY2RlZg",
         "not-a-phc-string",
     ])("rejects invalid Argon2 password hashes", (hash) => {
         const env = validEnv();
