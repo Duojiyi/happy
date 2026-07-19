@@ -8,14 +8,18 @@ const ORIGIN = "https://39.98.68.173";
 const UNAUTHORIZED = { error: "Unauthorized" };
 
 type LoginLimits = { acquire(ip: string): boolean; release(): void };
-export function createLoginLimits(now = () => Date.now(), maxConcurrent = 10): LoginLimits {
+export function createLoginLimits(now = () => Date.now(), maxConcurrent = 10, maxIdentities = 10_000): LoginLimits {
     const attempts = new Map<string, number[]>();
     let active = 0;
     return { acquire(ip) {
         const floor = now() - 15 * 60 * 1000;
+        for (const [identity, values] of attempts) {
+            const retained = values.filter((at) => at > floor);
+            if (retained.length) attempts.set(identity, retained); else attempts.delete(identity);
+        }
         const global = (attempts.get("*") ?? []).filter((at) => at > floor);
         const perIp = (attempts.get(ip) ?? []).filter((at) => at > floor);
-        if (active >= maxConcurrent || global.length >= 100 || perIp.length >= 5) return false;
+        if (active >= maxConcurrent || global.length >= 100 || perIp.length >= 5 || (!attempts.has(ip) && attempts.size >= maxIdentities)) return false;
         const at = now(); active++; attempts.set("*", [...global, at]); attempts.set(ip, [...perIp, at]); return true;
     }, release() { active = Math.max(0, active - 1); } };
 }

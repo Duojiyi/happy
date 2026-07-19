@@ -81,4 +81,10 @@ describe("Chimera admin sessions", () => {
         expect(await createAdminSessionService({ secret: deriveAdminSessionSecret(new Uint8Array(32).fill(8), "original"), db }).authenticate(created.sessionId)).toBeNull();
         expect(fixture.rows[0].lastSeenAt).toEqual(unchanged);
     });
+
+    it("rejects an authentication touch when concurrent revocation wins", async () => {
+        const fixture = service(); const created = await fixture.value.create();
+        fixture.rows[0].revokedAt = new Date();
+        expect(await fixture.value.authenticate(created.sessionId)).toBeNull();
+    });
 });

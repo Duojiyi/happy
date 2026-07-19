@@ -66,6 +66,14 @@ describe("Chimera admin routes", () => {
         expect(limits.acquire("ip")).toBe(true); limits.release();
     });
 
+    it("sweeps stale identities and fails closed at the identity cap", () => {
+        let now = 0; const limits = createLoginLimits(() => now, 10, 3);
+        for (const ip of ["a", "b"]) { expect(limits.acquire(ip)).toBe(true); limits.release(); }
+        expect(limits.acquire("c")).toBe(false);
+        now = 15 * 60 * 1000 + 1;
+        expect(limits.acquire("c")).toBe(true); limits.release();
+    });
+
     it("does not consume a concurrency slot for malformed login bodies", async () => {
         const server = fastify(); let active = 0;
         adminRoutes(server as any, { passwordHash, sessions: { create: async () => ({ sessionId: "s", csrfToken: "c" }) } as any, verifyPassword: async () => true, loginLimits: { acquire: () => { active++; return active === 1; }, release: () => { active--; } } });

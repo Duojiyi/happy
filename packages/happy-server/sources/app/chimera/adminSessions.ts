@@ -30,7 +30,8 @@ export function createAdminSessionService({ secret, db, now = () => new Date() }
     async function touch(row: SessionRow, current: Date) {
         const absoluteExpiry = new Date(row.createdAt.getTime() + ABSOLUTE_TIMEOUT_MS);
         const expiresAt = new Date(Math.min(current.getTime() + IDLE_TIMEOUT_MS, absoluteExpiry.getTime()));
-        return db.chimeraAdminSession.update({ where: { id: row.id }, data: { lastSeenAt: current, expiresAt } });
+        const updated = await db.chimeraAdminSession.updateMany({ where: { id: row.id, revokedAt: null, expiresAt: { gt: current }, lastSeenAt: row.lastSeenAt }, data: { lastSeenAt: current, expiresAt } });
+        return updated.count === 1 ? { ...row, lastSeenAt: current, expiresAt } : null;
     }
     return {
         async create() {
