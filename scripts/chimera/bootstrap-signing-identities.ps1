@@ -3,6 +3,11 @@ param(
     [Parameter(Mandatory)] [string] $BackupRoot,
     [Parameter(Mandatory)] [string] $StorePasswordFile,
     [Parameter(Mandatory)] [string] $KeyPasswordFile,
+    [string] $ProductPath,
+    [string] $KeytoolPath,
+    [string] $OpenSslPath,
+    [string] $KeytoolSha256,
+    [string] $OpenSslSha256,
     [switch] $OfflineRecoveryRotation
 )
 
@@ -16,27 +21,41 @@ function Get-SecretFromProtectedFile([string] $Path) {
     return $credential.GetNetworkCredential().Password
 }
 
-function Protect-PrivatePath([string] $Path) {
+function Protect-PrivatePath([string] $Path, [bool] $Inheritable = $false) {
     $acl = if (Test-Path -LiteralPath $Path -PathType Container) { [System.Security.AccessControl.DirectorySecurity]::new() } else { [System.Security.AccessControl.FileSecurity]::new() }
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($sid in @([System.Security.Principal.WindowsIdentity]::GetCurrent().User, [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
-        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
+        $inheritance = if ($Inheritable) { [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' } else { [System.Security.AccessControl.InheritanceFlags]::None }
+        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', $inheritance, [System.Security.AccessControl.PropagationFlags]::None, 'Allow'))
     }
     Set-Acl -LiteralPath $Path -AclObject $acl
 }
 
+function Write-ProductAtomic([string] $Path, $Value) {
+    $tempProduct = Join-Path (Split-Path $Path) ('.product.' + [guid]::NewGuid() + '.json')
+    try {
+        [System.IO.File]::WriteAllText($tempProduct, ($Value | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $tempProduct -Destination $Path -Force
+    }
+    finally {
+        Remove-Item -LiteralPath $tempProduct -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$productPath = Join-Path $repoRoot 'brand\chimera\product.json'
+$productPath = if ($ProductPath) { $ProductPath } else { Join-Path $repoRoot 'brand\chimera\product.json' }
 $product = Get-Content -LiteralPath $productPath -Raw | ConvertFrom-Json
-$keytool = 'D:\Desktop\Hack\tools\jdk21\bin\keytool.exe'
-$openssl = 'D:\Scoop\apps\git\2.55.0.3\mingw64\bin\openssl.exe'
-if (-not (Test-Path -LiteralPath $keytool)) { throw 'Pinned JDK keytool was not found.' }
-if (-not (Test-Path -LiteralPath $openssl) -or (Get-FileHash -LiteralPath $openssl -Algorithm SHA256).Hash -ne '822034DA8A01558C17CBE53F42F33985A6EAF7C89E21273779F9C6560D8C4D78') { throw 'Pinned OpenSSL binary hash did not match the approved tool.' }
+$keytool = if ($KeytoolPath) { $KeytoolPath } elseif (Get-Command keytool.exe -ErrorAction SilentlyContinue) { (Get-Command keytool.exe).Source } else { throw 'KeytoolPath is required when keytool is not on PATH.' }
+$openssl = if ($OpenSslPath) { $OpenSslPath } elseif (Get-Command openssl.exe -ErrorAction SilentlyContinue) { (Get-Command openssl.exe).Source } else { throw 'OpenSslPath is required when openssl is not on PATH.' }
+if (-not $KeytoolSha256 -or -not (Test-Path -LiteralPath $keytool) -or (Get-FileHash -LiteralPath $keytool -Algorithm SHA256).Hash -ne $KeytoolSha256.ToUpperInvariant()) { throw 'Keytool binary hash did not match the approved tool.' }
+if (-not $OpenSslSha256 -or -not (Test-Path -LiteralPath $openssl) -or (Get-FileHash -LiteralPath $openssl -Algorithm SHA256).Hash -ne $OpenSslSha256.ToUpperInvariant()) { throw 'OpenSSL binary hash did not match the approved tool.' }
 $opensslVersion = & $openssl version 2>&1
 if ($LASTEXITCODE -ne 0 -or $opensslVersion -notmatch '^OpenSSL 3\.') { throw 'Pinned OpenSSL does not provide required OpenSSL 3.x Ed25519 support.' }
 
 $bundlePath = Join-Path $BackupRoot 'chimera-private-signing-material.zip.enc'
-if (-not $OfflineRecoveryRotation -and ((Test-Path -LiteralPath $bundlePath) -or $product.updatePublicKey -or $product.androidSignerSha256)) {
+$transactionPath = Join-Path $BackupRoot 'chimera-signing-transaction.json'
+$hasTransaction = Test-Path -LiteralPath $transactionPath
+if (-not $OfflineRecoveryRotation -and (-not $hasTransaction) -and ((Test-Path -LiteralPath $bundlePath) -or $product.updatePublicKey -or $product.androidSignerSha256)) {
     throw 'Signing identities already exist. Offline recovery/rotation mode is required to replace them.'
 }
 
@@ -47,12 +66,36 @@ if ($storePassword.Length -lt 6 -or $keyPassword.Length -lt 6) { throw 'Signing 
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("chimera-signing-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $staging -Force | Out-Null
 try {
-    Protect-PrivatePath $staging
+    Protect-PrivatePath $staging $true
     $opensslPassFile = Join-Path $staging 'openssl-password.txt'
     [System.IO.File]::WriteAllText($opensslPassFile, $storePassword, [System.Text.UTF8Encoding]::new($false))
     Protect-PrivatePath $opensslPassFile
     New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
-    Protect-PrivatePath $BackupRoot
+    Protect-PrivatePath $BackupRoot $true
+    if ($hasTransaction -and -not $OfflineRecoveryRotation) {
+        $transaction = Get-Content -LiteralPath $transactionPath -Raw | ConvertFrom-Json
+        if ($transaction.schemaVersion -ne 1 -or $transaction.status -ne 'bundle-final-product-pending' -or $transaction.finalBundlePath -ne $bundlePath -or -not (Test-Path -LiteralPath $bundlePath)) { throw 'Incomplete signing transaction record is invalid.' }
+        if ((Get-FileHash -LiteralPath $bundlePath -Algorithm SHA256).Hash -ne $transaction.finalBundleSha256) { throw 'Incomplete signing transaction bundle digest does not match.' }
+        $resumeArchive = Join-Path $staging 'resume.zip'
+        & $openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in $bundlePath -out $resumeArchive -pass "file:$opensslPassFile" 2>$null
+        if ($LASTEXITCODE -ne 0) { throw 'Incomplete signing transaction bundle could not be decrypted.' }
+        $resumeMaterial = Join-Path $staging 'resume'
+        Expand-Archive -LiteralPath $resumeArchive -DestinationPath $resumeMaterial
+        $env:CHIMERA_STORE_PASSWORD = $storePassword
+        $resumeCertificate = & $keytool -list -v -keystore (Join-Path $resumeMaterial 'chimera-release.jks') -storepass:env CHIMERA_STORE_PASSWORD -alias chimera-release 2>&1
+        Remove-Item Env:CHIMERA_STORE_PASSWORD -ErrorAction SilentlyContinue
+        $resumeShaLine = $resumeCertificate | Where-Object { $_ -match 'SHA256:' } | Select-Object -First 1
+        $resumeSha = (($resumeShaLine -replace '.*SHA256:\s*', '') -replace ':', '').Trim().ToUpperInvariant()
+        $resumeDer = Join-Path $staging 'resume-public.der'
+        & $openssl pkey -in (Join-Path $resumeMaterial 'manifest-ed25519-private.pem') -pubout -outform DER -out $resumeDer 2>$null
+        $resumePublic = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($resumeDer))
+        $expected = $transaction.expectedProduct
+        if ($expected.updatePublicKey -ne $resumePublic -or $expected.androidSignerSha256 -ne $resumeSha -or $expected.productName -ne 'Chimera' -or $expected.slug -ne 'chimera' -or $expected.androidApplicationId -ne 'org.chimerahub.chimera') { throw 'Incomplete signing transaction public identity validation failed.' }
+        Write-ProductAtomic $productPath $expected
+        Remove-Item -LiteralPath $transactionPath -Force
+        [pscustomobject]@{ encryptedPrivateBundle = $bundlePath; androidKeystore = $bundlePath; updatePublicKey = $resumePublic; androidSignerSha256 = $resumeSha; resumed = $true } | ConvertTo-Json -Compress
+        return
+    }
     if ($OfflineRecoveryRotation) {
         if (-not (Test-Path -LiteralPath $bundlePath)) { throw 'Offline recovery verification requires the existing encrypted private bundle.' }
         Protect-PrivatePath $bundlePath
@@ -95,19 +138,27 @@ try {
 
     $archive = Join-Path $staging 'chimera-private-signing-material.zip'
     Compress-Archive -Path $keystore, $manifestPrivate -DestinationPath $archive -CompressionLevel Optimal
-    $bundle = $bundlePath
-    & $openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -in $archive -out $bundle -pass "file:$opensslPassFile" 2>$null
+    $pendingBundle = Join-Path $BackupRoot ('.chimera-private-signing-material.' + [guid]::NewGuid() + '.pending')
+    & $openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -in $archive -out $pendingBundle -pass "file:$opensslPassFile" 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Private signing material encryption failed.' }
-    Protect-PrivatePath $bundle
+    Protect-PrivatePath $pendingBundle
 
     $product.updatePublicKey = $updatePublicKey
     $product.androidSignerSha256 = $androidSha
-    $tempProduct = Join-Path (Split-Path $productPath) ('.product.' + [guid]::NewGuid() + '.json')
-    [System.IO.File]::WriteAllText($tempProduct, ($product | ConvertTo-Json -Depth 4), [System.Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $tempProduct -Destination $productPath -Force
+    $transaction = [pscustomobject]@{ schemaVersion = 1; status = 'bundle-final-product-pending'; expectedProduct = $product; pendingBundlePath = $pendingBundle; finalBundlePath = $bundlePath; pendingBundleSha256 = (Get-FileHash -LiteralPath $pendingBundle -Algorithm SHA256).Hash; finalBundleSha256 = (Get-FileHash -LiteralPath $pendingBundle -Algorithm SHA256).Hash }
+    [System.IO.File]::WriteAllText($transactionPath, ($transaction | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+    Protect-PrivatePath $transactionPath
+    Move-Item -LiteralPath $pendingBundle -Destination $bundlePath -Force
+    Protect-PrivatePath $bundlePath
+    if ($env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME -eq '1') {
+        if ($BackupRoot -notlike "$([System.IO.Path]::GetTempPath())*" -or $productPath -notlike "$([System.IO.Path]::GetTempPath())*") { throw 'Test fault injection is only permitted for temporary paths.' }
+        throw 'Injected failure after final bundle rename.'
+    }
+    Write-ProductAtomic $productPath $product
+    Remove-Item -LiteralPath $transactionPath -Force
 
     [pscustomobject]@{
-        encryptedPrivateBundle = $bundle
+        encryptedPrivateBundle = $bundlePath
         androidKeystore = (Join-Path $BackupRoot 'chimera-private-signing-material.zip.enc')
         updatePublicKey = $updatePublicKey
         androidSignerSha256 = $androidSha

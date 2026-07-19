@@ -8,6 +8,9 @@ $passwordFile = Join-Path $workspace 'store-password.protected'
 $keyPasswordFile = Join-Path $workspace 'key-password.protected'
 $productPath = Join-Path $repoRoot 'brand\chimera\product.json'
 $originalProduct = Get-Content -Raw $productPath
+$keytool = 'D:\Desktop\Hack\tools\jdk21\bin\keytool.exe'
+$openssl = 'D:\Scoop\apps\git\2.55.0.3\mingw64\bin\openssl.exe'
+$toolArgs = @{ KeytoolPath = $keytool; OpenSslPath = $openssl; KeytoolSha256 = (Get-FileHash $keytool -Algorithm SHA256).Hash; OpenSslSha256 = (Get-FileHash $openssl -Algorithm SHA256).Hash }
 
 function Assert-True([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw "Assertion failed: $Message" }
@@ -23,15 +26,17 @@ function Get-ExactAclSids([string] $Path) {
 }
 
 try {
+    New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+    $productPath = Join-Path $workspace 'product.json'
+    Set-Content -LiteralPath $productPath -Value $originalProduct -NoNewline
     $testProduct = $originalProduct | ConvertFrom-Json
     $testProduct.updatePublicKey = ''
     $testProduct.androidSignerSha256 = ''
     $testProduct | ConvertTo-Json | Set-Content -LiteralPath $productPath
-    New-Item -ItemType Directory -Path $workspace -Force | Out-Null
     Write-ProtectedPassword $passwordFile 'test-store-password-8Q!'
     Write-ProtectedPassword $keyPasswordFile 'test-key-password-9R!'
 
-    $first = & $bootstrap -BackupRoot $backupRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile 2>&1
+    $first = & $bootstrap -BackupRoot $backupRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $productPath @toolArgs 2>&1
     Assert-True ($LASTEXITCODE -eq 0) "first bootstrap failed: $first"
     $inventory = $first | ConvertFrom-Json
     Assert-True ($inventory.androidSignerSha256 -match '^[0-9A-F]{64}$') 'inventory has a colon-free uppercase Android SHA-256'
@@ -54,8 +59,6 @@ try {
     $expectedAclSids = @([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544') | Sort-Object -Unique
     Assert-True ((Get-ExactAclSids $inventory.encryptedPrivateBundle) -join ',' -eq ($expectedAclSids -join ',')) 'encrypted bundle ACL is exact allowlist'
 
-    $openssl = 'D:\Scoop\apps\git\2.55.0.3\mingw64\bin\openssl.exe'
-    $keytool = 'D:\Desktop\Hack\tools\jdk21\bin\keytool.exe'
     $passwordInput = Join-Path $workspace 'bundle-password.txt'
     Set-Content -LiteralPath $passwordInput -Value 'test-store-password-8Q!' -NoNewline
     $decryptedZip = Join-Path $workspace 'private.zip'
@@ -77,7 +80,7 @@ try {
     Assert-True ($source -notmatch '-storepass \$storePassword|-keypass \$keyPassword|-pass "pass:\$storePassword"') 'subprocess commands do not contain secret password arguments'
 
     $secondRejected = $false
-    try { & $bootstrap -BackupRoot $backupRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile | Out-Null }
+    try { & $bootstrap -BackupRoot $backupRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $productPath @toolArgs | Out-Null }
     catch { $secondRejected = $_.Exception.Message -match 'already exist' }
     Assert-True $secondRejected 'second bootstrap refuses identity rotation'
 
@@ -85,13 +88,31 @@ try {
     $bad.updatePublicKey = 'AAAA'
     $bad | ConvertTo-Json | Set-Content -LiteralPath $productPath
     $mismatchRejected = $false
-    try { & $bootstrap -BackupRoot $backupRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -OfflineRecoveryRotation | Out-Null }
+    try { & $bootstrap -BackupRoot $backupRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $productPath -OfflineRecoveryRotation @toolArgs | Out-Null }
     catch { $mismatchRejected = $_.Exception.Message -match 'public metadata does not match' }
     Assert-True $mismatchRejected 'mismatched public values are rejected'
+
+    $faultRoot = Join-Path $workspace 'fault-backups'
+    $faultProductPath = Join-Path $workspace 'fault-product.json'
+    $testProduct.updatePublicKey = ''
+    $testProduct.androidSignerSha256 = ''
+    $testProduct | ConvertTo-Json | Set-Content -LiteralPath $faultProductPath
+    $env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME = '1'
+    $faulted = $false
+    try { & $bootstrap -BackupRoot $faultRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $faultProductPath @toolArgs | Out-Null }
+    catch { $faulted = $_.Exception.Message -match 'Injected failure' }
+    Remove-Item Env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME -ErrorAction SilentlyContinue
+    Assert-True $faulted 'fault injection fails after final bundle rename'
+    $faultProduct = Get-Content -Raw $faultProductPath | ConvertFrom-Json
+    Assert-True (-not $faultProduct.updatePublicKey) 'fault leaves product unchanged'
+    Assert-True (Test-Path (Join-Path $faultRoot 'chimera-private-signing-material.zip.enc')) 'fault leaves final bundle for resume'
+    Assert-True (Test-Path (Join-Path $faultRoot 'chimera-signing-transaction.json')) 'fault leaves transaction record for resume'
+    $resumed = & $bootstrap -BackupRoot $faultRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $faultProductPath @toolArgs 2>&1 | ConvertFrom-Json
+    Assert-True $resumed.resumed 'next invocation resumes incomplete transaction'
+    Assert-True (-not (Test-Path (Join-Path $faultRoot 'chimera-signing-transaction.json'))) 'resume clears transaction record'
 
     Write-Output 'PASS: bootstrap signing identities'
 }
 finally {
-    Set-Content -LiteralPath $productPath -Value $originalProduct -NoNewline
     Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction SilentlyContinue
 }
