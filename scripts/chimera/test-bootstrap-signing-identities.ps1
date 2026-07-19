@@ -126,12 +126,17 @@ try {
     $testProduct.updatePublicKey = ''
     $testProduct.androidSignerSha256 = ''
     $testProduct | ConvertTo-Json | Set-Content -LiteralPath $escapedProductPath
+    $escapedProductBefore = Get-Content -LiteralPath $escapedProductPath -Raw
+    $escapedBackupRoot = Join-Path $escapedWorkspace 'backups'
     $env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD = '1'
     $escapedRejected = $false
-    try { & $bootstrap -BackupRoot (Join-Path $escapedWorkspace 'backups') -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $escapedProductPath @toolArgs | Out-Null }
+    try { & $bootstrap -BackupRoot $escapedBackupRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $escapedProductPath @toolArgs | Out-Null }
     catch { $escapedRejected = $_.Exception.Message -match 'only permitted for temporary paths' }
     Remove-Item Env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -ErrorAction SilentlyContinue
     Assert-True $escapedRejected 'normalized temp parent traversal is rejected for fault injection'
+    Assert-True ((Get-Content -LiteralPath $escapedProductPath -Raw) -ceq $escapedProductBefore) 'rejected fault hook leaves product byte-for-byte unchanged'
+    $escapedArtifacts = @(Get-ChildItem -LiteralPath $escapedBackupRoot -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.pending$|transaction|private-signing-material|\.jks$|\.pem$|\.zip$' })
+    Assert-True ($escapedArtifacts.Count -eq 0) 'rejected fault hook persists no signing identity artifacts'
 
     $pendingFaultRoot = Join-Path $workspace 'pending-fault-backups'
     $pendingFaultProductPath = Join-Path $workspace 'pending-fault-product.json'

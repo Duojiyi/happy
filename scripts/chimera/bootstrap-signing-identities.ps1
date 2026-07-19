@@ -67,9 +67,18 @@ try {
         throw 'Signing identity bootstrap is already in progress.'
     }
     Protect-PrivatePath $lockPath
-    if ($env:CHIMERA_TEST_LOCK_READY_PATH -or $env:CHIMERA_TEST_LOCK_RELEASE_PATH) {
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $productPath = if ($ProductPath) { $ProductPath } else { Join-Path $repoRoot 'brand\chimera\product.json' }
+    $lockSignalEnabled = [bool]($env:CHIMERA_TEST_LOCK_READY_PATH -or $env:CHIMERA_TEST_LOCK_RELEASE_PATH)
+    $faultInjectionEnabled = $env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -eq '1' -or $env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME -eq '1'
+    if ($lockSignalEnabled) {
         if (-not $env:CHIMERA_TEST_LOCK_READY_PATH -or -not $env:CHIMERA_TEST_LOCK_RELEASE_PATH) { throw 'Test lock signaling requires ready and release paths.' }
         Assert-TemporaryTestPaths @($BackupRoot, $ProductPath, $env:CHIMERA_TEST_LOCK_READY_PATH, $env:CHIMERA_TEST_LOCK_RELEASE_PATH) 'Test lock signaling is only permitted for temporary paths.'
+    }
+    if ($faultInjectionEnabled) {
+        Assert-TemporaryTestPaths @($BackupRoot, $productPath) 'Test fault injection is only permitted for temporary paths.'
+    }
+    if ($lockSignalEnabled) {
         $readyStream = [System.IO.File]::Open($env:CHIMERA_TEST_LOCK_READY_PATH, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         $readyStream.Dispose()
         Protect-PrivatePath $env:CHIMERA_TEST_LOCK_READY_PATH
@@ -80,8 +89,6 @@ try {
         }
     }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$productPath = if ($ProductPath) { $ProductPath } else { Join-Path $repoRoot 'brand\chimera\product.json' }
 $inputProduct = Get-Content -LiteralPath $productPath -Raw | ConvertFrom-Json
 $productKeys = @('productName','slug','androidApplicationId','deepLinkSchemes','relayOrigin','repository','upstreamAppVersion','chimeraRevision','androidVersionCode','updatePublicKey','androidSignerSha256')
 Assert-ExactKeys $inputProduct $productKeys 'Product metadata'
@@ -202,13 +209,11 @@ try {
     [System.IO.File]::WriteAllText($transactionPath, ($transaction | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
     Protect-PrivatePath $transactionPath
     if ($env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -eq '1') {
-        Assert-TemporaryTestPaths @($BackupRoot, $productPath) 'Test fault injection is only permitted for temporary paths.'
         throw 'Injected failure after transaction record.'
     }
     Move-Item -LiteralPath $pendingBundle -Destination $bundlePath -Force
     Protect-PrivatePath $bundlePath
     if ($env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME -eq '1') {
-        Assert-TemporaryTestPaths @($BackupRoot, $productPath) 'Test fault injection is only permitted for temporary paths.'
         throw 'Injected failure after final bundle rename.'
     }
     Write-ProductAtomic $productPath $product
