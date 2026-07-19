@@ -1,5 +1,6 @@
 import argon2 from "argon2";
 import { db } from "@/storage/db";
+import { createPublicConfigService, registerAdminPublicConfigRoutes } from "./publicConfig";
 import { loadChimeraServerConfig } from "./config";
 import { createAdminSessionService, deriveAdminSessionSecret } from "./adminSessions";
 
@@ -64,4 +65,5 @@ export function adminRoutes(app: any, dependencies: { passwordHash?: string; ses
         if (request.headers.origin !== ORIGIN || !sessionId || typeof request.headers["x-chimera-csrf"] !== "string" || !await sessions.authorizeMutation(sessionId, request.headers["x-chimera-csrf"])) return unauthorised(reply);
         await sessions.revokeAll(); return reply.code(204).send();
     });
+    registerAdminPublicConfigRoutes(app, createPublicConfigService(), sessions);
 }

@@ -122,7 +122,8 @@ export async function serve(env: NodeJS.ProcessEnv = process.env) {
     }
 
     const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3005;
-    const host = process.env.HOST || "0.0.0.0";
+    // The standalone listener is reachable only through the local reverse proxy.
+    const host = "127.0.0.1";
     const staticDir = findStaticDir();
     let injectHtmlConfig: Record<string, unknown> | undefined;
     if (process.env.HAPPY_INJECT_HTML_CONFIG) {

@@ -4,15 +4,11 @@ import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-
 import { onShutdown } from "@/utils/shutdown";
 import { Fastify } from "./types";
 import { authRoutes } from "./routes/authRoutes";
-import { pushRoutes } from "./routes/pushRoutes";
 import { sessionRoutes } from "./routes/sessionRoutes";
-import { connectRoutes } from "./routes/connectRoutes";
 import { accountRoutes } from "./routes/accountRoutes";
 import { startSocket } from "./socket";
 import { machinesRoutes } from "./routes/machinesRoutes";
-import { devRoutes } from "./routes/devRoutes";
 import { versionRoutes } from "./routes/versionRoutes";
-import { voiceRoutes } from "./routes/voiceRoutes";
 import { artifactsRoutes } from "./routes/artifactsRoutes";
 import { accessKeysRoutes } from "./routes/accessKeysRoutes";
 import { enableMonitoring } from "./utils/enableMonitoring";
@@ -24,6 +20,7 @@ import { kvRoutes } from "./routes/kvRoutes";
 import { v3SessionRoutes } from "./routes/v3SessionRoutes";
 import { attachmentRoutes } from "./routes/attachmentRoutes";
 import { adminRoutes } from "@/app/chimera/adminRoutes";
+import { createPublicConfigService, registerPublicConfigRoute } from "@/app/chimera/publicConfig";
 import { isLocalStorage, getLocalFilesDir } from "@/storage/files";
 import * as path from "path";
 import * as fs from "fs";
@@ -52,8 +49,9 @@ export async function startApi(opts: StartApiOptions = {}) {
         trustProxy: isTrustedLoopbackProxy,
     });
     app.register(import('@fastify/cors'), {
-        origin: '*',
-        allowedHeaders: '*',
+        origin: 'https://39.98.68.173',
+        credentials: true,
+        allowedHeaders: ['Content-Type', 'Authorization', 'X-Chimera-CSRF'],
         methods: ['GET', 'POST', 'PUT', 'DELETE']
     });
 
@@ -104,21 +102,18 @@ export async function startApi(opts: StartApiOptions = {}) {
 
     // Routes
     authRoutes(typed);
-    pushRoutes(typed);
     sessionRoutes(typed);
     accountRoutes(typed);
-    connectRoutes(typed);
     machinesRoutes(typed);
     artifactsRoutes(typed);
     accessKeysRoutes(typed);
-    devRoutes(typed);
     versionRoutes(typed);
-    voiceRoutes(typed);
     userRoutes(typed);
     feedRoutes(typed);
     kvRoutes(typed);
     v3SessionRoutes(typed);
     attachmentRoutes(typed);
+    registerPublicConfigRoute(typed, createPublicConfigService());
     adminRoutes(typed);
 
     // Static webapp (self-host mode)
