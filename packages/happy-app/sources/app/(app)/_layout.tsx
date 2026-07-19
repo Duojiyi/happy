@@ -152,14 +152,6 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
-                name="changelog"
-                options={{
-                    headerShown: true,
-                    headerTitle: t('navigation.whatsNew'),
-                    headerBackTitle: t('common.back'),
-                }}
-            />
-            <Stack.Screen
                 name="artifacts/index"
                 options={{
                     headerShown: true,
