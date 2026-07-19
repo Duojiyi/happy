@@ -19,7 +19,6 @@ import { Session, Machine } from './storageTypes';
 import { InvalidateSync } from '@/utils/sync';
 import { ActivityUpdateAccumulator } from './reducer/activityUpdateAccumulator';
 import { randomUUID } from 'expo-crypto';
-import * as Notifications from 'expo-notifications';
 import { Platform, AppState, type AppStateStatus } from 'react-native';
 import { isRunningOnMac } from '@/utils/platform';
 import { NormalizedMessage, normalizeRawMessage, RawRecord } from './typesRaw';
@@ -124,7 +123,6 @@ class Sync {
     private pendingSettings: Partial<Settings> = loadPendingSettings();
     private appState: AppStateStatus = AppState.currentState;
     private backgroundSendTimeout: ReturnType<typeof setTimeout> | null = null;
-    private backgroundSendNotificationId: string | null = null;
     private backgroundSendStartedAt: number | null = null;
     revenueCatInitialized = false;
 
@@ -160,10 +158,8 @@ class Sync {
                 const shouldFailAfterResume = this.backgroundSendStartedAt !== null
                     && this.hasPendingOutboxMessages()
                     && (Date.now() - this.backgroundSendStartedAt) >= Sync.BACKGROUND_SEND_TIMEOUT_MS;
-                void this.cancelBackgroundSendTimeoutNotification();
                 this.clearBackgroundSendWatchdog();
                 if (shouldFailAfterResume) {
-                    void this.notifyMessageSendFailed();
                     this.failPendingOutboxMessages('Message failed to send in background after 30s. Please retry.');
                 }
                 log.log('📱 App became active');
@@ -356,7 +352,6 @@ class Sync {
             this.backgroundSendTimeout = null;
             void this.handleBackgroundSendTimeout();
         }, Sync.BACKGROUND_SEND_TIMEOUT_MS);
-        void this.scheduleBackgroundSendTimeoutNotification();
     }
 
     private clearBackgroundSendWatchdog() {
@@ -365,58 +360,6 @@ class Sync {
             this.backgroundSendTimeout = null;
         }
         this.backgroundSendStartedAt = null;
-    }
-
-    private async scheduleBackgroundSendTimeoutNotification() {
-        if (Platform.OS === 'web' || this.backgroundSendNotificationId) {
-            return;
-        }
-        try {
-            this.backgroundSendNotificationId = await Notifications.scheduleNotificationAsync({
-                content: {
-                    title: 'Message not sent',
-                    body: 'A message is still sending in the background. It will fail in 30 seconds if not delivered.',
-                    sound: true
-                },
-                trigger: {
-                    type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-                    seconds: Math.ceil(Sync.BACKGROUND_SEND_TIMEOUT_MS / 1000)
-                }
-            });
-        } catch (error) {
-            log.log(`Failed to schedule background send timeout notification: ${error}`);
-        }
-    }
-
-    private async cancelBackgroundSendTimeoutNotification() {
-        if (!this.backgroundSendNotificationId) {
-            return;
-        }
-        try {
-            await Notifications.cancelScheduledNotificationAsync(this.backgroundSendNotificationId);
-        } catch (error) {
-            log.log(`Failed to cancel background send timeout notification: ${error}`);
-        } finally {
-            this.backgroundSendNotificationId = null;
-        }
-    }
-
-    private async notifyMessageSendFailed() {
-        if (Platform.OS === 'web') {
-            return;
-        }
-        try {
-            await Notifications.scheduleNotificationAsync({
-                content: {
-                    title: 'Message failed',
-                    body: 'A message failed to send while the app was in background. Open Happy and retry.',
-                    sound: true
-                },
-                trigger: null
-            });
-        } catch (error) {
-            log.log(`Failed to schedule message failure notification: ${error}`);
-        }
     }
 
     private failPendingOutboxMessages(reasonText: string) {
@@ -453,13 +396,10 @@ class Sync {
 
     private async handleBackgroundSendTimeout() {
         if (!this.hasPendingOutboxMessages()) {
-            await this.cancelBackgroundSendTimeoutNotification();
             this.backgroundSendStartedAt = null;
             return;
         }
 
-        await this.cancelBackgroundSendTimeoutNotification();
-        await this.notifyMessageSendFailed();
         this.failPendingOutboxMessages('Message failed to send in background after 30s. Please retry.');
         this.backgroundSendStartedAt = null;
     }
@@ -1687,7 +1627,6 @@ class Sync {
         if (!pending || pending.length === 0) {
             if (!this.hasPendingOutboxMessages()) {
                 this.clearBackgroundSendWatchdog();
-                await this.cancelBackgroundSendTimeoutNotification();
                 this.backgroundSendStartedAt = null;
             }
             return;
@@ -1738,7 +1677,6 @@ class Sync {
         }
         if (!this.hasPendingOutboxMessages()) {
             this.clearBackgroundSendWatchdog();
-            await this.cancelBackgroundSendTimeoutNotification();
             this.backgroundSendStartedAt = null;
         } else if (this.appState !== 'active') {
             this.maybeStartBackgroundSendWatchdog();
