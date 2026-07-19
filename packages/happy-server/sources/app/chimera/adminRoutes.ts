@@ -5,6 +5,10 @@ import { loadChimeraServerConfig } from "./config";
 import { createAdminSessionService, deriveAdminSessionSecret } from "./adminSessions";
 import { createAccountPolicy, MAX_ATTACHMENT_QUOTA_BYTES, MIN_ATTACHMENT_QUOTA_BYTES } from "./accountPolicy";
 import { disconnectAccountSockets } from "@/app/api/socket";
+import { createInvitationService } from "./invitations";
+import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 const COOKIE_NAME = "__Secure-chimera_admin";
 const ORIGIN = "https://39.98.68.173";
@@ -12,6 +16,15 @@ const UNAUTHORIZED = { error: "Unauthorized" };
 const accountParams = { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", minLength: 43, maxLength: 43, pattern: "^[A-Za-z0-9_-]+$" } } };
 const noBody = { type: "object", additionalProperties: false, required: [] as string[], maxProperties: 0, properties: {} };
 const quotaBody = { type: "object", additionalProperties: false, required: ["attachmentQuotaBytes"], properties: { attachmentQuotaBytes: { type: "integer", minimum: MIN_ATTACHMENT_QUOTA_BYTES, maximum: MAX_ATTACHMENT_QUOTA_BYTES } } };
+const invitationParams = { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", minLength: 1, maxLength: 100, pattern: "^[A-Za-z0-9_-]+$" } } };
+const controlRoot = [process.env.CHIMERA_CONTROL_ASSET_DIR, resolve(process.cwd(), "dist/control"), resolve(process.cwd(), "sources/app/chimera/control")]
+    .find((candidate): candidate is string => Boolean(candidate && existsSync(candidate))) ?? resolve(process.cwd(), "dist/control");
+const controlHeaders = (reply: any) => reply
+    .header("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+    .header("x-content-type-options", "nosniff")
+    .header("referrer-policy", "no-referrer")
+    .header("cross-origin-opener-policy", "same-origin")
+    .header("cache-control", "no-store");
 const validateNoBody = async (request: any, reply: any) => {
     if (request.body !== undefined && (request.body === null || typeof request.body !== "object" || Array.isArray(request.body) || Object.keys(request.body).length !== 0)) {
         return reply.code(400).send({ error: "Invalid request" });
@@ -49,7 +62,16 @@ function cookie(request: { headers: Record<string, unknown> }) {
     return header.split(/;\s*/).map((part) => part.split("=", 2)).find(([name]) => name === COOKIE_NAME)?.[1] ?? null;
 }
 
-export function adminRoutes(app: any, dependencies: { passwordHash?: string; sessions?: ReturnType<typeof createAdminSessionService>; verifyPassword?: (password: string, hash: string) => Promise<boolean>; loginLimits?: LoginLimits; accountPseudonymKey?: Uint8Array; accounts?: ReturnType<typeof createAccountPolicy> } = {}) {
+export function adminRoutes(app: any, dependencies: { passwordHash?: string; sessions?: ReturnType<typeof createAdminSessionService>; verifyPassword?: (password: string, hash: string) => Promise<boolean>; loginLimits?: LoginLimits; accountPseudonymKey?: Uint8Array; accounts?: ReturnType<typeof createAccountPolicy>; invitations?: ReturnType<typeof createInvitationService> } = {}) {
+    const sendControlAsset = async (reply: any, file: "index.html" | "control.css" | "control.js") => {
+        controlHeaders(reply);
+        reply.type(file.endsWith(".html") ? "text/html; charset=utf-8" : file.endsWith(".css") ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8");
+        return reply.send(await readFile(join(controlRoot, file)));
+    };
+    app.get("/chimera-control", (_request: any, reply: any) => sendControlAsset(reply, "index.html"));
+    app.get("/chimera-control/", (_request: any, reply: any) => sendControlAsset(reply, "index.html"));
+    app.get("/chimera-control/control.css", (_request: any, reply: any) => sendControlAsset(reply, "control.css"));
+    app.get("/chimera-control/control.js", (_request: any, reply: any) => sendControlAsset(reply, "control.js"));
     const config = dependencies.passwordHash ? null : loadChimeraServerConfig(process.env);
     const passwordHash = dependencies.passwordHash ?? config!.adminPasswordHash;
     const sessions = dependencies.sessions ?? createAdminSessionService({ secret: deriveAdminSessionSecret(config!.adminSessionSecret, passwordHash), db });
@@ -58,6 +80,7 @@ export function adminRoutes(app: any, dependencies: { passwordHash?: string; ses
     const pseudonymKey = dependencies.accountPseudonymKey ?? config?.accountPseudonymKey;
     if (!dependencies.accounts && !pseudonymKey) throw new Error("Chimera account pseudonym key is required");
     const accounts = dependencies.accounts ?? createAccountPolicy({ pseudonymKey: pseudonymKey!, onAccountInvalidated: disconnectAccountSockets });
+    const invitations = dependencies.invitations ?? createInvitationService({ pepper: config!.invitationPepper, db });
     const unauthorised = (reply: any) => reply.code(401).send(UNAUTHORIZED);
     app.post("/chimera-control/api/session", async (request: any, reply: any) => {
         if (!request.body || typeof request.body !== "object" || Array.isArray(request.body)
@@ -94,6 +117,29 @@ export function adminRoutes(app: any, dependencies: { passwordHash?: string; ses
             : sessionId && await sessions.authenticate(sessionId);
         return allowed ? true : (unauthorised(reply), false);
     };
+    app.get("/chimera-control/api/invitations", async (request: any, reply: any) => {
+        if (Object.keys(request.query ?? {}).length !== 0) return reply.code(400).send({ error: "Invalid request" });
+        if (!await accountSession(request, reply)) return;
+        return reply.send(await invitations.list());
+    });
+    app.post("/chimera-control/api/invitations", async (request: any, reply: any) => {
+        if (!await accountSession(request, reply, true)) return;
+        const body = request.body;
+        if (!body || typeof body !== "object" || Array.isArray(body)
+            || Object.keys(body).some((key) => !["label", "maxUses", "expiresAt"].includes(key))) return reply.code(400).send({ error: "Invalid invitation" });
+        try {
+            return reply.send(await invitations.create({
+                ...(body.label === undefined ? {} : { label: body.label }),
+                ...(body.maxUses === undefined ? {} : { maxUses: body.maxUses }),
+                ...(body.expiresAt === undefined ? {} : { expiresAt: new Date(body.expiresAt) }),
+            }));
+        } catch { return reply.code(400).send({ error: "Invalid invitation" }); }
+    });
+    app.post("/chimera-control/api/invitations/:id/revoke", { schema: { params: invitationParams, body: noBody }, preValidation: validateNoBody }, async (request: any, reply: any) => {
+        if (!await accountSession(request, reply, true)) return;
+        try { return reply.send(await invitations.revoke(request.params.id)); }
+        catch { return reply.code(404).send({ error: "Invitation not found" }); }
+    });
     app.get("/chimera-control/api/accounts", async (request: any, reply: any) => {
         if (Object.keys(request.query ?? {}).length !== 0) return reply.code(400).send({ error: "Invalid request" });
         if (!await accountSession(request, reply)) return; return reply.send(await accounts.list());

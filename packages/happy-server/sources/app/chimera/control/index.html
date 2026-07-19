@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Chimera Control</title>
+  <link rel="stylesheet" href="./control.css">
+</head>
+<body>
+  <main id="login-view" class="login-shell">
+    <form id="login-form" class="login-panel">
+      <div class="brand-mark" aria-hidden="true">C</div>
+      <h1>Chimera Control</h1>
+      <label for="password">管理员密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+      <button type="submit">登录</button>
+      <p id="login-error" class="form-status" role="alert"></p>
+    </form>
+  </main>
+
+  <div id="app-view" class="app-shell" hidden>
+    <header class="topbar">
+      <div class="brand-lockup"><span class="brand-mark small" aria-hidden="true">C</span><strong>Chimera Control</strong></div>
+      <button id="logout" class="button-secondary" type="button">退出</button>
+    </header>
+    <nav class="section-nav" aria-label="管理区域">
+      <button type="button" data-target="invitations" aria-current="page">邀请码</button>
+      <button type="button" data-target="announcement">启动公告</button>
+      <button type="button" data-target="accounts">账户</button>
+    </nav>
+    <div id="global-status" class="global-status" role="status" aria-live="polite"></div>
+
+    <section id="invitations" data-section="invitations" class="workspace-section">
+      <header><div><p class="section-kicker">访问控制</p><h2>邀请码</h2></div></header>
+      <form id="invite-form" class="form-grid">
+        <label>标签<input name="label" maxlength="120"></label>
+        <label>可用次数<input name="maxUses" type="number" min="1" max="1000" value="1" required></label>
+        <label>有效期至<input name="expiresAt" type="datetime-local" required></label>
+        <button type="submit">创建邀请码</button>
+      </form>
+      <div id="invite-code" class="one-time-code" hidden>
+        <div><span>新邀请码</span><code id="invite-code-value"></code></div>
+        <div class="actions"><button id="copy-invite" type="button">复制</button><button id="dismiss-invite" class="button-secondary" type="button">清除</button></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>标签</th><th>使用</th><th>到期</th><th>状态</th><th></th></tr></thead><tbody id="invitation-rows"></tbody></table></div>
+    </section>
+
+    <section id="announcement" data-section="announcement" class="workspace-section" hidden>
+      <header><div><p class="section-kicker">客户端启动</p><h2>启动公告</h2></div></header>
+      <form id="announcement-form" class="form-stack">
+        <label class="toggle-row"><input name="enabled" type="checkbox"><span>启用公告</span></label>
+        <label>标题<input name="title" maxlength="120"></label>
+        <label>正文<textarea name="body" maxlength="4000" rows="7"></textarea></label>
+        <div class="form-grid two"><label>主按钮文字<input name="primaryButtonLabel" maxlength="40"></label><label>链接按钮文字<input name="linkButtonLabel" maxlength="40"></label></div>
+        <label>链接地址<input name="linkUrl" type="url" inputmode="url" placeholder="https://"></label>
+        <button type="submit">保存公告</button>
+      </form>
+    </section>
+
+    <section id="accounts" data-section="accounts" class="workspace-section" hidden>
+      <header><div><p class="section-kicker">账户策略</p><h2>账户</h2></div><button id="refresh-accounts" class="button-secondary" type="button">刷新</button></header>
+      <div class="table-wrap"><table><thead><tr><th>匿名 ID</th><th>创建时间</th><th>附件用量</th><th>配额</th><th>状态</th><th></th></tr></thead><tbody id="account-rows"></tbody></table></div>
+    </section>
+  </div>
+  <dialog id="quota-dialog">
+    <form id="quota-form" method="dialog" class="dialog-form">
+      <h2>设置附件配额</h2>
+      <label>配额（GiB）<input name="quotaGiB" type="number" min="0.09765625" max="50" step="0.09765625" required></label>
+      <div class="actions"><button id="cancel-quota" class="button-secondary" type="button">取消</button><button type="submit">保存</button></div>
+    </form>
+  </dialog>
+  <script src="./control.js" defer></script>
+</body>
+</html>
