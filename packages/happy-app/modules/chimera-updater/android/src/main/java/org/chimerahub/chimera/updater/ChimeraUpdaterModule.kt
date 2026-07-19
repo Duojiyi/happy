@@ -1,6 +1,7 @@
 package org.chimerahub.chimera.updater
 
 import android.content.Intent
+import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -44,6 +45,9 @@ class ChimeraUpdaterModule : Module() {
     AsyncFunction("launchInstaller") { fileUri: String ->
       val context = requireContext()
       val apk = requireCachedApk(fileUri)
+      val archiveInfo = readPackageInfo(apk)
+        ?: throw CodedException("E_APK_INVALID", "The selected file is not a readable APK.", null)
+      validateInstallIdentity(archiveInfo)
       val contentUri = FileProvider.getUriForFile(context, "${context.packageName}.chimera.updates", apk)
       context.startActivity(Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(contentUri, "application/vnd.android.package-archive")
@@ -56,14 +60,20 @@ class ChimeraUpdaterModule : Module() {
     ?: throw CodedException("E_CONTEXT_UNAVAILABLE", "Android context is unavailable.", null)
 
   private fun requireCachedApk(value: String): File {
-    val uri = Uri.parse(value)
-    if (uri.scheme != "file") throw CodedException("E_APK_URI", "APK URI must use the file scheme.", null)
-    val file = File(requireNotNull(uri.path) { "APK URI has no path." }).canonicalFile
-    val cacheDirectory = File(requireContext().cacheDir, "chimera-updates").canonicalFile
-    if (file.parentFile != cacheDirectory || !file.isFile || !file.name.endsWith(".apk", ignoreCase = true)) {
+    val context = requireContext()
+    try {
+      val uri = Uri.parse(value)
+      val rawPath = uri.path
+      if (uri.scheme != "file" || rawPath.isNullOrEmpty()) throw IllegalArgumentException()
+      val file = File(rawPath).canonicalFile
+      val cacheDirectory = File(context.cacheDir, "chimera-updates").canonicalFile
+      if (file.parentFile != cacheDirectory || !file.isFile || !file.name.endsWith(".apk", ignoreCase = true)) {
+        throw IllegalArgumentException()
+      }
+      return file
+    } catch (_: Exception) {
       throw CodedException("E_APK_URI", "APK must be a file in the Chimera update cache.", null)
     }
-    return file
   }
 
   @Suppress("DEPRECATION")
@@ -71,6 +81,27 @@ class ChimeraUpdaterModule : Module() {
     apk.absolutePath,
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
   )
+
+  @Suppress("DEPRECATION")
+  private fun installedPackageInfo(context: Context): PackageInfo = try {
+    context.packageManager.getPackageInfo(
+      context.packageName,
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES
+    )
+  } catch (_: PackageManager.NameNotFoundException) {
+    throw CodedException("E_APK_IDENTITY", "Installed app identity is unavailable.", null)
+  }
+
+  private fun validateInstallIdentity(candidate: PackageInfo) {
+    val context = requireContext()
+    if (candidate.packageName != context.packageName) {
+      throw CodedException("E_APK_IDENTITY", "APK package does not match this app.", null)
+    }
+    val installed = installedPackageInfo(context)
+    if (signerDigest(candidate) != signerDigest(installed)) {
+      throw CodedException("E_APK_IDENTITY", "APK signer does not match this app.", null)
+    }
+  }
 
   @Suppress("DEPRECATION")
   private fun versionCode(info: PackageInfo): Long = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()

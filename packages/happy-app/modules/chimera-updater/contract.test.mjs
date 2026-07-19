@@ -28,6 +28,30 @@ test('Kotlin exposes asynchronous API methods and rejects ambiguous APK signers'
   assert.match(kotlin, /"versionName" to versionName/);
 });
 
+test('installer revalidates APK identity against the installed app before granting a URI', () => {
+  const kotlin = source('android/src/main/java/org/chimerahub/chimera/updater/ChimeraUpdaterModule.kt');
+  const launchInstaller = kotlin.slice(kotlin.indexOf('AsyncFunction("launchInstaller")'), kotlin.indexOf('\n    }\n  }', kotlin.indexOf('AsyncFunction("launchInstaller")')));
+
+  assert.match(launchInstaller, /val archiveInfo = readPackageInfo\(apk\)/);
+  assert.match(launchInstaller, /validateInstallIdentity\(archiveInfo\)/);
+  assert.ok(launchInstaller.indexOf('validateInstallIdentity(archiveInfo)') < launchInstaller.indexOf('FileProvider.getUriForFile'));
+  assert.match(kotlin, /getPackageInfo\(\s*context\.packageName,\s*[\s\S]*PackageManager\.GET_SIGNING_CERTIFICATES/);
+  assert.match(kotlin, /candidate\.packageName != context\.packageName/);
+  assert.match(kotlin, /signerDigest\(candidate\) != signerDigest\(installed\)/);
+  assert.match(kotlin, /CodedException\("E_APK_IDENTITY"/);
+});
+
+test('malformed cache file URIs are reduced to a non-leaking APK URI error', () => {
+  const kotlin = source('android/src/main/java/org/chimerahub/chimera/updater/ChimeraUpdaterModule.kt');
+  const cachedApk = kotlin.slice(kotlin.indexOf('private fun requireCachedApk'), kotlin.indexOf('\n  @Suppress', kotlin.indexOf('private fun requireCachedApk')));
+
+  assert.match(cachedApk, /try \{/);
+  assert.match(cachedApk, /uri\.scheme != "file" \|\| rawPath\.isNullOrEmpty\(\)/);
+  assert.match(cachedApk, /catch \(_:\s*Exception\)/);
+  assert.match(cachedApk, /CodedException\("E_APK_URI", "APK must be a file in the Chimera update cache\."/);
+  assert.doesNotMatch(cachedApk, /value\}|rawPath\}|file\.absolutePath/);
+});
+
 test('autolinking discovers the local module and its Gradle project supplies FileProvider', () => {
   const packageJson = JSON.parse(source('package.json'));
   const config = JSON.parse(source('expo-module.config.json'));
