@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]] || exit 1
+apk="$1"
+build_tools=/opt/android-sdk/build-tools/35.0.0
+aapt2="$build_tools/aapt2"
+apksigner="$build_tools/apksigner"
+[[ -x "$aapt2" && -x "$apksigner" ]] || { printf 'Pinned Android build tools are unavailable\n' >&2; exit 1; }
+
+badging="$($aapt2 dump badging "$apk")"
+package_line="$(printf '%s\n' "$badging" | sed -n '1p')"
+package="$(printf '%s\n' "$package_line" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+version_code="$(printf '%s\n' "$package_line" | sed -n "s/.* versionCode='\([0-9][0-9]*\)'.*/\1/p")"
+version_name="$(printf '%s\n' "$package_line" | sed -n "s/.* versionName='\([^']*\)'.*/\1/p")"
+[[ -n "$package" && "$version_code" =~ ^[1-9][0-9]*$ && -n "$version_name" ]] || exit 1
+
+certs="$($apksigner verify --verbose --print-certs "$apk")"
+mapfile -t signer_lines < <(printf '%s\n' "$certs" | sed -n 's/^Signer #[0-9][0-9]* certificate SHA-256 digest: //p')
+[[ "${#signer_lines[@]}" -eq 1 && "${signer_lines[0]}" =~ ^[A-Fa-f0-9]{64}$ ]] || exit 1
+signer="$(printf '%s' "${signer_lines[0]}" | tr '[:lower:]' '[:upper:]')"
+printf '%s\t%s\t%s\t%s\n' "$package" "$version_code" "$version_name" "$signer"

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() { printf 'Chimera server command rejected\n' >&2; exit 1; }
+command="${SSH_ORIGINAL_COMMAND:-}"
+if [[ "$command" =~ ^scp\ -t\ (\.chimera-staging/server/[a-f0-9]{40}\.tar\.partial)$ ]]; then
+  exec /usr/bin/scp -t -- "${BASH_REMATCH[1]}"
+fi
+if [[ "$command" =~ ^(deploy-server|rollback-server)\ ([a-f0-9]{40})$ ]]; then
+  printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" | exec /usr/bin/sudo -n /usr/local/libexec/chimera-server-deploy
+fi
+die

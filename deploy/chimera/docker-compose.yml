@@ -18,9 +18,9 @@ services:
     command:
       - /bin/sh
       - -ec
-      - pnpm --filter happy-server exec tsx ./sources/standalone.ts migrate && exec pnpm --filter happy-server start
+      - pnpm --filter happy-server-self-host exec tsx ./sources/standalone.ts migrate && exec pnpm --filter happy-server-self-host start
     volumes:
-      - chimera-data:/var/lib/chimera
+      - /data:/var/lib/chimera
       - ./web/current:/srv/chimera-web:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
@@ -39,10 +39,10 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./downloads:/srv/chimera-downloads:ro
+      - ./proxy-config:/etc/chimera/config:ro
       - caddy-data:/data
       - caddy-config:/config
 
 volumes:
-  chimera-data:
   caddy-data:
   caddy-config:

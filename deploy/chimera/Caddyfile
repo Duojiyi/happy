@@ -3,7 +3,10 @@
 }
 
 https://39.98.68.173 {
-    tls {
+    import /etc/chimera/config/maintenance.caddy
+    # Public IP certificates are provisioned out of band and must pass
+    # install-tls-certificate.sh (trusted chain + IP SAN + key match).
+    tls /etc/chimera/config/tls/ip-cert.pem /etc/chimera/config/tls/ip-key.pem {
         protocols tls1.2 tls1.3
     }
     encode zstd gzip

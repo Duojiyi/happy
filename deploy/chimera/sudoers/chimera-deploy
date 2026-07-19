@@ -1,0 +1,6 @@
+Defaults:chimera-android-deploy !authenticate
+Defaults:chimera-web-deploy !authenticate
+Defaults:chimera-server-deploy !authenticate
+chimera-android-deploy ALL=(root) NOPASSWD: /usr/local/libexec/chimera-android-activate
+chimera-web-deploy ALL=(root) NOPASSWD: /usr/local/libexec/chimera-web-activate
+chimera-server-deploy ALL=(root) NOPASSWD: /usr/local/libexec/chimera-server-deploy
