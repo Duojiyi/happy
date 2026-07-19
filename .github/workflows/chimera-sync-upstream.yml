@@ -62,7 +62,6 @@ jobs:
       actions: read
       contents: write
       pull-requests: write
-      issues: write
     outputs:
       pr-number: ${{ steps.pr.outputs.pr-number }}
     steps:
@@ -85,7 +84,13 @@ jobs:
           test "$(git -C repository rev-parse "$BRANCH")" = "$CANDIDATE_SHA"
           test "$(git -C repository rev-parse "$MERGE_SHA^2")" = "$UPSTREAM_SHA"
           git -C repository diff --quiet origin/main "$CANDIDATE_SHA" -- .github deploy/chimera scripts/chimera
-          git -C repository push --force-with-lease origin "$BRANCH:refs/heads/$BRANCH"
+          REMOTE_LINE=$(git -C repository ls-remote origin "refs/heads/$BRANCH")
+          EXPECTED_REMOTE_SHA=''
+          if test -n "$REMOTE_LINE"; then
+            [[ "$REMOTE_LINE" =~ ^([a-f0-9]{40})[[:space:]]refs/heads/$BRANCH$ ]]
+            EXPECTED_REMOTE_SHA="${BASH_REMATCH[1]}"
+          fi
+          git -C repository push --force-with-lease="refs/heads/$BRANCH:$EXPECTED_REMOTE_SHA" origin "$BRANCH:refs/heads/$BRANCH"
       - name: Open or update merge-only PR
         id: pr
         env:
@@ -200,21 +205,81 @@ jobs:
           [[ "$(gh api "repos/${{ github.repository }}/compare/$CANDIDATE_SHA...main" --jq .status)" =~ ^(ahead|identical)$ ]]
           [[ "$(gh api "repos/${{ github.repository }}/compare/$UPSTREAM_SHA...main" --jq .status)" =~ ^(ahead|identical)$ ]]
 
+  post-merge-build:
+    needs: [prepare, publish, dispatch, merge-docs, gate-executable]
+    if: ${{ always() && (needs.merge-docs.result == 'success' || needs.gate-executable.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Dispatch and verify build for actual merged main SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.publish.outputs.pr-number }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          gh pr view "$PR_NUMBER" --repo '${{ github.repository }}' --json state,mergeCommit > /tmp/merged-pr.json
+          jq -e '.state == "MERGED"' /tmp/merged-pr.json
+          MERGED_SHA=$(jq -er '.mergeCommit.oid' /tmp/merged-pr.json)
+          [[ "$MERGED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          gh api "repos/${{ github.repository }}/actions/workflows/chimera-build.yml/runs?event=workflow_dispatch&branch=main&per_page=100" > /tmp/build-runs-before.json
+          RUN_BOUNDARY=$(jq -er '[.workflow_runs[].id] | max // 0' /tmp/build-runs-before.json)
+          [[ "$RUN_BOUNDARY" =~ ^[0-9]+$ ]]
+          gh workflow run chimera-build.yml --repo '${{ github.repository }}' --ref main
+          VERIFIED_RUN=''
+          for attempt in $(seq 1 300); do
+            gh api "repos/${{ github.repository }}/actions/workflows/chimera-build.yml/runs?event=workflow_dispatch&branch=main&per_page=100" > /tmp/build-runs-after.json
+            VERIFIED_RUN=$(jq -cr --arg sha "$MERGED_SHA" --argjson boundary "$RUN_BOUNDARY" '[.workflow_runs[] | select(.id > $boundary and .event == "workflow_dispatch" and .head_branch == "main" and .head_sha == $sha and .path == ".github/workflows/chimera-build.yml")] | sort_by(.id) | last // empty' /tmp/build-runs-after.json)
+            if test -n "$VERIFIED_RUN"; then
+              STATUS=$(jq -r '.status' <<<"$VERIFIED_RUN")
+              CONCLUSION=$(jq -r '.conclusion // empty' <<<"$VERIFIED_RUN")
+              if test "$STATUS" = completed; then test "$CONCLUSION" = success; break; fi
+            fi
+            VERIFIED_RUN=''
+            sleep 30
+          done
+          test -n "$VERIFIED_RUN"
+          test "$(jq -r '.head_sha' <<<"$VERIFIED_RUN")" = "$MERGED_SHA"
+          test "$(jq -r '.conclusion' <<<"$VERIFIED_RUN")" = success
+
   blocked-issue:
-    needs: prepare
-    if: ${{ always() && needs.prepare.outputs.status == 'blocked' }}
+    needs: [prepare, publish, dispatch, merge-docs, gate-executable, post-merge-build]
+    if: ${{ always() && (needs.prepare.outputs.status == 'blocked' || needs.prepare.result == 'failure' || needs.prepare.result == 'cancelled' || needs.publish.result == 'failure' || needs.publish.result == 'cancelled' || needs.dispatch.result == 'failure' || needs.dispatch.result == 'cancelled' || needs.merge-docs.result == 'failure' || needs.merge-docs.result == 'cancelled' || needs.gate-executable.result == 'failure' || needs.gate-executable.result == 'cancelled' || needs.post-merge-build.result == 'failure' || needs.post-merge-build.result == 'cancelled') }}
     runs-on: ubuntu-24.04
     permissions: { actions: read, contents: read, issues: write }
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        continue-on-error: true
         with: { name: chimera-sync-candidate, path: handoff }
       - name: Upsert one sanitized blocked issue per upstream SHA
-        env: { GH_TOKEN: "${{ github.token }}" }
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREPARE_UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream-sha }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          PUBLISH_RESULT: ${{ needs.publish.result }}
+          DISPATCH_RESULT: ${{ needs.dispatch.result }}
+          MERGE_DOCS_RESULT: ${{ needs.merge-docs.result }}
+          GATE_EXECUTABLE_RESULT: ${{ needs.gate-executable.result }}
+          POST_MERGE_BUILD_RESULT: ${{ needs.post-merge-build.result }}
         run: |
           set -euo pipefail
-          SHA=$(jq -r .upstreamSha handoff/result.json)
+          SHA="$PREPARE_UPSTREAM_SHA"
+          if [[ ! "$SHA" =~ ^[a-f0-9]{40}$ ]] && test -f handoff/result.json; then SHA=$(jq -r '.upstreamSha // empty' handoff/result.json); fi
+          if [[ ! "$SHA" =~ ^[a-f0-9]{40}$ ]]; then SHA=$(git ls-remote --exit-code https://github.com/slopus/happy.git refs/heads/main | awk 'NR == 1 { print $1 }'); fi
           [[ "$SHA" =~ ^[a-f0-9]{40}$ ]]
-          TITLE="Upstream sync blocked: ${SHA:0:12}"
-          BODY=$(jq -r '"Reason: " + .reason + "\n\nFiles:\n" + ((.files // []) | map("- `" + . + "`") | join("\n"))' handoff/result.json)
-          ISSUE=$(gh issue list --repo '${{ github.repository }}' --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          TITLE="Upstream sync blocked: $SHA"
+          FAILED_STAGES=$(printf '%s\n' "prepare:$PREPARE_RESULT" "publish:$PUBLISH_RESULT" "dispatch:$DISPATCH_RESULT" "merge-docs:$MERGE_DOCS_RESULT" "gate-executable:$GATE_EXECUTABLE_RESULT" "post-merge-build:$POST_MERGE_BUILD_RESULT" | awk -F: '$2 == "failure" || $2 == "cancelled" { print "- " $1 ": " $2 }')
+          REASON='workflow-stage-failure'
+          FILES=''
+          if test -f handoff/result.json; then
+            REASON=$(jq -r 'if .reason == "merge-or-policy-gate" then .reason else "workflow-stage-failure" end' handoff/result.json)
+            FILES=$(jq -r '(.files // []) | map(select(test("^[A-Za-z0-9._/-]+$")) | "- `" + . + "`") | join("\n")' handoff/result.json)
+          fi
+          BODY=$(printf 'Reason: %s\n\nFailed stages:\n%s\n\nFiles:\n%s\n' "$REASON" "${FAILED_STAGES:-- prepare: blocked}" "${FILES:-- none}")
+          gh issue list --repo '${{ github.repository }}' --state open --limit 100 --json number,title > /tmp/open-issues.json
+          ISSUE=$(jq -r --arg title "$TITLE" '[.[] | select(.title == $title)] | if length == 0 then empty elif length == 1 then .[0].number else error("duplicate blocked issues") end' /tmp/open-issues.json)
           if test -n "$ISSUE"; then gh issue edit "$ISSUE" --repo '${{ github.repository }}' --body "$BODY"; else gh issue create --repo '${{ github.repository }}' --title "$TITLE" --body "$BODY"; fi

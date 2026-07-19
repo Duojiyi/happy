@@ -97,7 +97,7 @@ try {
         $mode = Invoke-Git @('ls-tree', 'HEAD', '--', $path) $worktree
         if ($mode -match '^(120000|160000) ') { throw 'Symlink and submodule changes are blocked' }
         $paths += $path
-        if ($path -notmatch '^(README(?:\.[^/]+)?|docs/.*|[^/]+\.(md|mdx|txt))$') { $classification = 'executable' }
+        if ($path -notmatch '^(README|README\.(md|mdx|txt)|docs/.+\.(md|mdx|txt)|[^/]+\.(md|mdx|txt))$') { $classification = 'executable' }
     }
 
     $candidateConfigPath = Join-Path $worktree 'brand/chimera/upstream.json'
@@ -108,10 +108,13 @@ try {
     $bump = Join-Path $worktree 'scripts/chimera/bump-release.mjs'
     $appConfig = Join-Path $worktree 'packages/happy-app/app.config.js'
     if ((Test-Path -LiteralPath $bump) -and (Test-Path -LiteralPath $appConfig)) {
-        $version = (& node -e "import('./packages/happy-app/app.config.js').then(m => console.log(m.default.expo.version))" 2>&1 | Select-Object -Last 1).Trim()
-        if ($LASTEXITCODE -ne 0 -or -not $version) { throw 'Unable to resolve upstream app version' }
         Push-Location $worktree
-        try { & node scripts/chimera/bump-release.mjs --upstream-app-version $version; if ($LASTEXITCODE -ne 0) { throw 'Release bump failed' } }
+        try {
+            $version = (& node -e "import('./packages/happy-app/app.config.js').then(m => console.log(m.default.expo.version))" 2>&1 | Select-Object -Last 1).Trim()
+            if ($LASTEXITCODE -ne 0 -or -not $version) { throw 'Unable to resolve upstream app version' }
+            & node scripts/chimera/bump-release.mjs --upstream-app-version $version
+            if ($LASTEXITCODE -ne 0) { throw 'Release bump failed' }
+        }
         finally { Pop-Location }
     }
     Invoke-Git @('diff', '--quiet', 'HEAD') $worktree -AllowFailure | Out-Null
