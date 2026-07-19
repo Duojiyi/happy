@@ -101,10 +101,36 @@ for (const [call, rule] of [
   const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': source });
   assert(findings.some((item) => item.rule === rule), JSON.stringify(findings));
 });
+for (const [call, rule] of [
+  ['quota.claim()', 'attachment-put-missing-claim'], ['putLocalFileAtomic()', 'attachment-put-missing-local-write'],
+  ['s3client.putObject()', 'attachment-put-missing-s3-write'], ['quota.finalize()', 'attachment-put-missing-finalize'],
+  ['quota.rollback()', 'attachment-put-missing-rollback'], ['deleteAttachmentObject()', 'attachment-put-missing-delete'],
+]) for (const [name, hidden] of [
+  ['false and', `false && await ${call};`],
+  ['true or', `true || await ${call};`],
+  ['false conditional', `false ? await ${call} : undefined;`],
+  ['unknown conditional', `condition ? await ${call} : undefined;`],
+  ['unknown if', `if (condition) { await ${call}; }`],
+]) test(`does not count ${call} hidden in ${name}`, async () => {
+  const source = attachmentWithPut.replace(`await ${call};`, hidden);
+  const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': source });
+  assert(findings.some((item) => item.rule === rule), JSON.stringify(findings));
+});
 for (const [name, hidden] of [
   ['if false', 'if (false) { await quota.reserve(account, size); }'],
   ['unused function', 'function unused() { return quota.reserve(account, size); }'],
   ['after return', 'return; await quota.reserve(account, size);'],
+]) test(`does not count request-upload reserve hidden in ${name}`, async () => {
+  const source = defaults['sources/app/api/routes/attachmentRoutes.ts'].replace('await quota.reserve(account, size);', hidden);
+  const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': source });
+  assert(findings.some((item) => item.rule === 'attachment-request-upload-missing-reserve'), JSON.stringify(findings));
+});
+for (const [name, hidden] of [
+  ['false and', 'false && await quota.reserve(account, size);'],
+  ['true or', 'true || await quota.reserve(account, size);'],
+  ['false conditional', 'false ? await quota.reserve(account, size) : undefined;'],
+  ['unknown conditional', 'condition ? await quota.reserve(account, size) : undefined;'],
+  ['unknown if', 'if (condition) { await quota.reserve(account, size); }'],
 ]) test(`does not count request-upload reserve hidden in ${name}`, async () => {
   const source = defaults['sources/app/api/routes/attachmentRoutes.ts'].replace('await quota.reserve(account, size);', hidden);
   const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': source });

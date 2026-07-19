@@ -102,37 +102,51 @@ function attachmentPolicyFindings(sourceText) {
     if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)) return `${node.expression.expression.text}.${node.expression.name.text}`;
     return '';
   };
-  const reachable = (handler) => {
+  const isLocalStorageCall = (node) => ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'isLocalStorage';
+  // Policy evidence must dominate the handler outcome. Calls under ordinary
+  // conditions, short-circuits, and ternaries are deliberately not evidence.
+  const directCalls = (expression) => {
     const calls = new Set();
-    const selectors = [];
     const visit = (node) => {
-      if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return;
+      if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)
+        || ts.isConditionalExpression(node)
+        || (ts.isBinaryExpression(node) && [ts.SyntaxKind.AmpersandAmpersandToken, ts.SyntaxKind.BarBarToken].includes(node.operatorToken.kind))) return;
       if (ts.isCallExpression(node)) calls.add(callName(node));
-      if (ts.isConditionalExpression(node)) { ts.forEachChild(node, visit); return; }
       ts.forEachChild(node, visit);
     };
+    visit(expression);
+    return calls;
+  };
+  const handlerEvidence = (handler) => {
+    const calls = new Set();
+    const selectors = [];
     const statement = (node) => {
-      if (ts.isBlock(node)) return block(node);
-      if (ts.isIfStatement(node)) {
-        if (isConstantFalse(node.expression)) { if (node.elseStatement) statement(node.elseStatement); return; }
-        visit(node.expression); selectors.push(node); statement(node.thenStatement); if (node.elseStatement) statement(node.elseStatement); return;
-      }
-      if (ts.isTryStatement(node)) { block(node.tryBlock); if (node.catchClause) block(node.catchClause.block); if (node.finallyBlock) block(node.finallyBlock); return; }
-      visit(node);
+      if (ts.isExpressionStatement(node)) for (const call of directCalls(node.expression)) calls.add(call);
+      if (ts.isIfStatement(node) && isLocalStorageCall(node.expression)) selectors.push(node);
+      if (ts.isTryStatement(node)) { block(node.tryBlock); if (node.catchClause) block(node.catchClause.block); if (node.finallyBlock) block(node.finallyBlock); }
     };
     const block = (node) => { for (const item of node.statements) { statement(item); if (ts.isReturnStatement(item) || ts.isThrowStatement(item)) break; } };
-    if (handler.body && ts.isBlock(handler.body)) block(handler.body); else if (handler.body) visit(handler.body);
+    if (handler.body && ts.isBlock(handler.body)) block(handler.body); else if (handler.body) for (const call of directCalls(handler.body)) calls.add(call);
     return { calls, selectors };
   };
-  if (!requestUploadHandler || !reachable(requestUploadHandler).calls.has('quota.reserve')) findings.push('attachment-request-upload-missing-reserve');
+  const branchCalls = (node) => {
+    if (ts.isBlock(node)) {
+      const calls = new Set();
+      for (const item of node.statements) {
+        if (ts.isExpressionStatement(item)) for (const call of directCalls(item.expression)) calls.add(call);
+        if (ts.isReturnStatement(item) || ts.isThrowStatement(item)) break;
+      }
+      return calls;
+    }
+    return ts.isExpressionStatement(node) ? directCalls(node.expression) : new Set();
+  };
+  if (!requestUploadHandler || !handlerEvidence(requestUploadHandler).calls.has('quota.reserve')) findings.push('attachment-request-upload-missing-reserve');
   if (!putHandler) return findings;
-  const { calls: handlerCalls, selectors } = reachable(putHandler);
-  const isLocalStorageCall = (node) => ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'isLocalStorage';
+  const { calls: handlerCalls, selectors } = handlerEvidence(putHandler);
   const selector = selectors.filter((node) => isLocalStorageCall(node.expression));
-  const branchesContain = (node, call) => reachable({ body: node }).calls.has(call);
   const isValidSelector = selector.length === 1 && selector[0].elseStatement
-    && branchesContain(selector[0].thenStatement, 'putLocalFileAtomic')
-    && branchesContain(selector[0].elseStatement, 's3client.putObject');
+    && branchCalls(selector[0].thenStatement).has('putLocalFileAtomic')
+    && branchCalls(selector[0].elseStatement).has('s3client.putObject');
   const allIsLocalCalls = [];
   const inspect = (node) => {
     if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return;
@@ -142,13 +156,14 @@ function attachmentPolicyFindings(sourceText) {
   if (putHandler.body) inspect(putHandler.body);
   if (!isValidSelector || allIsLocalCalls.length !== 1) findings.push('attachment-put-s3-bypass');
   for (const [call, rule] of [
-    ['quota.claim', 'attachment-put-missing-claim'], ['putLocalFileAtomic', 'attachment-put-missing-local-write'],
-    ['s3client.putObject', 'attachment-put-missing-s3-write'], ['quota.finalize', 'attachment-put-missing-finalize'],
+    ['quota.claim', 'attachment-put-missing-claim'], ['quota.finalize', 'attachment-put-missing-finalize'],
     ['quota.rollback', 'attachment-put-missing-rollback'], ['deleteAttachmentObject', 'attachment-put-missing-delete'],
   ]) {
     const present = call.includes('.') ? handlerCalls.has(call) : handlerCalls.has(call);
     if (!present) findings.push(rule);
   }
+  if (!isValidSelector || !branchCalls(selector[0].thenStatement).has('putLocalFileAtomic')) findings.push('attachment-put-missing-local-write');
+  if (!isValidSelector || !branchCalls(selector[0].elseStatement).has('s3client.putObject')) findings.push('attachment-put-missing-s3-write');
   return findings;
 }
 
