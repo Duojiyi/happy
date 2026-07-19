@@ -27,6 +27,7 @@ import { AsyncLock } from '@/utils/lock';
 import { useTauriZoom } from '@/hooks/useTauriZoom';
 import { useTauriDrag } from '@/hooks/useTauriDrag';
 import { BrowserNavigationShortcuts } from '@/hooks/useBrowserNavigationShortcuts';
+import { useStartupAnnouncement } from '@/chimera/useStartupAnnouncement';
 
 
 export {
@@ -59,6 +60,11 @@ function HorizontalSafeAreaWrapper({ children }: { children: React.ReactNode }) 
             {children}
         </View>
     );
+}
+
+function StartupAnnouncement() {
+    useStartupAnnouncement();
+    return null;
 }
 
 let lock = new AsyncLock();
@@ -270,6 +276,7 @@ export default function RootLayout() {
                                     <HorizontalSafeAreaWrapper>
                                         <SidebarNavigator />
                                     </HorizontalSafeAreaWrapper>
+                                    <StartupAnnouncement />
                                 </CommandPaletteProvider>
                             </ModalProvider>
                         </ThemeProvider>
