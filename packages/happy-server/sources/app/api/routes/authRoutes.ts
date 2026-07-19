@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { type Fastify } from "../types";
 import * as privacyKit from "privacy-kit";
 import { db } from "@/storage/db";
@@ -7,6 +8,7 @@ import { log } from "@/utils/log";
 import { inTx } from "@/storage/inTx";
 import { loadChimeraServerConfig } from "@/app/chimera/config";
 import { createAuthChallengeService, createAuthPayload, AuthChallengeError } from "@/app/chimera/authChallenge";
+import { digestInvitation } from "@/app/chimera/invitations";
 
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const signingPublicKey = z.string().min(1).max(128).regex(BASE64);
@@ -32,7 +34,8 @@ export async function verifyAuthChallengeSignature(input: { origin: string; purp
 
 export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any; globalPendingCap?: number; issueBucketCapacity?: number; issueToken?: (id: string) => Promise<string>; inTransaction?: <T>(fn: (tx: any) => Promise<T>) => Promise<T> } = {}) {
     const routeDb = dependencies.db ?? db;
-    const challengeService = createAuthChallengeService({ config: dependencies.config ?? loadChimeraServerConfig(process.env), db: routeDb, globalPendingCap: dependencies.globalPendingCap, issueBucketCapacity: dependencies.issueBucketCapacity });
+    const config = dependencies.config ?? loadChimeraServerConfig(process.env);
+    const challengeService = createAuthChallengeService({ config, db: routeDb, globalPendingCap: dependencies.globalPendingCap, issueBucketCapacity: dependencies.issueBucketCapacity });
     const transaction = dependencies.inTransaction ?? inTx;
     const issueToken = dependencies.issueToken ?? ((id: string) => auth.createToken(id));
 
@@ -66,8 +69,21 @@ export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any;
             const challenge = await challengeService.peek(request.body.challengeId, tx);
             if (!challenge) return null;
             if (!await verifyAuthChallengeSignature({ ...challenge, signature: request.body.signature })) return null;
-            if (!await challengeService.consume(request.body.challengeId, tx)) return null;
-            return tx.account.findUnique({ where: { publicKey: privacyKit.encodeHex(privacyKit.decodeBase64(challenge.publicKey)) } });
+            const publicKey = privacyKit.encodeHex(privacyKit.decodeBase64(challenge.publicKey));
+            const existing = await tx.account.findUnique({ where: { publicKey } });
+            if (existing) {
+                if (!await challengeService.consume(request.body.challengeId, tx)) return null;
+                return existing;
+            }
+            if (!request.body.invitation) return null;
+            const now = new Date();
+            const redeemed = await tx.$executeRaw(Prisma.sql`UPDATE "ChimeraInvitation"
+                SET "usedCount" = "usedCount" + 1, "lastUsedAt" = ${now}
+                WHERE "codeDigest" = ${digestInvitation(request.body.invitation, config.invitationPepper)}
+                  AND "revokedAt" IS NULL AND "expiresAt" > ${now} AND "usedCount" < "maxUses"`);
+            if (redeemed !== 1) return null;
+            if (!await challengeService.consume(request.body.challengeId, tx)) throw new Error("challenge race");
+            return tx.account.create({ data: { publicKey } });
         });
         if (!result) return reply.code(401).send({ error: 'Unauthorized' });
         return reply.send({ token: await issueToken(result.id) });

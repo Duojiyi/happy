@@ -4,11 +4,23 @@ import nacl from "tweetnacl";
 import { describe, expect, it, vi } from "vitest";
 import { authRoutes } from "./authRoutes";
 import { createAuthPayload } from "@/app/chimera/authChallenge";
+import { createInvitation } from "@/app/chimera/invitations";
 import { isTrustedLoopbackProxy } from "../api";
 
-const config = { relayOrigin: "https://39.98.68.173" as const, adminSessionSecret: new Uint8Array(32).fill(4) };
+const config = { relayOrigin: "https://39.98.68.173" as const, adminSessionSecret: new Uint8Array(32).fill(4), invitationPepper: new Uint8Array(32).fill(9) };
 
 describe("account auth HTTP routes", () => {
+    it("registers a new signing key with an invitation and consumes it once", async () => {
+        const { app, tokens, invitationRows, rows } = testApp(new Date(), undefined, undefined, false);
+        const invitation = createInvitation({ pepper: config.invitationPepper });
+        invitationRows.push({ id: "invite", usedCount: 0, revokedAt: null, ...invitation.data });
+        const pair = nacl.sign.keyPair(); const publicKey = Buffer.from(pair.publicKey).toString("base64");
+        const challenge = (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })).json();
+        const signature = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), pair.secretKey)).toString("base64");
+        const response = await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature, invitation: invitation.code } });
+        expect(response.statusCode).toBe(200); expect(tokens).toHaveLength(1); expect(invitationRows[0].usedCount).toBe(1); expect(rows).toHaveLength(1);
+        await app.close();
+    });
     it("issues then completes an existing account exactly once", async () => {
         const { app, tokens, rows } = testApp();
         const pair = nacl.sign.keyPair(); const publicKey = Buffer.from(pair.publicKey).toString("base64");
@@ -118,16 +130,19 @@ describe("account auth HTTP routes", () => {
     });
 });
 
-function testApp(now = new Date(), globalPendingCap?: number, issueBucketCapacity?: number) {
-    const rows: any[] = []; const tokens: string[] = [];
+function testApp(now = new Date(), globalPendingCap?: number, issueBucketCapacity?: number, accountExists = true) {
+    const rows: any[] = []; const invitationRows: any[] = []; const tokens: string[] = [];
     const account = { id: "account", publicKey: Buffer.alloc(32).toString("hex") };
     const db: any = { chimeraAuthChallenge: {
         count: async ({ where }: any) => rows.filter((r) => !r.consumedAt && r.expiresAt > now && (!where.clientIp || r.clientIp === where.clientIp) && (!where.publicKey || r.publicKey === where.publicKey)).length,
         create: async ({ data }: any) => { const row = { id: `c${rows.length}`, consumedAt: null, ...data }; rows.push(row); return row; },
         findUnique: async ({ where }: any) => rows.find((r) => r.id === where.id) ?? null,
         updateMany: async ({ where, data }: any) => { const r = rows.find((r) => r.id === where.id && !r.consumedAt && r.expiresAt > where.expiresAt.gt); if (!r) return { count: 0 }; Object.assign(r, data); return { count: 1 }; },
-    }, account: { findUnique: async () => account } };
+    }, $executeRaw: async () => { const row = invitationRows.find((r) => !r.revokedAt && r.expiresAt > now && r.usedCount < r.maxUses); if (!row) return 0; row.usedCount++; row.lastUsedAt = now; return 1; }, account: {
+        findUnique: async () => accountExists ? account : null,
+        create: async ({ data }: any) => ({ id: "new-account", ...data }),
+    } };
     const app = fastify({ trustProxy: isTrustedLoopbackProxy }); app.setValidatorCompiler(validatorCompiler); app.setSerializerCompiler(serializerCompiler);
     authRoutes(app as any, { db, config, globalPendingCap, issueBucketCapacity, inTransaction: async (fn) => fn(db), issueToken: async () => { tokens.push("token"); return "token"; } });
-    return { app, rows, tokens };
+    return { app, rows, invitationRows, tokens };
 }
