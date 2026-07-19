@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import sharp from 'sharp';
 
-import { generateProductModule, validateProduct } from './generate-chimera-brand.mjs';
+import { generateProductModule, validateProduct, writeOutputsAtomically } from './generate-chimera-brand.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const productPath = path.join(root, 'brand/chimera/product.json');
@@ -68,11 +69,15 @@ test('generates a deterministic stable product module', async () => {
 test('--check compares bytes and never writes', async () => {
   execFileSync(process.execPath, ['scripts/generate-chimera-brand.mjs'], { cwd: root });
   const correct = await readFile(generatedPath);
-  await writeFile(generatedPath, Buffer.concat([correct, Buffer.from('// stale\n')]));
-  const result = spawnSync(process.execPath, ['scripts/generate-chimera-brand.mjs', '--check'], { cwd: root, encoding: 'utf8' });
-  assert.notEqual(result.status, 0);
-  assert.deepEqual(await readFile(generatedPath), Buffer.concat([correct, Buffer.from('// stale\n')]));
-  await writeFile(generatedPath, correct);
+  const stale = Buffer.concat([correct, Buffer.from('// stale\n')]);
+  try {
+    await writeFile(generatedPath, stale);
+    const result = spawnSync(process.execPath, ['scripts/generate-chimera-brand.mjs', '--check'], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.deepEqual(await readFile(generatedPath), stale);
+  } finally {
+    await writeFile(generatedPath, correct);
+  }
 });
 
 test('generated PNG assets use the established dimensions and alpha channel', async () => {
@@ -87,6 +92,12 @@ test('generated PNG assets use the established dimensions and alpha channel', as
     assert.deepEqual([metadata.width, metadata.height, metadata.hasAlpha], [width, height, true], name);
     const stats = await sharp(path.join(images, name)).stats();
     assert.ok(stats.channels.some((channel) => channel.min < channel.max), `${name} must not be blank`);
+    if (name === 'logotype-light.png' || name === 'logotype-dark.png') {
+      assert.equal(stats.channels[3].min, 0, `${name} background must be transparent`);
+      const foreground = stats.channels.slice(0, 3).map((channel) => channel.max);
+      if (name === 'logotype-light.png') assert.ok(foreground.every((value) => value > 220), 'dark-theme wordmark must be light');
+      else assert.ok(stats.channels.slice(0, 3).every((channel) => channel.min < 35), 'light-theme wordmark must be dark');
+    }
   }
 });
 
@@ -97,4 +108,24 @@ test('logo remains a clear single-contour C at small sizes', async () => {
   const alpha = (x, y) => data[(y * 16 + x) * 4 + 3];
   assert.ok(alpha(3, 8) > 200, 'left spine must remain visible');
   assert.ok(alpha(13, 8) < 20, 'right side must remain open');
+});
+
+test('failed asset staging cleans temporary files without replacing outputs', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'chimera-brand-atomic-'));
+  const first = path.join(directory, 'first.txt');
+  const second = path.join(directory, 'second.txt');
+  await writeFile(first, 'old-first');
+  await writeFile(second, 'old-second');
+  try {
+    await assert.rejects(() => writeOutputsAtomically(new Map([[first, Buffer.from('new-first')], [second, Buffer.from('new-second')]]), {
+      rename: async () => { throw new Error('injected rename failure'); },
+      unlink,
+      writeFile,
+    }), /injected rename failure/);
+    assert.equal(await readFile(first, 'utf8'), 'old-first');
+    assert.equal(await readFile(second, 'utf8'), 'old-second');
+    assert.deepEqual((await readdir(directory)).sort(), ['first.txt', 'second.txt']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

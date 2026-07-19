@@ -55,6 +55,20 @@ function Assert-TemporaryTestPaths([string[]] $Paths, [string] $Message) {
     }
 }
 
+function Get-Ed25519RawPublicKeyBase64Url([string] $DerPath) {
+    $der = [System.IO.File]::ReadAllBytes($DerPath)
+    $prefix = [byte[]](0x30,0x2A,0x30,0x05,0x06,0x03,0x2B,0x65,0x70,0x03,0x21,0x00)
+    if ($der.Length -ne 44) { throw 'Ed25519 public key DER SPKI must contain exactly 32 raw key bytes.' }
+    for ($index = 0; $index -lt $prefix.Length; $index++) {
+        if ($der[$index] -ne $prefix[$index]) { throw 'Ed25519 public key DER SPKI has an invalid encoding.' }
+    }
+    $raw = [byte[]]::new(32)
+    [Array]::Copy($der, $prefix.Length, $raw, 0, $raw.Length)
+    $encoded = [Convert]::ToBase64String($raw).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    if ($encoded -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'Ed25519 raw public key encoding is invalid.' }
+    return $encoded
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $productPath = if ($ProductPath) { $ProductPath } else { Join-Path $repoRoot 'brand\chimera\product.json' }
 $lockSignalEnabled = [bool]($env:CHIMERA_TEST_LOCK_READY_PATH -or $env:CHIMERA_TEST_LOCK_RELEASE_PATH)
@@ -144,7 +158,7 @@ try {
         $resumeSha = (($resumeShaLine -replace '.*SHA256:\s*', '') -replace ':', '').Trim().ToUpperInvariant()
         $resumeDer = Join-Path $staging 'resume-public.der'
         & $openssl pkey -in (Join-Path $resumeMaterial 'manifest-ed25519-private.pem') -pubout -outform DER -out $resumeDer 2>$null
-        $resumePublic = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($resumeDer))
+        $resumePublic = Get-Ed25519RawPublicKeyBase64Url $resumeDer
         $expected = $transaction.expectedProduct
         $fixed = [ordered]@{ productName='Chimera'; slug='chimera'; androidApplicationId='org.chimerahub.chimera'; deepLinkSchemes=@('chimera','happy'); relayOrigin='https://39.98.68.173'; repository='Duojiyi/happy'; upstreamAppVersion='1.7.0'; chimeraRevision=1; androidVersionCode=1; updatePublicKey=$resumePublic; androidSignerSha256=$resumeSha }
         if (($expected | ConvertTo-Json -Depth 8 -Compress) -ne ($fixed | ConvertTo-Json -Depth 8 -Compress)) { throw 'Incomplete signing transaction public identity validation failed.' }
@@ -172,7 +186,7 @@ try {
         $existingSha = (($shaLine -replace '.*SHA256:\s*', '') -replace ':', '').Trim().ToUpperInvariant()
         $existingDer = Join-Path $staging 'existing-public.der'
         & $openssl pkey -in (Join-Path $existingMaterial 'manifest-ed25519-private.pem') -pubout -outform DER -out $existingDer 2>$null
-        $existingPublic = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($existingDer))
+        $existingPublic = Get-Ed25519RawPublicKeyBase64Url $existingDer
         if ($product.updatePublicKey -ne $existingPublic -or $product.androidSignerSha256 -ne $existingSha) { throw 'Existing public metadata does not match the encrypted signing identities.' }
         throw 'Offline recovery verification succeeded; rotation requires a separate audited procedure.'
     }
@@ -195,7 +209,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Ed25519 manifest key generation failed.' }
     & $openssl pkey -in $manifestPrivate -pubout -outform DER -out $manifestPublicDer 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Unable to derive Ed25519 public key.' }
-    $updatePublicKey = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($manifestPublicDer))
+    $updatePublicKey = Get-Ed25519RawPublicKeyBase64Url $manifestPublicDer
 
     $archive = Join-Path $staging 'chimera-private-signing-material.zip'
     Compress-Archive -Path $keystore, $manifestPrivate -DestinationPath $archive -CompressionLevel Optimal

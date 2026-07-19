@@ -46,7 +46,7 @@ try {
     Assert-True ($LASTEXITCODE -eq 0) "first bootstrap failed: $first"
     $inventory = $first | ConvertFrom-Json
     Assert-True ($inventory.androidSignerSha256 -match '^[0-9A-F]{64}$') 'inventory has a colon-free uppercase Android SHA-256'
-    Assert-True ($inventory.updatePublicKey -match '^[A-Za-z0-9+/]+={0,2}$') 'inventory has an Ed25519 public key'
+    Assert-True ($inventory.updatePublicKey -match '^[A-Za-z0-9_-]{43}$') 'inventory has a raw 32-byte Ed25519 base64url public key'
     Assert-True (-not (($first -join "`n") -match 'test-(store|key)-password')) 'bootstrap output contains no password'
 
     $product = Get-Content -Raw $productPath | ConvertFrom-Json
@@ -76,8 +76,11 @@ try {
     Assert-True ($LASTEXITCODE -eq 0) 'private bundle decrypts with correct password'
     $wrongPasswordInput = Join-Path $workspace 'wrong-password.txt'
     Set-Content -LiteralPath $wrongPasswordInput -Value 'wrong-password' -NoNewline
-    & $openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in $inventory.encryptedPrivateBundle -out (Join-Path $workspace 'wrong.zip') -pass "file:$wrongPasswordInput" 2>$null
-    Assert-True ($LASTEXITCODE -ne 0) 'private bundle rejects wrong password'
+    $wrongZip = Join-Path $workspace 'wrong.zip'
+    & $openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in $inventory.encryptedPrivateBundle -out $wrongZip -pass "file:$wrongPasswordInput" 2>$null
+    $wrongExitCode = $LASTEXITCODE
+    $wrongMatchesPlaintext = (Test-Path -LiteralPath $wrongZip) -and ((Get-FileHash -LiteralPath $wrongZip -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $decryptedZip -Algorithm SHA256).Hash)
+    Assert-True ($wrongExitCode -ne 0 -or -not $wrongMatchesPlaintext) 'private bundle rejects wrong password'
     Expand-Archive -LiteralPath $decryptedZip -DestinationPath (Join-Path $workspace 'decrypted')
     $env:TEST_STORE_PASSWORD = 'test-store-password-8Q!'
     $jksDetails = & $keytool -list -v -keystore (Join-Path $workspace 'decrypted\chimera-release.jks') -storepass:env TEST_STORE_PASSWORD -alias chimera-release 2>&1
@@ -86,6 +89,15 @@ try {
     Assert-True (($jksDetails -join "`n") -match '(?s)RSA.*4096|4096.*RSA') 'JKS key is RSA 4096'
     $manifestDetails = & $openssl pkey -in (Join-Path $workspace 'decrypted\manifest-ed25519-private.pem') -text -noout 2>&1
     Assert-True (($manifestDetails -join "`n") -match 'ED25519') 'manifest key is Ed25519'
+    $manifestPublicDer = Join-Path $workspace 'manifest-public.der'
+    & $openssl pkey -in (Join-Path $workspace 'decrypted\manifest-ed25519-private.pem') -pubout -outform DER -out $manifestPublicDer 2>$null
+    Assert-True ($LASTEXITCODE -eq 0) 'manifest public key exports as DER SPKI'
+    $derBytes = [System.IO.File]::ReadAllBytes($manifestPublicDer)
+    Assert-True ($derBytes.Length -eq 44) 'Ed25519 DER SPKI has the expected 44-byte encoding'
+    $rawBytes = [byte[]]::new(32)
+    [Array]::Copy($derBytes, $derBytes.Length - 32, $rawBytes, 0, 32)
+    $rawBase64Url = [Convert]::ToBase64String($rawBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+    Assert-True ($inventory.updatePublicKey -ceq $rawBase64Url) 'inventory public key is the raw key from the bundled private identity'
     $source = Get-Content -Raw $bootstrap
     Assert-True ($source -notmatch '-storepass \$storePassword|-keypass \$keyPassword|-pass "pass:\$storePassword"') 'subprocess commands do not contain secret password arguments'
 
@@ -117,6 +129,8 @@ try {
     Assert-True (-not $faultProduct.updatePublicKey) 'fault leaves product unchanged'
     Assert-True (Test-Path (Join-Path $faultRoot 'chimera-private-signing-material.zip.enc')) 'fault leaves final bundle for resume'
     Assert-True (Test-Path (Join-Path $faultRoot 'chimera-signing-transaction.json')) 'fault leaves transaction record for resume'
+    $faultTransaction = Get-Content -Raw (Join-Path $faultRoot 'chimera-signing-transaction.json') | ConvertFrom-Json
+    Assert-True ($faultTransaction.expectedProduct.updatePublicKey -match '^[A-Za-z0-9_-]{43}$') 'transaction records raw Ed25519 public key format'
     $resumed = & $bootstrap -BackupRoot $faultRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $faultProductPath @toolArgs 2>&1 | ConvertFrom-Json
     Assert-True $resumed.resumed 'next invocation resumes incomplete transaction'
     Assert-True (-not (Test-Path (Join-Path $faultRoot 'chimera-signing-transaction.json'))) 'resume clears transaction record'
