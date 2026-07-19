@@ -70,8 +70,8 @@ function attachmentPolicyFindings(sourceText) {
   let putHandler;
   const calls = new Set();
   const visit = (node) => {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
-      && ['newPostPolicy', 'presignedPostPolicy'].includes(node.expression.text)) calls.add('presigned');
+    if (ts.isCallExpression(node) && ((ts.isIdentifier(node.expression) && ['newPostPolicy', 'presignedPostPolicy'].includes(node.expression.text))
+      || (ts.isPropertyAccessExpression(node.expression) && ['newPostPolicy', 'presignedPostPolicy'].includes(node.expression.name.text)))) calls.add('presigned');
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
       const owner = ts.isIdentifier(node.expression.expression) ? node.expression.expression.text : '';
       calls.add(`${owner}.${node.expression.name.text}`);
@@ -100,6 +100,17 @@ function attachmentPolicyFindings(sourceText) {
     ts.forEachChild(node, collect);
   };
   collect(putHandler);
+  const hasS3Bypass = (node) => {
+    if (ts.isIfStatement(node) && ts.isPrefixUnaryExpression(node.expression) && node.expression.operator === ts.SyntaxKind.ExclamationToken
+      && ts.isCallExpression(node.expression.operand) && ts.isIdentifier(node.expression.operand.expression)
+      && node.expression.operand.expression.text === 'isLocalStorage') {
+      let returns = false;
+      const look = (child) => { if (ts.isReturnStatement(child)) returns = true; ts.forEachChild(child, look); };
+      look(node.thenStatement); if (returns) return true;
+    }
+    return ts.forEachChild(node, hasS3Bypass) || false;
+  };
+  if (hasS3Bypass(putHandler)) findings.push('attachment-put-s3-bypass');
   for (const [call, rule] of [
     ['quota.claim', 'attachment-put-missing-claim'], ['putLocalFileAtomic', 'attachment-put-missing-local-write'],
     ['s3client.putObject', 'attachment-put-missing-s3-write'], ['quota.finalize', 'attachment-put-missing-finalize'],

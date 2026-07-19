@@ -63,7 +63,7 @@ test('does not count a required route hidden in a dead branch', async () => {
 
 test('rejects a presigned POST upload bypass', async () => {
   const findings = await result({
-    'sources/app/api/routes/attachmentRoutes.ts': `${defaults['sources/app/api/routes/attachmentRoutes.ts']}\nnewPostPolicy();`,
+    'sources/app/api/routes/attachmentRoutes.ts': `${defaults['sources/app/api/routes/attachmentRoutes.ts']}\ns3client.newPostPolicy();`,
   });
   assert(findings.some((item) => item.rule === 'attachment-presigned-post'), JSON.stringify(findings));
 });
@@ -71,11 +71,17 @@ test('rejects a presigned POST upload bypass', async () => {
 const attachmentPut = "app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', {}, async () => { await quota.claim(); await putLocalFileAtomic(); await s3client.putObject(); await quota.finalize(); await quota.rollback(); await deleteAttachmentObject(); });";
 const attachmentWithPut = defaults['sources/app/api/routes/attachmentRoutes.ts'].replace("app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', handler);", attachmentPut);
 for (const [removed, rule] of [
+  ['quota.claim()', 'attachment-put-missing-claim'], ['putLocalFileAtomic()', 'attachment-put-missing-local-write'],
   ['s3client.putObject()', 'attachment-put-missing-s3-write'], ['quota.finalize()', 'attachment-put-missing-finalize'],
   ['quota.rollback()', 'attachment-put-missing-rollback'], ['deleteAttachmentObject()', 'attachment-put-missing-delete'],
 ]) test(`rejects attachment PUT without ${removed}`, async () => {
   const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': attachmentWithPut.replace(removed, '') });
   assert(findings.some((item) => item.rule === rule), JSON.stringify(findings));
+});
+test('rejects an S3-only early return in the server-owned PUT handler', async () => {
+  const bypass = attachmentPut.replace('await quota.claim();', 'if (!isLocalStorage()) { return reply.code(404).send(); } await quota.claim();');
+  const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': defaults['sources/app/api/routes/attachmentRoutes.ts'].replace("app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', handler);", bypass) });
+  assert(findings.some((item) => item.rule === 'attachment-put-s3-bypass'), JSON.stringify(findings));
 });
 
 for (const [path, routes] of Object.entries(requiredRoutes)) {
