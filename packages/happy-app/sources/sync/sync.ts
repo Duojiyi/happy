@@ -26,7 +26,7 @@ import { NormalizedMessage, normalizeRawMessage, RawRecord } from './typesRaw';
 import { applySettings, Settings, settingsDefaults, settingsParse, settingsToSyncPayload, SUPPORTED_SCHEMA_VERSION } from './settings';
 import { Profile, profileParse } from './profile';
 import { loadPendingSettings, savePendingSettings } from './persistence';
-import { trackGitHubConnected, trackMessageSent, trackPaywallCancelled, trackPaywallError, trackPaywallPresented, trackPaywallPurchased, trackPaywallRestored, tracking } from '@/track';
+import { trackGitHubConnected, trackMessageSent, trackPaywallCancelled, trackPaywallError, trackPaywallPresented, trackPaywallPurchased, trackPaywallRestored } from '@/track';
 import type { MessageSentSource } from '@/track';
 import { parseToken } from '@/utils/parseToken';
 import { RevenueCat, LogLevel, PaywallResult } from './revenueCat';
