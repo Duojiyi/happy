@@ -1,0 +1,20 @@
+plugins {
+  id 'com.android.library'
+  id 'kotlin-android'
+}
+
+group = 'org.chimerahub.chimera.updater'
+version = '1.0.0'
+
+android {
+  namespace 'org.chimerahub.chimera.updater'
+  compileSdkVersion rootProject.ext.compileSdkVersion
+
+  defaultConfig {
+    minSdkVersion rootProject.ext.minSdkVersion
+  }
+}
+
+dependencies {
+  implementation project(':expo-modules-core')
+}
