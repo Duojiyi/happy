@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Client } from 'minio';
 import * as crypto from 'crypto';
+import { onShutdown } from "@/utils/shutdown";
 
 const useLocalStorage = !process.env.S3_HOST;
 const dataDir = process.env.DATA_DIR || './data';
@@ -12,6 +13,7 @@ let s3client: any = null;
 let s3bucket: string = '';
 let s3host: string = '';
 let s3public: string = '';
+let cleanupRetryShutdownRegistered = false;
 
 if (!useLocalStorage) {
     const s3Port = process.env.S3_PORT ? parseInt(process.env.S3_PORT, 10) : undefined;
@@ -37,9 +39,16 @@ export async function loadFiles() {
         fs.mkdirSync(localFilesDir, { recursive: true });
         const { reconcileAttachmentStorage } = await import('@/app/chimera/attachmentQuota');
         await reconcileAttachmentStorage(localFilesDir);
-        return;
+    } else {
+        await s3client.bucketExists(s3bucket);
     }
-    await s3client.bucketExists(s3bucket);
+    const { attachmentCleanupService, startAttachmentCleanupRetry, stopAttachmentCleanupRetry } = await import("@/app/chimera/attachmentCleanup");
+    await attachmentCleanupService.drainPending();
+    startAttachmentCleanupRetry();
+    if (!cleanupRetryShutdownRegistered) {
+        cleanupRetryShutdownRegistered = true;
+        onShutdown("attachment-cleanup-retry", async () => { stopAttachmentCleanupRetry(); });
+    }
 }
 
 export function getPublicUrl(filePath: string) {
