@@ -78,8 +78,10 @@ export function createAttachmentQuotaService(dependencies: {
                 const reservation = await tx.chimeraAttachmentReservation.findUnique({ where: { id: reservationId } });
                 const account = await tx.account.findUnique({ where: { id: accountId }, select: { disabledAt: true } });
                 if (!reservation || reservation.accountId !== accountId || reservation.objectKey !== objectKey || reservation.expiresAt <= now() || !account || account.disabledAt || BigInt(actualBytes) > reservation.bytes) throw new AttachmentQuotaError();
+                const claimTime = now();
                 const claimed = await tx.chimeraAttachmentReservation.updateMany({
-                    where: { id: reservationId, accountId, objectKey, claimedAt: null, expiresAt: { gt: now() } }, data: { claimedAt: now() },
+                    where: { id: reservationId, accountId, objectKey, claimedAt: null, expiresAt: { gt: claimTime } },
+                    data: { claimedAt: claimTime, expiresAt: new Date(claimTime.getTime() + reservationTtlMs) },
                 });
                 if (claimed.count !== 1) throw new AttachmentQuotaError();
                 return { id: reservation.id, accountId, bytes: BigInt(actualBytes) };
@@ -113,7 +115,6 @@ export async function reconcileAttachmentStorage(root: string, dependencies: { d
     const database = dependencies.db ?? db;
     const now = dependencies.now ?? (() => new Date());
     const cleanupExpired = dependencies.cleanupExpired ?? createAttachmentQuotaService({ db: database }).cleanupExpired;
-    while (await cleanupExpired() > 0) { /* bounded cleanup continues until exhausted */ }
 
     const removeStalePartials = async (directory: string): Promise<void> => {
         let entries;
@@ -148,14 +149,20 @@ export async function reconcileAttachmentStorage(root: string, dependencies: { d
     for (const account of accounts) {
         await database.account.update({ where: { id: account.id }, data: { attachmentUsedBytes: totals.get(account.id) ?? 0n } });
     }
+    await reconcileReservationAccounting(database, cleanupExpired);
+}
+
+export async function reconcileReservationAccounting(database: any, cleanupExpired: () => Promise<number>) {
+    while (await cleanupExpired() > 0) { /* bounded cleanup continues until exhausted */ }
     const reserved = await database.chimeraAttachmentReservation.groupBy({ by: ["accountId"], _sum: { bytes: true } });
     const reservedByAccount = new Map<string, bigint>(reserved.map((row: any) => [row.accountId, row._sum.bytes ?? 0n]));
+    const accounts = await database.account.findMany({ select: { id: true } });
     for (const account of accounts) {
         await database.account.update({ where: { id: account.id }, data: { attachmentReservedBytes: reservedByAccount.get(account.id) ?? 0n } });
     }
 }
 
-export async function reconcileS3AttachmentStorage(dependencies: { db?: any; inventoryAll?: () => Promise<Array<{ sessionId: string; size: bigint }>> } = {}) {
+export async function reconcileS3AttachmentStorage(dependencies: { db?: any; inventoryAll?: () => Promise<Array<{ sessionId: string; size: bigint }>>; cleanupExpired?: () => Promise<number> } = {}) {
     const database = dependencies.db ?? db;
     const objects = await (dependencies.inventoryAll ?? inventoryAllSessionAttachments)();
     const sessions = await database.session.findMany({ select: { id: true, accountId: true } });
@@ -170,4 +177,5 @@ export async function reconcileS3AttachmentStorage(dependencies: { db?: any; inv
     for (const account of accounts) {
         await database.account.update({ where: { id: account.id }, data: { attachmentUsedBytes: totals.get(account.id) ?? 0n } });
     }
+    await reconcileReservationAccounting(database, dependencies.cleanupExpired ?? createAttachmentQuotaService({ db: database }).cleanupExpired);
 }

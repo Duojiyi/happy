@@ -14,7 +14,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { Fastify } from '../types';
 import { db } from '@/storage/db';
-import { s3client, s3bucket, isLocalStorage, getLocalFilesDir, putLocalFileAtomic } from '@/storage/files';
+import { s3client, s3bucket, isLocalStorage, getLocalFilesDir, putLocalFileAtomic, deleteAttachmentObject } from '@/storage/files';
 import { createAttachmentQuotaService, type AttachmentQuotaService } from '@/app/chimera/attachmentQuota';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -182,9 +182,15 @@ export function attachmentRoutes(app: Fastify, dependencies: { quota?: Attachmen
         try {
             if (isLocalStorage()) await putLocalFileAtomic(ref, body);
             else await s3client.putObject(s3bucket, ref, body, body.length, { "content-type": "application/octet-stream" });
-            await quota.finalize(claim);
         }
         catch {
+            await quota.rollback(claim).catch(() => undefined);
+            return reply.code(507).send({ error: 'Attachment upload unavailable' });
+        }
+        try { await quota.finalize(claim); }
+        catch {
+            try { await deleteAttachmentObject(ref); }
+            catch { return reply.code(507).send({ error: 'Attachment upload unavailable' }); }
             await quota.rollback(claim).catch(() => undefined);
             return reply.code(507).send({ error: 'Attachment upload unavailable' });
         }

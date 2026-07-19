@@ -77,6 +77,12 @@ describe("session attachment cleanup storage", () => {
         const storage = createSessionAttachmentStorage({ s3Client: client, s3Bucket: "bucket" });
         await expect(storage.deleteSessionAttachments("s1")).rejects.toThrow("Attachment deletion incomplete");
     });
+
+    it("fails closed on invalid S3 object metadata", async () => {
+        const client = fakeS3([{ name: "sessions/s1/attachments/a.enc", size: Number.NaN }]);
+        const storage = createSessionAttachmentStorage({ s3Client: client, s3Bucket: "bucket" });
+        await expect(storage.inventoryAllSessionAttachments()).rejects.toThrow("Attachment storage listing failed");
+    });
 });
 
 function fakeS3(objects: Array<{ name: string; size: number }>, removeError?: Error, retain = false) {

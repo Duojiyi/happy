@@ -124,7 +124,11 @@ async function listS3Objects(client: S3Client, bucket: string, prefix: string): 
     return new Promise((resolve, reject) => {
         const objects: SessionAttachmentObject[] = [];
         stream.on("data", (object: { name?: string; size?: number }) => {
-            if (object.name && Number.isSafeInteger(object.size) && object.size! >= 0) objects.push({ name: object.name, size: BigInt(object.size!) });
+            if (!object.name || !Number.isSafeInteger(object.size) || object.size! < 0) {
+                reject(new Error("Attachment storage listing failed"));
+                return;
+            }
+            objects.push({ name: object.name, size: BigInt(object.size!) });
         });
         stream.once("end", () => resolve(objects));
         stream.once("error", () => reject(new Error("Attachment storage listing failed")));
@@ -213,6 +217,19 @@ const sessionAttachmentStorage = createSessionAttachmentStorage();
 export const inventorySessionAttachments = sessionAttachmentStorage.inventorySessionAttachments;
 export const deleteSessionAttachments = sessionAttachmentStorage.deleteSessionAttachments;
 export const inventoryAllSessionAttachments = sessionAttachmentStorage.inventoryAllSessionAttachments;
+
+export async function deleteAttachmentObject(name: string): Promise<void> {
+    if (!/^sessions\/[A-Za-z0-9_-]+\/attachments\/[^/]+\.enc$/.test(name)) throw new Error("Invalid attachment path");
+    if (useLocalStorage) {
+        const fullPath = path.resolve(localFilesDir, name);
+        if (!fullPath.startsWith(path.resolve(localFilesDir) + path.sep)) throw new Error("Invalid attachment path");
+        await fs.promises.unlink(fullPath).catch((error: any) => { if (error?.code !== "ENOENT") throw error; });
+        return;
+    }
+    await removeS3Objects(s3client, s3bucket, [name]);
+    const remaining = await listS3Objects(s3client, s3bucket, name);
+    if (remaining.some((object) => object.name === name)) throw new Error("Attachment deletion incomplete");
+}
 
 export type ImageRef = {
     width: number;
