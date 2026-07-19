@@ -34,6 +34,13 @@ export function disconnectAccountSockets(accountId: string, server: Pick<Server,
     server?.in(`${ACCOUNT_ROOM_PREFIX}${accountId}`).disconnectSockets(true);
 }
 
+export async function stopSocket() {
+    const server = socketServer;
+    socketServer = null;
+    if (!server) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
 export function startSocket(app: Fastify) {
     const io = new Server(app.server, {
         cors: {
@@ -246,6 +253,6 @@ export function startSocket(app: Fastify) {
     });
 
     onShutdown('api', async () => {
-        await io.close();
+        await stopSocket();
     });
 }

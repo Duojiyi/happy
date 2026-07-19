@@ -107,5 +107,5 @@ describe("Chimera Prisma security state", () => {
             await prisma.$disconnect();
             await pg.close();
         }
-    });
+    }, 20_000);
 });

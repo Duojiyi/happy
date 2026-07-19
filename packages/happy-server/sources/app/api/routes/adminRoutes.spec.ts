@@ -1,11 +1,14 @@
 import fastify from "fastify";
 import { describe, expect, it } from "vitest";
 import { adminRoutes, createLoginLimits } from "@/app/chimera/adminRoutes";
+import { serializerCompiler, validatorCompiler } from "fastify-type-provider-zod";
 
 const passwordHash = "$argon2id$v=19$m=65536,t=3,p=1$c29tZXNhbHQ$MDEyMzQ1Njc4OWFiY2RlZg";
 
 function app() {
     const server = fastify();
+    server.setValidatorCompiler(validatorCompiler);
+    server.setSerializerCompiler(serializerCompiler);
     const account = { id: "A".repeat(43), createdAt: "2026-07-19T00:00:00.000Z", disabled: false, attachmentUsedBytes: "12", attachmentQuotaBytes: "5368709120" };
     const accounts = {
         list: async () => [account],
@@ -101,6 +104,8 @@ describe("Chimera admin routes", () => {
 
     it("does not consume a concurrency slot for malformed login bodies", async () => {
         const server = fastify(); let active = 0;
+        server.setValidatorCompiler(validatorCompiler);
+        server.setSerializerCompiler(serializerCompiler);
         adminRoutes(server as any, { passwordHash, sessions: { create: async () => ({ sessionId: "s", csrfToken: "c" }) } as any, accounts: { list: async () => [] } as any, invitations: { list: async () => [] } as any, verifyPassword: async () => true, loginLimits: { acquire: () => { active++; return active === 1; }, release: () => { active--; } } });
         expect((await server.inject({ method: "POST", url: "/chimera-control/api/session", payload: {} })).statusCode).toBe(401);
         expect((await server.inject({ method: "POST", url: "/chimera-control/api/session", payload: { password: "x" } })).statusCode).toBe(200);

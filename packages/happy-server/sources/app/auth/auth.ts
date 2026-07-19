@@ -66,13 +66,17 @@ export class AuthModule {
     }
     
     async createToken(userId: string, extras?: any): Promise<string> {
-        if (!this.tokens) {
-            throw new Error('Auth module not initialized');
-        }
-        
         const account = await db.account.findUnique({ where: { id: userId }, select: { disabledAt: true, tokenEpoch: true } });
         if (!account || account.disabledAt) throw new Error('Account is not active');
-        const tokenExtras = { ...(extras ?? {}), tokenEpoch: account.tokenEpoch };
+        return this.createTokenForEpoch(userId, account.tokenEpoch, extras);
+    }
+
+    /** Caller must have read this active account epoch inside its current serializable transaction. */
+    async createTokenForEpoch(userId: string, tokenEpoch: number, extras?: any): Promise<string> {
+        if (!this.tokens || !Number.isSafeInteger(tokenEpoch) || tokenEpoch < 0) {
+            throw new Error('Auth module not initialized');
+        }
+        const tokenExtras = { ...(extras ?? {}), tokenEpoch };
         const payload: any = { user: userId, extras: tokenExtras };
         
         const token = await this.tokens.generator.new(payload);

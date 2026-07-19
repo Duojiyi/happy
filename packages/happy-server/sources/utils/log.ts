@@ -66,6 +66,14 @@ if (process.env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING && consolidatedL
 // same timestamp shape. Stream selection (pretty/file) is layered on top.
 const baseOptions = {
     level: 'debug',
+    serializers: {
+        req: (request: any) => ({
+            method: request.method,
+            url: typeof request.url === 'string' ? request.url.split('?', 1)[0] : undefined,
+            host: request.headers?.host,
+            remoteAddress: request.remoteAddress,
+        }),
+    },
     formatters: {
         log: (object: any) => {
             // Add localTime to every log entry

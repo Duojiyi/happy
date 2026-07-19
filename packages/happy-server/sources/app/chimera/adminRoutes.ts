@@ -9,14 +9,15 @@ import { createInvitationService } from "./invitations";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { z } from "zod";
 
 const COOKIE_NAME = "__Secure-chimera_admin";
 const ORIGIN = "https://39.98.68.173";
 const UNAUTHORIZED = { error: "Unauthorized" };
-const accountParams = { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", minLength: 43, maxLength: 43, pattern: "^[A-Za-z0-9_-]+$" } } };
-const noBody = { type: "object", additionalProperties: false, required: [] as string[], maxProperties: 0, properties: {} };
-const quotaBody = { type: "object", additionalProperties: false, required: ["attachmentQuotaBytes"], properties: { attachmentQuotaBytes: { type: "integer", minimum: MIN_ATTACHMENT_QUOTA_BYTES, maximum: MAX_ATTACHMENT_QUOTA_BYTES } } };
-const invitationParams = { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", minLength: 1, maxLength: 100, pattern: "^[A-Za-z0-9_-]+$" } } };
+const accountParams = z.object({ id: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/) }).strict();
+const noBody = z.object({}).strict();
+const quotaBody = z.object({ attachmentQuotaBytes: z.number().int().safe().min(MIN_ATTACHMENT_QUOTA_BYTES).max(MAX_ATTACHMENT_QUOTA_BYTES) }).strict();
+const invitationParams = z.object({ id: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/) }).strict();
 const controlRoot = [process.env.CHIMERA_CONTROL_ASSET_DIR, resolve(process.cwd(), "dist/control"), resolve(process.cwd(), "sources/app/chimera/control")]
     .find((candidate): candidate is string => Boolean(candidate && existsSync(candidate))) ?? resolve(process.cwd(), "dist/control");
 const controlHeaders = (reply: any) => reply

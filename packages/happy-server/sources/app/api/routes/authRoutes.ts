@@ -32,12 +32,12 @@ export async function verifyAuthChallengeSignature(input: { origin: string; purp
     } catch { return false; }
 }
 
-export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any; globalPendingCap?: number; issueBucketCapacity?: number; challengeService?: ReturnType<typeof createAuthChallengeService>; issueToken?: (id: string) => Promise<string>; inTransaction?: <T>(fn: (tx: any) => Promise<T>) => Promise<T> } = {}) {
+export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any; globalPendingCap?: number; issueBucketCapacity?: number; challengeService?: ReturnType<typeof createAuthChallengeService>; issueToken?: (id: string, tokenEpoch: number) => Promise<string>; inTransaction?: <T>(fn: (tx: any) => Promise<T>) => Promise<T> } = {}) {
     const routeDb = dependencies.db ?? db;
     const config = dependencies.config ?? loadChimeraServerConfig(process.env);
     const challengeService = dependencies.challengeService ?? createAuthChallengeService({ config, db: routeDb, globalPendingCap: dependencies.globalPendingCap, issueBucketCapacity: dependencies.issueBucketCapacity });
     const transaction = dependencies.inTransaction ?? inTx;
-    const issueToken = dependencies.issueToken ?? ((id: string) => auth.createToken(id));
+    const issueToken = dependencies.issueToken ?? ((id: string, tokenEpoch: number) => auth.createTokenForEpoch(id, tokenEpoch));
     app.addHook('onClose', async () => { challengeService.stop(); });
 
     app.post('/v1/auth/challenge', {
@@ -75,7 +75,7 @@ export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any;
             const existing = await tx.account.findUnique({ where: { publicKey } });
             if (existing) {
                 if (!await challengeService.consume(request.body.challengeId, tx)) return null;
-                return { token: await issueToken(existing.id) };
+                return { token: await issueToken(existing.id, existing.tokenEpoch) };
             }
             if (!request.body.invitation) return null;
             const now = new Date();
@@ -86,7 +86,7 @@ export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any;
             if (redeemed !== 1) return null;
             if (!await challengeService.consume(request.body.challengeId, tx)) throw new Error("challenge race");
             const created = await tx.account.create({ data: { publicKey } });
-            return { token: await issueToken(created.id) };
+            return { token: await issueToken(created.id, created.tokenEpoch) };
         }); } catch { return reply.code(401).send({ error: 'Unauthorized' }); }
         if (!result) return reply.code(401).send({ error: 'Unauthorized' });
         return reply.send(result);
