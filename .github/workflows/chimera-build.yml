@@ -167,7 +167,7 @@ jobs:
           pnpm --filter happy-app typecheck
 
       - name: Export Web bundle
-        run: pnpm --filter happy-app exec expo export --platform web --output-dir dist/chimera-web-site
+        run: pnpm --filter happy-app exec expo export --platform web --output-dir ../../dist/chimera-web-site
 
       - name: Create immutable Web archive and release input
         run: |

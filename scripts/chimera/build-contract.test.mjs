@@ -67,7 +67,7 @@ export function validateBuildWorkflow(workflow) {
     /pnpm\s+(?:chimera:brand:check|run\s+chimera:brand:check)/,
     /pnpm\s+(?:chimera:client:test|run\s+chimera:client:test)/,
     /pnpm\s+(?:chimera:client:check|run\s+chimera:client:check)/,
-    /expo\s+export\s+--platform\s+web/,
+    /expo\s+export\s+--platform\s+web\s+--output-dir\s+\.\.\/\.\.\/dist\/chimera-web-site/,
     /release-input\.json/,
   ], 'chimera-web-unsigned');
 
@@ -152,5 +152,12 @@ if (!source) {
     const workflow = parse(source);
     workflow.on.push.paths = workflow.on.push.paths.filter((item) => item !== 'patches/**');
     assert.throws(() => validateBuildWorkflow(workflow), /push paths must include patches/);
+  });
+
+  test('contract rejects a package-relative Web output directory', () => {
+    const workflow = parse(source);
+    const exportStep = workflow.jobs.web.steps.find((item) => item.run?.includes('expo export'));
+    exportStep.run = exportStep.run.replace('../../dist/chimera-web-site', 'dist/chimera-web-site');
+    assert.throws(() => validateBuildWorkflow(workflow), /web missing/);
   });
 }
