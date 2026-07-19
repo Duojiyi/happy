@@ -1,7 +1,6 @@
 import { Ionicons, Octicons } from '@expo/vector-icons';
 import * as React from 'react';
 import { View, Platform, useWindowDimensions, ViewStyle, Text, ActivityIndicator, TouchableWithoutFeedback, Image as RNImage, Pressable } from 'react-native';
-import { Image } from 'expo-image';
 import { AgentInputAttachmentStrip } from './AgentInputAttachmentStrip';
 import type { AttachmentPreview } from '@/sync/attachmentTypes';
 import { generateThumbhash } from '@/utils/thumbhash';
@@ -40,8 +39,6 @@ interface AgentInputProps {
     sessionId?: string;
     onSend: () => void;
     sendIcon?: React.ReactNode;
-    onMicPress?: () => void;
-    isMicActive?: boolean;
     permissionMode?: PermissionMode | null;
     availableModes?: PermissionMode[];
     onPermissionModeChange?: (mode: PermissionMode) => void;
@@ -568,7 +565,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
     const hasImages = (props.selectedImages?.length ?? 0) > 0;
     const canPressSendButton = !props.isSending
         && !props.isSendDisabled
-        && (isSendBlocked ? (hasText || hasImages) : (hasText || hasImages || !!props.onMicPress));
+        && (hasText || hasImages);
 
     // Check if this is a Codex, Gemini, or OpenClaw session
     // Use metadata.flavor for existing sessions, agentType prop for new sessions
@@ -828,10 +825,8 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         const liveHasText = (inputRef.current?.getText() ?? '').trim().length > 0;
         if (liveHasText || hasImages) {
             props.onSend();
-        } else {
-            props.onMicPress?.();
         }
-    }, [handleBlockedSendAttempt, hasImages, isSendBlocked, props.isSendDisabled, props.isSending, props.onSend, props.onMicPress]);
+    }, [handleBlockedSendAttempt, hasImages, isSendBlocked, props.isSendDisabled, props.isSending, props.onSend]);
 
     // Handle keyboard navigation
     const handleKeyPress = React.useCallback((event: KeyPressEvent): boolean => {
@@ -1377,12 +1372,12 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                 )}
                                 </View>}
 
-                                {/* Send/Voice button - aligned with first row */}
+                                {/* Send button - aligned with first row */}
                                 <View
                                     style={[
                                         styles.sendButton,
                                         isSendBlocked ? styles.sendButtonLocked :
-                                        (hasText || props.isSending || (props.onMicPress && !props.isMicActive))
+                                        (hasText || props.isSending)
                                             ? styles.sendButtonActive
                                             : styles.sendButtonInactive
                                     ]}
@@ -1419,15 +1414,6 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                     styles.sendButtonIcon,
                                                     { marginTop: Platform.OS === 'web' ? 2 : 0 }
                                                 ]}
-                                            />
-                                        ) : props.onMicPress && !props.isMicActive ? (
-                                            <Image
-                                                source={require('@/assets/images/icon-voice-white.png')}
-                                                style={{
-                                                    width: 24,
-                                                    height: 24,
-                                                }}
-                                                tintColor={theme.colors.button.primary.tint}
                                             />
                                         ) : (
                                             <Octicons
