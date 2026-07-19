@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -125,6 +125,32 @@ test('failed asset staging cleans temporary files without replacing outputs', as
     assert.equal(await readFile(first, 'utf8'), 'old-first');
     assert.equal(await readFile(second, 'utf8'), 'old-second');
     assert.deepEqual((await readdir(directory)).sort(), ['first.txt', 'second.txt']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('second asset install failure rolls every target back byte-for-byte', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'chimera-brand-rollback-'));
+  const first = path.join(directory, 'first.bin');
+  const second = path.join(directory, 'second.bin');
+  const oldFirst = Buffer.from([0, 1, 2, 255]);
+  const oldSecond = Buffer.from([255, 3, 2, 1]);
+  await writeFile(first, oldFirst);
+  await writeFile(second, oldSecond);
+  let installs = 0;
+  try {
+    await assert.rejects(() => writeOutputsAtomically(new Map([[first, Buffer.from('new-first')], [second, Buffer.from('new-second')]]), {
+      rename: async (source, destination) => {
+        if (source.endsWith('.tmp') && ++installs === 2) throw new Error('injected second install failure');
+        await rename(source, destination);
+      },
+      unlink,
+      writeFile,
+    }), /injected second install failure/);
+    assert.deepEqual(await readFile(first), oldFirst);
+    assert.deepEqual(await readFile(second), oldSecond);
+    assert.deepEqual((await readdir(directory)).sort(), ['first.bin', 'second.bin']);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -107,12 +107,36 @@ export async function writeOutputsAtomically(rendered, operations = { rename, un
   try {
     for (const [file, contents] of rendered) {
       const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.tmp`);
+      const backup = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.backup`);
+      staged.push({ temporary, file, backup, backedUp: false, installed: false });
       await operations.writeFile(temporary, contents);
-      staged.push([temporary, file]);
     }
-    for (const [temporary, file] of staged) await operations.rename(temporary, file);
+    try {
+      for (const entry of staged) {
+        try {
+          await operations.rename(entry.file, entry.backup);
+          entry.backedUp = true;
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+        await operations.rename(entry.temporary, entry.file);
+        entry.installed = true;
+      }
+    } catch (commitError) {
+      const rollbackErrors = [];
+      for (const entry of staged.toReversed()) {
+        if (entry.installed) {
+          try { await operations.unlink(entry.file); } catch (error) { if (error?.code !== 'ENOENT') rollbackErrors.push(error); }
+        }
+        if (entry.backedUp) {
+          try { await operations.rename(entry.backup, entry.file); } catch (error) { rollbackErrors.push(error); }
+        }
+      }
+      if (rollbackErrors.length) throw new AggregateError([commitError, ...rollbackErrors], 'Asset commit failed and rollback was incomplete');
+      throw commitError;
+    }
   } finally {
-    await Promise.all(staged.map(([temporary]) => operations.unlink(temporary).catch(() => {})));
+    await Promise.all(staged.flatMap((entry) => [entry.temporary, entry.backup].map((file) => operations.unlink(file).catch(() => {}))));
   }
 }
 
