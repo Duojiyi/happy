@@ -95,8 +95,9 @@ const {
         }),
         claim: vi.fn(async (reservationId: string, accountId: string, objectKey: string, bytes: number) => {
             state.claims.push({ reservationId, accountId, objectKey, bytes });
-            return { accountId, bytes: BigInt(bytes) };
+            return { id: reservationId, accountId, bytes: BigInt(bytes) };
         }),
+        finalize: vi.fn(async () => undefined),
         rollback: vi.fn(async (claim: { accountId: string; bytes: bigint }) => { state.rollbacks.push(claim); }),
     };
 
@@ -313,7 +314,7 @@ describe("attachmentRoutes — PUT (local-mode upload)", () => {
             payload: Buffer.from("encrypted"),
         });
         expect(res.statusCode).toBe(507);
-        expect(state.rollbacks).toEqual([{ accountId: "u1", bytes: 9n }]);
+        expect(state.rollbacks).toEqual([{ id: "r1", accountId: "u1", bytes: 9n }]);
         expect(state.uploads.size).toBe(0);
     });
 });

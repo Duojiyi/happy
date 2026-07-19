@@ -12,7 +12,7 @@ export class AttachmentQuotaError extends Error {
 }
 
 type DiskState = { totalBytes: bigint; freeBytes: bigint };
-type Claim = { accountId: string; bytes: bigint };
+type Claim = { id: string; accountId: string; bytes: bigint };
 
 async function inspectLocalDisk(): Promise<DiskState> {
     const root = join(process.env.DATA_DIR || "./data", "files");
@@ -61,9 +61,7 @@ export function createAttachmentQuotaService(dependencies: {
                 const disk = await inspectDisk();
                 const account = await tx.account.findUnique({ where: { id: accountId }, select: { disabledAt: true, attachmentQuotaBytes: true, attachmentUsedBytes: true, attachmentReservedBytes: true } });
                 const requested = BigInt(bytes);
-                const reservations = tx.chimeraAttachmentReservation.aggregate
-                    ? await tx.chimeraAttachmentReservation.aggregate({ where: { expiresAt: { gt: now() } }, _sum: { bytes: true } })
-                    : { _sum: { bytes: 0n } };
+                const reservations = await tx.chimeraAttachmentReservation.aggregate({ where: { expiresAt: { gt: now() } }, _sum: { bytes: true } });
                 const liveReserved = reservations._sum.bytes ?? 0n;
                 const projectedFree = disk.freeBytes - liveReserved - requested;
                 const projectedUsed = disk.totalBytes - disk.freeBytes + liveReserved + requested;
@@ -79,16 +77,27 @@ export function createAttachmentQuotaService(dependencies: {
                 const reservation = await tx.chimeraAttachmentReservation.findUnique({ where: { id: reservationId } });
                 const account = await tx.account.findUnique({ where: { id: accountId }, select: { disabledAt: true } });
                 if (!reservation || reservation.accountId !== accountId || reservation.objectKey !== objectKey || reservation.expiresAt <= now() || !account || account.disabledAt || BigInt(actualBytes) > reservation.bytes) throw new AttachmentQuotaError();
-                const deleted = await tx.chimeraAttachmentReservation.deleteMany({ where: { id: reservationId, accountId } });
+                return { id: reservation.id, accountId, bytes: BigInt(actualBytes) };
+            });
+        },
+        async finalize(claim: Claim) {
+            return runTransaction(async (tx) => {
+                const reservation = await tx.chimeraAttachmentReservation.findUnique({ where: { id: claim.id } });
+                if (!reservation || reservation.accountId !== claim.accountId) throw new AttachmentQuotaError();
+                const deleted = await tx.chimeraAttachmentReservation.deleteMany({ where: { id: claim.id, accountId: claim.accountId } });
                 if (deleted.count !== 1) throw new AttachmentQuotaError();
-                await tx.account.update({ where: { id: accountId }, data: {
-                    attachmentReservedBytes: { decrement: reservation.bytes }, attachmentUsedBytes: { increment: BigInt(actualBytes) },
+                await tx.account.update({ where: { id: claim.accountId }, data: {
+                    attachmentReservedBytes: { decrement: reservation.bytes }, attachmentUsedBytes: { increment: claim.bytes },
                 } });
-                return { accountId, bytes: BigInt(actualBytes) };
             });
         },
         async rollback(claim: Claim) {
-            await runTransaction((tx) => tx.account.update({ where: { id: claim.accountId }, data: { attachmentUsedBytes: { decrement: claim.bytes } } }));
+            await runTransaction(async (tx) => {
+                const reservation = await tx.chimeraAttachmentReservation.findUnique({ where: { id: claim.id } });
+                if (!reservation || reservation.accountId !== claim.accountId) return;
+                const deleted = await tx.chimeraAttachmentReservation.deleteMany({ where: { id: claim.id, accountId: claim.accountId } });
+                if (deleted.count) await tx.account.update({ where: { id: claim.accountId }, data: { attachmentReservedBytes: { decrement: reservation.bytes } } });
+            });
         },
     };
 }

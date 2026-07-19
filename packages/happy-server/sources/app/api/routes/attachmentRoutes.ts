@@ -182,6 +182,7 @@ export function attachmentRoutes(app: Fastify, dependencies: { quota?: Attachmen
         try {
             if (isLocalStorage()) await putLocalFileAtomic(ref, body);
             else await s3client.putObject(s3bucket, ref, body, body.length, { "content-type": "application/octet-stream" });
+            await quota.finalize(claim);
         }
         catch {
             await quota.rollback(claim).catch(() => undefined);
