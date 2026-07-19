@@ -14,6 +14,25 @@ import { sessionUpdateHandler } from "./socket/sessionUpdateHandler";
 import { machineUpdateHandler } from "./socket/machineUpdateHandler";
 import { artifactUpdateHandler } from "./socket/artifactUpdateHandler";
 import { accessKeyHandler } from "./socket/accessKeyHandler";
+import { db } from "@/storage/db";
+
+const ACCOUNT_ROOM_PREFIX = "chimera-account:";
+let socketServer: Server | null = null;
+
+export async function assertSocketAccountActive(socket: any): Promise<boolean> {
+    const accountId = socket.data.accountId as string | undefined;
+    const tokenEpoch = socket.data.tokenEpoch as number | undefined;
+    const account = accountId && typeof tokenEpoch === "number"
+        ? await db.account.findUnique({ where: { id: accountId }, select: { disabledAt: true, tokenEpoch: true } })
+        : null;
+    if (account && !account.disabledAt && account.tokenEpoch === tokenEpoch) return true;
+    socket.disconnect(true);
+    return false;
+}
+
+export function disconnectAccountSockets(accountId: string) {
+    socketServer?.in(`${ACCOUNT_ROOM_PREFIX}${accountId}`).disconnectSockets(true);
+}
 
 export function startSocket(app: Fastify) {
     const io = new Server(app.server, {
@@ -45,6 +64,7 @@ export function startSocket(app: Fastify) {
         //     maxDisconnectionDuration: 2 * 60 * 1000,
         // },
     });
+    socketServer = io;
 
     // Multi-process support: attach Redis streams adapter when REDIS_URL is set
     if (process.env.REDIS_URL) {
@@ -111,6 +131,8 @@ export function startSocket(app: Fastify) {
         }
 
         socket.data.userId = verified.userId;
+        socket.data.accountId = verified.userId;
+        socket.data.tokenEpoch = verified.tokenEpoch;
         socket.data.clientType = clientType;
         socket.data.sessionId = sessionId;
         socket.data.machineId = machineId;
@@ -126,6 +148,12 @@ export function startSocket(app: Fastify) {
         const sessionId = socket.data.sessionId as string | undefined;
         const machineId = socket.data.machineId as string | undefined;
         const labels = getMetricsLabelsFromSocket(socket);
+        socket.join(`${ACCOUNT_ROOM_PREFIX}${socket.data.accountId}`);
+        socket.use((event, next) => {
+            void assertSocketAccountActive(socket).then((active) => next(active ? undefined : new Error("Account is not active"))).catch(() => {
+                socket.disconnect(true); next(new Error("Account is not active"));
+            });
+        });
 
         log({ module: 'websocket' }, `Token verified: ${userId}, clientType: ${clientType || 'user-scoped'}, client: ${labels.client}, sessionId: ${sessionId || 'none'}, machineId: ${machineId || 'none'}, socketId: ${socket.id}`);
 

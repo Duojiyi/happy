@@ -3,6 +3,8 @@ import { db } from "@/storage/db";
 import { createPublicConfigService, registerAdminPublicConfigRoutes } from "./publicConfig";
 import { loadChimeraServerConfig } from "./config";
 import { createAdminSessionService, deriveAdminSessionSecret } from "./adminSessions";
+import { createAccountPolicy, MAX_ATTACHMENT_QUOTA_BYTES, MIN_ATTACHMENT_QUOTA_BYTES } from "./accountPolicy";
+import { disconnectAccountSockets } from "@/app/api/socket";
 
 const COOKIE_NAME = "__Secure-chimera_admin";
 const ORIGIN = "https://39.98.68.173";
@@ -31,12 +33,14 @@ function cookie(request: { headers: Record<string, unknown> }) {
     return header.split(/;\s*/).map((part) => part.split("=", 2)).find(([name]) => name === COOKIE_NAME)?.[1] ?? null;
 }
 
-export function adminRoutes(app: any, dependencies: { passwordHash?: string; sessions?: ReturnType<typeof createAdminSessionService>; verifyPassword?: (password: string, hash: string) => Promise<boolean>; loginLimits?: LoginLimits } = {}) {
+export function adminRoutes(app: any, dependencies: { passwordHash?: string; sessions?: ReturnType<typeof createAdminSessionService>; verifyPassword?: (password: string, hash: string) => Promise<boolean>; loginLimits?: LoginLimits; accountPseudonymKey?: Uint8Array } = {}) {
     const config = dependencies.passwordHash ? null : loadChimeraServerConfig(process.env);
     const passwordHash = dependencies.passwordHash ?? config!.adminPasswordHash;
     const sessions = dependencies.sessions ?? createAdminSessionService({ secret: deriveAdminSessionSecret(config!.adminSessionSecret, passwordHash), db });
     const verifyPassword = dependencies.verifyPassword ?? ((password, hash) => argon2.verify(hash, password));
     const limits = dependencies.loginLimits ?? createLoginLimits();
+    // Tests inject only password/session dependencies; production always gets this key from validated config.
+    const accounts = createAccountPolicy({ pseudonymKey: dependencies.accountPseudonymKey ?? config?.accountPseudonymKey ?? new Uint8Array(32), onAccountInvalidated: disconnectAccountSockets });
     const unauthorised = (reply: any) => reply.code(401).send(UNAUTHORIZED);
     app.post("/chimera-control/api/session", async (request: any, reply: any) => {
         if (!request.body || typeof request.body !== "object" || Array.isArray(request.body)
@@ -66,4 +70,29 @@ export function adminRoutes(app: any, dependencies: { passwordHash?: string; ses
         await sessions.revokeAll(); return reply.code(204).send();
     });
     registerAdminPublicConfigRoutes(app, createPublicConfigService(), sessions);
+    const accountSession = async (request: any, reply: any, mutation = false) => {
+        const sessionId = cookie(request); const csrf = request.headers["x-chimera-csrf"];
+        const allowed = mutation
+            ? request.headers.origin === ORIGIN && sessionId && typeof csrf === "string" && await sessions.authorizeMutation(sessionId, csrf)
+            : sessionId && await sessions.authenticate(sessionId);
+        return allowed ? true : (unauthorised(reply), false);
+    };
+    app.get("/chimera-control/api/accounts", async (request: any, reply: any) => {
+        if (!await accountSession(request, reply)) return; return reply.send(await accounts.list());
+    });
+    app.post("/chimera-control/api/accounts/:id/disable", async (request: any, reply: any) => {
+        if (!await accountSession(request, reply, true)) return; try { return reply.send(await accounts.disable(request.params.id)); } catch { return reply.code(404).send({ error: "Account not found" }); }
+    });
+    app.post("/chimera-control/api/accounts/:id/restore", async (request: any, reply: any) => {
+        if (!await accountSession(request, reply, true)) return; try { return reply.send(await accounts.restore(request.params.id)); } catch { return reply.code(404).send({ error: "Account not found" }); }
+    });
+    app.post("/chimera-control/api/accounts/:id/revoke-tokens", async (request: any, reply: any) => {
+        if (!await accountSession(request, reply, true)) return; try { return reply.send(await accounts.revokeTokens(request.params.id)); } catch { return reply.code(404).send({ error: "Account not found" }); }
+    });
+    app.put("/chimera-control/api/accounts/:id/quota", async (request: any, reply: any) => {
+        if (!await accountSession(request, reply, true)) return;
+        const bytes = request.body?.attachmentQuotaBytes;
+        if (!Number.isSafeInteger(bytes) || bytes < MIN_ATTACHMENT_QUOTA_BYTES || bytes > MAX_ATTACHMENT_QUOTA_BYTES) return reply.code(400).send({ error: "Invalid attachment quota" });
+        try { return reply.send(await accounts.setQuota(request.params.id, bytes)); } catch { return reply.code(404).send({ error: "Account not found" }); }
+    });
 }
