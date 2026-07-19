@@ -9,7 +9,6 @@ const checks = [
   ['sources/app/api/api.ts', 'required-attachment-routes', /attachmentRoutes\(typed\)/],
   ['sources/app/api/api.ts', 'required-public-config', /registerPublicConfigRoute\(typed/],
   ['sources/app/api/api.ts', 'required-admin-control', /adminRoutes\(typed\)/],
-  ['sources/app/api/routes/authRoutes.ts', 'required-server-challenge', /['"]\/v1\/auth\/challenge['"]/],
   ['sources/app/api/routes/authRoutes.ts', 'required-challenge-completion', /challengeId:\s*z\.string/],
   ['sources/app/api/socket.ts', 'required-socket-event-guard', /socket\.use\(/],
   ['sources/app/api/socket.ts', 'required-socket-origin', /origin:\s*['"]https:\/\/39\.98\.68\.173['"]/],
@@ -25,6 +24,10 @@ const checks = [
 // This is intentionally a method/path manifest, rather than a text search.  It
 // makes comments, dead strings and computed paths unable to satisfy policy.
 export const requiredRoutes = {
+  'sources/app/api/routes/authRoutes.ts': [
+    'POST /v1/auth/challenge', 'POST /v1/auth', 'POST /v1/auth/request', 'GET /v1/auth/request/status',
+    'POST /v1/auth/response', 'POST /v1/auth/account/request', 'POST /v1/auth/account/response',
+  ],
   'sources/app/chimera/publicConfig.ts': ['GET /v1/chimera/config', 'GET /chimera-control/api/config', 'PUT /chimera-control/api/config'],
   'sources/app/chimera/adminRoutes.ts': [
     'GET /chimera-control', 'GET /chimera-control/', 'GET /chimera-control/control.css', 'GET /chimera-control/control.js',
@@ -60,6 +63,52 @@ function staticRoutes(sourceText, fileName) {
   };
   visit(sourceFile);
   return routes;
+}
+
+function attachmentPolicyFindings(sourceText) {
+  const sourceFile = ts.createSourceFile('attachmentRoutes.ts', sourceText, ts.ScriptTarget.Latest, true);
+  let putHandler;
+  const calls = new Set();
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+      && ['newPostPolicy', 'presignedPostPolicy'].includes(node.expression.text)) calls.add('presigned');
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const owner = ts.isIdentifier(node.expression.expression) ? node.expression.expression.text : '';
+      calls.add(`${owner}.${node.expression.name.text}`);
+      if (ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'app'
+        && node.expression.name.text === 'put' && ts.isStringLiteralLike(node.arguments[0])
+        && node.arguments[0].text === '/v1/sessions/:sessionId/attachments/:attachmentFile') {
+        const candidate = node.arguments.at(-1);
+        if (candidate && (ts.isArrowFunction(candidate) || ts.isFunctionExpression(candidate))) putHandler = candidate;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  const findings = [];
+  if (calls.has('presigned')) findings.push('attachment-presigned-post');
+  // Minimal fixture sources intentionally use a handler identifier; production
+  // route code must keep the complete server-owned PUT transaction together.
+  if (!putHandler) return findings;
+  const handlerCalls = new Set();
+  const collect = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) handlerCalls.add(node.expression.text);
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const owner = ts.isIdentifier(node.expression.expression) ? node.expression.expression.text : '';
+      handlerCalls.add(`${owner}.${node.expression.name.text}`);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(putHandler);
+  for (const [call, rule] of [
+    ['quota.claim', 'attachment-put-missing-claim'], ['putLocalFileAtomic', 'attachment-put-missing-local-write'],
+    ['s3client.putObject', 'attachment-put-missing-s3-write'], ['quota.finalize', 'attachment-put-missing-finalize'],
+    ['quota.rollback', 'attachment-put-missing-rollback'], ['deleteAttachmentObject', 'attachment-put-missing-delete'],
+  ]) {
+    const present = call.includes('.') ? handlerCalls.has(call) : handlerCalls.has(call);
+    if (!present) findings.push(rule);
+  }
+  return findings;
 }
 
 async function exists(path) { try { await access(path); return true; } catch { return false; } }
@@ -107,6 +156,9 @@ export async function verifyChimeraServer({ root = fileURLToPath(new URL('../', 
 
   const accountPolicy = await source(repositoryRoot, 'sources/app/chimera/accountPolicy.ts') ?? '';
   if (/\b(?:publicKey|profile|session|machine|fileName|filePath|content)\b/.test(accountPolicy)) findings.push(finding(repositoryRoot, 'sources/app/chimera/accountPolicy.ts', 'account-field-exposure'));
+
+  const attachments = cache.get('sources/app/api/routes/attachmentRoutes.ts') ?? '';
+  for (const rule of attachmentPolicyFindings(attachments)) findings.push(finding(repositoryRoot, 'sources/app/api/routes/attachmentRoutes.ts', rule));
 
   const standalone = cache.get('sources/standalone.ts') ?? '';
   if (/const host = ['"](?:0\.0\.0\.0|::)['"]/.test(standalone)) findings.push(finding(repositoryRoot, 'sources/standalone.ts', 'non-loopback-bind'));

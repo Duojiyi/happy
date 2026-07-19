@@ -7,7 +7,10 @@ import { requiredRoutes, verifyChimeraServer } from './verify-chimera-server.mjs
 
 const defaults = {
   'sources/app/api/api.ts': "authRoutes(typed); attachmentRoutes(typed); registerPublicConfigRoute(typed); adminRoutes(typed); export const host = opts.host ?? '127.0.0.1';\n",
-  'sources/app/api/routes/authRoutes.ts': "app.post('/v1/auth/challenge', handler); const schema = { challengeId: z.string() };\n",
+  'sources/app/api/routes/authRoutes.ts': [
+    'POST /v1/auth/challenge', 'POST /v1/auth', 'POST /v1/auth/request', 'GET /v1/auth/request/status',
+    'POST /v1/auth/response', 'POST /v1/auth/account/request', 'POST /v1/auth/account/response',
+  ].map((route) => { const [method, path] = route.split(' '); return `app.${method.toLowerCase()}('${path}', handler);`; }).join('\n') + ' const schema = { challengeId: z.string() };\n',
   'sources/app/chimera/adminRoutes.ts': [
     'GET /chimera-control', 'GET /chimera-control/', 'GET /chimera-control/control.css', 'GET /chimera-control/control.js',
     'POST /chimera-control/api/session', 'GET /chimera-control/api/session', 'DELETE /chimera-control/api/session', 'POST /chimera-control/api/session/revoke-all',
@@ -56,6 +59,23 @@ test('does not count a required route hidden in a dead branch', async () => {
     'sources/app/chimera/publicConfig.ts': 'if (false) app.get("/v1/chimera/config", handler);\n',
   });
   assert(findings.some((item) => item.rule === 'missing-route:get:/v1/chimera/config'), JSON.stringify(findings));
+});
+
+test('rejects a presigned POST upload bypass', async () => {
+  const findings = await result({
+    'sources/app/api/routes/attachmentRoutes.ts': `${defaults['sources/app/api/routes/attachmentRoutes.ts']}\nnewPostPolicy();`,
+  });
+  assert(findings.some((item) => item.rule === 'attachment-presigned-post'), JSON.stringify(findings));
+});
+
+const attachmentPut = "app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', {}, async () => { await quota.claim(); await putLocalFileAtomic(); await s3client.putObject(); await quota.finalize(); await quota.rollback(); await deleteAttachmentObject(); });";
+const attachmentWithPut = defaults['sources/app/api/routes/attachmentRoutes.ts'].replace("app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', handler);", attachmentPut);
+for (const [removed, rule] of [
+  ['s3client.putObject()', 'attachment-put-missing-s3-write'], ['quota.finalize()', 'attachment-put-missing-finalize'],
+  ['quota.rollback()', 'attachment-put-missing-rollback'], ['deleteAttachmentObject()', 'attachment-put-missing-delete'],
+]) test(`rejects attachment PUT without ${removed}`, async () => {
+  const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': attachmentWithPut.replace(removed, '') });
+  assert(findings.some((item) => item.rule === rule), JSON.stringify(findings));
 });
 
 for (const [path, routes] of Object.entries(requiredRoutes)) {

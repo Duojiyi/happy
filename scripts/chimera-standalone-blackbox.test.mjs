@@ -27,9 +27,12 @@ function run(args, env) {
 }
 async function stop(child) {
   if (child.exitCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
   child.kill('SIGTERM');
-  await Promise.race([new Promise((resolve) => child.once('exit', resolve)), new Promise((resolve) => setTimeout(resolve, 5000))]);
-  if (child.exitCode === null) child.kill();
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5000))]);
+  if (child.exitCode !== null) return;
+  child.kill();
+  await Promise.race([exited, new Promise((_, reject) => setTimeout(() => reject(new Error('standalone did not exit after forced kill')), 5000))]);
 }
 
 test('built standalone serves the Chimera public and control surfaces on loopback only', { timeout: 90_000 }, async () => {
@@ -45,6 +48,7 @@ test('built standalone serves the Chimera public and control surfaces on loopbac
     const base = `http://127.0.0.1:${port}`;
     let config;
     for (let attempt = 0; attempt < 100; attempt++) {
+      if (child.exitCode !== null) throw new Error(`standalone exited during startup (${child.exitCode})`);
       try { config = await fetch(`${base}/v1/chimera/config`); if (config.ok) break; } catch { /* still starting */ }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
