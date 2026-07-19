@@ -39,7 +39,7 @@ jobs:
   android:
     name: Build unsigned Android APK
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     permissions:
       contents: read
     outputs:
