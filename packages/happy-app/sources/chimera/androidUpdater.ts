@@ -28,6 +28,8 @@ export type AndroidUpdaterDependencies = {
     hashFile: (uri: string) => Promise<string>;
     move: (fromUri: string, toUri: string) => Promise<void>;
     remove: (uri: string) => Promise<void>;
+    listCacheFiles: () => Promise<string[]>;
+    createRunId?: () => string;
     inspectApk: (uri: string) => Promise<InspectedApk>;
     canRequestPackageInstalls: () => Promise<boolean>;
     openInstallPermissionSettings: () => Promise<void>;
@@ -43,7 +45,43 @@ export type AndroidUpdaterOptions = {
 
 export type StartOptions = { announcementDismissed: boolean };
 
+export function createAndroidUpdaterLifecycleCoordinator<T extends { cancel: () => Promise<void> }>() {
+    let current: T | null = null;
+    let creating: Promise<T> | null = null;
+    let barrier: Promise<void> = Promise.resolve();
+    return {
+        getCurrent: () => current,
+        async mount(factory: () => Promise<T>): Promise<T> {
+            await barrier;
+            if (current) return current;
+            if (!creating) {
+                creating = factory().then((created) => {
+                    current = created;
+                    return created;
+                }).finally(() => { creating = null; });
+            }
+            return creating;
+        },
+        unmount(): Promise<void> {
+            const target = creating ?? Promise.resolve(current);
+            const shutdown = (async () => {
+                const updater = await target;
+                if (updater) await updater.cancel();
+                if (current === updater) current = null;
+            })();
+            barrier = shutdown.catch(() => {});
+            return shutdown;
+        },
+    };
+}
+
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120_000;
+let processRunCounter = 0;
+
+function defaultRunId(): string {
+    processRunCounter += 1;
+    return `${Date.now().toString(36)}-${processRunCounter.toString(36)}`;
+}
 
 async function withPhaseTimeout<T>(
     operation: Promise<T>,
@@ -88,7 +126,6 @@ export function createAndroidUpdater(
     let activeRun: Promise<void> | null = null;
     let cachedFileUri: string | null = null;
     let permissionPrompted = false;
-    let runNumber = 0;
     let latestAnnouncementDismissed = false;
     let activeController: AbortController | null = null;
 
@@ -105,11 +142,21 @@ export function createAndroidUpdater(
         }
     };
 
-    const nextCacheUri = (versionCode: number, partial: boolean) => {
+    const nextCacheUri = (versionCode: number, runId: string, partial: boolean) => {
         const root = options.cacheDirectory ?? 'file:///chimera-updates/';
         const normalizedRoot = root.endsWith('/') ? root : `${root}/`;
         const suffix = partial ? '.partial' : '.apk';
-        return `${normalizedRoot}chimera-${versionCode}-${runNumber}${suffix}`;
+        return `${normalizedRoot}chimera-${versionCode}-${runId}${suffix}`;
+    };
+
+    const cleanupStaleCache = async (controller: AbortController, timeoutMs: number) => {
+        const staleFiles = await withPhaseTimeout(dependencies.listCacheFiles(), controller, timeoutMs, 'stale cache scan');
+        for (const uri of staleFiles) {
+            const leaf = uri.slice(uri.lastIndexOf('/') + 1);
+            if (/^chimera-[1-9][0-9]*-[A-Za-z0-9-]+\.(?:apk|partial)$/.test(leaf)) {
+                await withPhaseTimeout(dependencies.remove(uri), controller, timeoutMs, 'stale cache cleanup');
+            }
+        }
     };
 
     const continueDownloaded = async (
@@ -162,10 +209,12 @@ export function createAndroidUpdater(
                 return;
             }
 
-            runNumber += 1;
+            const runId = (dependencies.createRunId ?? defaultRunId)();
+            if (!/^[A-Za-z0-9-]{1,64}$/.test(runId)) throw new Error('Invalid Android update run ID');
             cachedFileUri = null;
             finalUri = null;
             permissionPrompted = false;
+            await cleanupStaleCache(controller, timeoutMs);
             const manifestUrl = `${dependencies.origin}${dependencies.manifestPath}`;
             const envelope = await withPhaseTimeout(
                 dependencies.fetchManifest(manifestUrl, controller.signal),
@@ -186,8 +235,8 @@ export function createAndroidUpdater(
             }
 
             state = { phase: 'downloading', versionCode: payload.versionCode };
-            partialUri = nextCacheUri(payload.versionCode, true);
-            finalUri = nextCacheUri(payload.versionCode, false);
+            partialUri = nextCacheUri(payload.versionCode, runId, true);
+            finalUri = nextCacheUri(payload.versionCode, runId, false);
             activeDownload = dependencies.download(
                 `${dependencies.origin}${payload.apkPath}`,
                 partialUri,
@@ -200,7 +249,23 @@ export function createAndroidUpdater(
             }
             const sha256 = await withPhaseTimeout(dependencies.hashFile(partialUri), controller, timeoutMs, 'sha256');
             if (sha256.toLowerCase() !== payload.sha256) throw new Error('download size or sha256 mismatch');
-            await withPhaseTimeout(dependencies.move(partialUri, finalUri), controller, timeoutMs, 'atomic rename');
+            const movingPartial = partialUri;
+            const movingFinal = finalUri;
+            const moveOperation = dependencies.move(movingPartial, movingFinal);
+            try {
+                await withPhaseTimeout(moveOperation, controller, timeoutMs, 'atomic rename');
+            } catch (error) {
+                // A native rename cannot be cancelled. Isolate it under this run's
+                // unique names and remove either outcome after the late operation settles.
+                partialUri = null;
+                finalUri = null;
+                void (async () => {
+                    try { await moveOperation; } catch { /* source may have been removed */ }
+                    await removeQuietly(movingPartial);
+                    await removeQuietly(movingFinal);
+                })();
+                throw error;
+            }
             partialUri = null;
             const archive = await withPhaseTimeout(dependencies.inspectApk(finalUri), controller, timeoutMs, 'APK inspection');
             if (!sameIdentity(archive, payload)) {

@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { createAndroidUpdater, type AndroidUpdatePayload, type AndroidUpdaterDependencies } from './androidUpdater';
+import { createAndroidUpdater, createAndroidUpdaterLifecycleCoordinator, type AndroidUpdatePayload, type AndroidUpdaterDependencies } from './androidUpdater';
 
 const payload: AndroidUpdatePayload = {
     schemaVersion: 1,
@@ -26,6 +26,7 @@ function deps(overrides: Partial<AndroidUpdaterDependencies> = {}): AndroidUpdat
         hashFile: vi.fn(async () => payload.sha256),
         move: vi.fn(async () => {}),
         remove: vi.fn(async () => {}),
+        listCacheFiles: vi.fn(async () => []),
         inspectApk: vi.fn(async () => ({ packageName: payload.packageName, versionName: payload.versionName, versionCode: payload.versionCode, signerSha256: payload.signerSha256 })),
         canRequestPackageInstalls: vi.fn(async () => true),
         openInstallPermissionSettings: vi.fn(async () => {}),
@@ -209,5 +210,64 @@ describe('Android update state machine', () => {
         await retrying.cancel();
         await active;
         expect(retrying.getState()).toEqual({ phase: 'idle' });
+    });
+
+    test('uses unique cache names across updater lifecycles', async () => {
+        const paths: string[] = [];
+        const firstDeps = deps({ download: vi.fn(async (_url, path) => { paths.push(path); return { bytes: payload.size }; }) });
+        const secondDeps = deps({ download: vi.fn(async (_url, path) => { paths.push(path); return { bytes: payload.size }; }) });
+        await createAndroidUpdater(firstDeps).start({ announcementDismissed: false });
+        await createAndroidUpdater(secondDeps).start({ announcementDismissed: false });
+        expect(paths).toHaveLength(2);
+        expect(paths[0]).not.toBe(paths[1]);
+    });
+
+    test('removes stale APK and partial files before accepting a same-version manifest', async () => {
+        const stale = ['file:///cache/chimera-1-old.apk', 'file:///cache/chimera-2-old.partial'];
+        const events: string[] = [];
+        const d = deps({
+            currentVersionCode: 2,
+            verifyManifest: vi.fn(async () => ({ ...payload, versionCode: 2 })),
+            listCacheFiles: vi.fn(async () => stale),
+            remove: vi.fn(async (uri) => { events.push(`remove:${uri}`); }),
+            fetchManifest: vi.fn(async () => { events.push('fetch'); return {}; }),
+        });
+        const updater = createAndroidUpdater(d);
+        await updater.start({ announcementDismissed: true });
+        expect(events.slice(0, 2)).toEqual(stale.map((uri) => `remove:${uri}`));
+        expect(events[2]).toBe('fetch');
+        expect(updater.getState()).toEqual({ phase: 'idle' });
+    });
+
+    test('post-cleans a final file created by a rename that settles after timeout', async () => {
+        let settleMove!: () => void;
+        const move = vi.fn((_from: string, _to: string) => new Promise<void>((resolve) => { settleMove = resolve; }));
+        const removed: string[] = [];
+        const d = deps({ move, remove: vi.fn(async (uri) => { removed.push(uri); }) });
+        const updater = createAndroidUpdater(d, { downloadTimeoutMs: 5 });
+        await updater.start({ announcementDismissed: true });
+        expect(updater.getState()).toEqual({ phase: 'failed', retryOnNextStart: true });
+        const finalUri = String(move.mock.calls[0]?.[1]);
+        expect(removed).not.toContain(finalUri);
+        settleMove();
+        await vi.waitFor(() => expect(removed).toContain(finalUri));
+    });
+
+    test('serializes a StrictMode remount behind complete cancellation', async () => {
+        let finishCancel!: () => void;
+        const cancelGate = new Promise<void>((resolve) => { finishCancel = resolve; });
+        const oldUpdater = { cancel: vi.fn(() => cancelGate) };
+        const newUpdater = { cancel: vi.fn(async () => {}) };
+        const lifecycle = createAndroidUpdaterLifecycleCoordinator<typeof oldUpdater>();
+        await lifecycle.mount(async () => oldUpdater);
+        const shutdown = lifecycle.unmount();
+        const createNew = vi.fn(async () => newUpdater);
+        const remount = lifecycle.mount(createNew);
+        await Promise.resolve();
+        expect(createNew).not.toHaveBeenCalled();
+        finishCancel();
+        await shutdown;
+        await expect(remount).resolves.toBe(newUpdater);
+        expect(createNew).toHaveBeenCalledTimes(1);
     });
 });

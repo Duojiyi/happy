@@ -7,14 +7,16 @@ import {
     getInfoAsync,
     makeDirectoryAsync,
     moveAsync,
+    readDirectoryAsync,
 } from 'expo-file-system/legacy';
+import { randomUUID } from 'expo-crypto';
 
 import { ANDROID_VERSION_CODE, RELAY_ORIGIN } from './product.generated';
-import { createAndroidUpdater, type AndroidUpdateState } from './androidUpdater';
+import { createAndroidUpdater, createAndroidUpdaterLifecycleCoordinator, type AndroidUpdateState } from './androidUpdater';
 import { useStartupAnnouncement, type StartupAnnouncementState } from './useStartupAnnouncement';
 
 export function useAndroidUpdater(announcement: StartupAnnouncementState): AndroidUpdateState {
-    const updaterRef = React.useRef<ReturnType<typeof createAndroidUpdater> | null>(null);
+    const lifecycleRef = React.useRef(createAndroidUpdaterLifecycleCoordinator<ReturnType<typeof createAndroidUpdater>>());
     const announcementRef = React.useRef(announcement);
     announcementRef.current = announcement;
     const mountedRef = React.useRef(false);
@@ -28,11 +30,10 @@ export function useAndroidUpdater(announcement: StartupAnnouncementState): Andro
         let cancelled = false;
         const start = async () => {
             try {
-                const { default: native } = await import('../../modules/chimera-updater');
-                if (cancelled) return;
-                if (!cacheDirectory) throw new Error('Android cache directory is unavailable');
-                if (!updaterRef.current) {
-                    updaterRef.current = createAndroidUpdater({
+                const updater = await lifecycleRef.current.mount(async () => {
+                    const { default: native } = await import('../../modules/chimera-updater');
+                    if (!cacheDirectory) throw new Error('Android cache directory is unavailable');
+                    return createAndroidUpdater({
                         platform: 'android',
                         origin: RELAY_ORIGIN,
                         manifestPath: '/downloads/chimera-update.json',
@@ -69,18 +70,25 @@ export function useAndroidUpdater(announcement: StartupAnnouncementState): Andro
                         hashFile: (uri) => native.hashFile(uri),
                         move: (fromUri, toUri) => moveAsync({ from: fromUri, to: toUri }),
                         remove: (uri) => deleteAsync(uri, { idempotent: true }),
+                        listCacheFiles: async () => {
+                            const directory = `${cacheDirectory}chimera-updates`;
+                            await makeDirectoryAsync(directory, { intermediates: true });
+                            return (await readDirectoryAsync(directory)).map((name) => `${directory}/${name}`);
+                        },
+                        createRunId: () => randomUUID(),
                         inspectApk: (uri) => native.inspectApk(uri),
                         canRequestPackageInstalls: () => native.canRequestPackageInstalls(),
                         openInstallPermissionSettings: () => native.openInstallPermissionSettings(),
                         launchInstaller: (uri) => native.launchInstaller(uri),
                         logger: (message, error) => console.warn(message, error),
                     }, { cacheDirectory: `${cacheDirectory}chimera-updates` });
-                }
+                });
+                if (cancelled) return;
                 const currentAnnouncement = announcementRef.current;
-                await updaterRef.current.start({
+                await updater.start({
                     announcementDismissed: currentAnnouncement.settled && currentAnnouncement.dismissed,
                 });
-                if (!cancelled && mountedRef.current) setState(updaterRef.current.getState());
+                if (!cancelled && mountedRef.current) setState(updater.getState());
             } catch (error) {
                 if (!cancelled) {
                     console.warn('[chimera-updater] unavailable', error);
@@ -92,14 +100,14 @@ export function useAndroidUpdater(announcement: StartupAnnouncementState): Andro
         return () => {
             cancelled = true;
             mountedRef.current = false;
-            const updater = updaterRef.current;
-            updaterRef.current = null;
-            void updater?.cancel().catch((error) => console.warn('[chimera-updater] cancellation failed', error));
+            void lifecycleRef.current.unmount().catch((error) => {
+                console.warn('[chimera-updater] cancellation failed', error);
+            });
         };
     }, []);
 
     React.useEffect(() => {
-        const updater = updaterRef.current;
+        const updater = lifecycleRef.current.getCurrent();
         if (Platform.OS !== 'android' || !updater) return;
         void updater.start({
             announcementDismissed: announcement.settled && announcement.dismissed,
@@ -113,7 +121,7 @@ export function useAndroidUpdater(announcement: StartupAnnouncementState): Andro
     React.useEffect(() => {
         if (Platform.OS !== 'android') return;
         const subscription = AppState.addEventListener('change', (nextState) => {
-            const updater = updaterRef.current;
+            const updater = lifecycleRef.current.getCurrent();
             if (nextState !== 'active' || !updater) return;
             const currentAnnouncement = announcementRef.current;
             void updater.start({
