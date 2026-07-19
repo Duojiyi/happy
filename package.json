@@ -24,7 +24,9 @@
         "env:down": "tsx environments/environments.ts down",
         "env:tailscale": "tsx environments/environments.ts tailscale",
         "chimera:brand": "node scripts/generate-chimera-brand.mjs",
-        "chimera:brand:check": "node scripts/generate-chimera-brand.mjs --check"
+        "chimera:brand:check": "node scripts/generate-chimera-brand.mjs --check",
+        "chimera:client:test": "node scripts/verify-chimera-client.test.mjs",
+        "chimera:client:check": "node scripts/verify-chimera-client.mjs"
     },
     "workspaces": {
         "packages": [
