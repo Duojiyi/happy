@@ -45,6 +45,16 @@ function Assert-ExactKeys($Value, [string[]] $Keys, [string] $Name) {
     if (($actual -join '|') -ne (($Keys | Sort-Object) -join '|')) { throw "$Name has an invalid schema." }
 }
 
+function Assert-TemporaryTestPaths([string[]] $Paths, [string] $Message) {
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd($separator) + $separator
+    foreach ($path in $Paths) {
+        if ([string]::IsNullOrWhiteSpace($path)) { throw $Message }
+        $fullPath = [System.IO.Path]::GetFullPath($path)
+        if ($fullPath.TrimEnd($separator) -eq $tempRoot.TrimEnd($separator) -or -not $fullPath.StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase)) { throw $Message }
+    }
+}
+
 New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
 Protect-PrivatePath $BackupRoot $true
 $lockPath = Join-Path $BackupRoot '.chimera-signing-bootstrap.lock'
@@ -58,12 +68,8 @@ try {
     }
     Protect-PrivatePath $lockPath
     if ($env:CHIMERA_TEST_LOCK_READY_PATH -or $env:CHIMERA_TEST_LOCK_RELEASE_PATH) {
-        $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-        $testPaths = @($BackupRoot, $ProductPath, $env:CHIMERA_TEST_LOCK_READY_PATH, $env:CHIMERA_TEST_LOCK_RELEASE_PATH)
-        if ($testPaths -contains $null -or @($testPaths | Where-Object { -not [System.IO.Path]::GetFullPath($_).StartsWith($tempRoot, [System.StringComparison]::OrdinalIgnoreCase) }).Count -ne 0) {
-            throw 'Test lock signaling is only permitted for temporary paths.'
-        }
         if (-not $env:CHIMERA_TEST_LOCK_READY_PATH -or -not $env:CHIMERA_TEST_LOCK_RELEASE_PATH) { throw 'Test lock signaling requires ready and release paths.' }
+        Assert-TemporaryTestPaths @($BackupRoot, $ProductPath, $env:CHIMERA_TEST_LOCK_READY_PATH, $env:CHIMERA_TEST_LOCK_RELEASE_PATH) 'Test lock signaling is only permitted for temporary paths.'
         $readyStream = [System.IO.File]::Open($env:CHIMERA_TEST_LOCK_READY_PATH, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         $readyStream.Dispose()
         Protect-PrivatePath $env:CHIMERA_TEST_LOCK_READY_PATH
@@ -196,13 +202,13 @@ try {
     [System.IO.File]::WriteAllText($transactionPath, ($transaction | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
     Protect-PrivatePath $transactionPath
     if ($env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -eq '1') {
-        if ($BackupRoot -notlike "$([System.IO.Path]::GetTempPath())*" -or $productPath -notlike "$([System.IO.Path]::GetTempPath())*") { throw 'Test fault injection is only permitted for temporary paths.' }
+        Assert-TemporaryTestPaths @($BackupRoot, $productPath) 'Test fault injection is only permitted for temporary paths.'
         throw 'Injected failure after transaction record.'
     }
     Move-Item -LiteralPath $pendingBundle -Destination $bundlePath -Force
     Protect-PrivatePath $bundlePath
     if ($env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME -eq '1') {
-        if ($BackupRoot -notlike "$([System.IO.Path]::GetTempPath())*" -or $productPath -notlike "$([System.IO.Path]::GetTempPath())*") { throw 'Test fault injection is only permitted for temporary paths.' }
+        Assert-TemporaryTestPaths @($BackupRoot, $productPath) 'Test fault injection is only permitted for temporary paths.'
         throw 'Injected failure after final bundle rename.'
     }
     Write-ProductAtomic $productPath $product

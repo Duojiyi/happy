@@ -13,6 +13,7 @@ $passwordFile = Join-Path $workspace 'store-password.protected'
 $keyPasswordFile = Join-Path $workspace 'key-password.protected'
 $productPath = Join-Path $repoRoot 'brand\chimera\product.json'
 $originalProduct = Get-Content -Raw $productPath
+$escapedWorkspace = Join-Path ([System.IO.Path]::GetTempPath()) ("..\chimera escaped signing test " + [guid]::NewGuid())
 $keytool = if ($KeytoolPath) { $KeytoolPath } else { (Get-Command keytool.exe -ErrorAction Stop).Source }
 $openssl = if ($OpenSslPath) { $OpenSslPath } else { (Get-Command openssl.exe -ErrorAction Stop).Source }
 $toolArgs = @{ KeytoolPath = $keytool; OpenSslPath = $openssl }
@@ -120,6 +121,18 @@ try {
     Assert-True $resumed.resumed 'next invocation resumes incomplete transaction'
     Assert-True (-not (Test-Path (Join-Path $faultRoot 'chimera-signing-transaction.json'))) 'resume clears transaction record'
 
+    New-Item -ItemType Directory -Path $escapedWorkspace -Force | Out-Null
+    $escapedProductPath = Join-Path $escapedWorkspace 'product.json'
+    $testProduct.updatePublicKey = ''
+    $testProduct.androidSignerSha256 = ''
+    $testProduct | ConvertTo-Json | Set-Content -LiteralPath $escapedProductPath
+    $env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD = '1'
+    $escapedRejected = $false
+    try { & $bootstrap -BackupRoot (Join-Path $escapedWorkspace 'backups') -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $escapedProductPath @toolArgs | Out-Null }
+    catch { $escapedRejected = $_.Exception.Message -match 'only permitted for temporary paths' }
+    Remove-Item Env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -ErrorAction SilentlyContinue
+    Assert-True $escapedRejected 'normalized temp parent traversal is rejected for fault injection'
+
     $pendingFaultRoot = Join-Path $workspace 'pending-fault-backups'
     $pendingFaultProductPath = Join-Path $workspace 'pending-fault-product.json'
     $testProduct.updatePublicKey = ''
@@ -197,4 +210,5 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $workspace -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $escapedWorkspace -Recurse -Force -ErrorAction SilentlyContinue
 }
