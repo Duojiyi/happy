@@ -12,11 +12,11 @@ const RULES = [
   ['happy-logo', /happy[-_ ]?logo/i],
   ['happy-branding', /\b(?:title|name|appName)\s*[:=]\s*['"`]Happy(?:\s+Coder)?['"`]/],
   ['official-host', /(?:https?:\/\/)?(?:app\.|api\.)?happy\.(?:engineering|tools|engineer)\b/i],
-  ['server-selector', /\b(?:ServerSelector|ServerSelection)\b|router\.(?:push|navigate|replace)\(\s*['"`]\/server/],
+  ['server-selector', /\b(?:ServerSelector|ServerSelection)\b|(?:router\.(?:push|navigate|replace)|href)\s*=?\s*\(?\s*['"`]\/server/],
   ['voice-integration', /\b(?:VoiceButton|startVoice|useConversation|RealtimeVoiceSession|@elevenlabs\/|livekit)\b/i],
   ['push-integration', /\b(?:expo-notifications|registerForPush|pushRegistration|apiPush)\b/i],
   ['telemetry-or-purchases', /\b(?:new\s+PostHog|PostHog\.init|tracking\.(?:capture|identify)|RevenueCat\.configure|Purchases\.configure|configurePurchases)\b/i],
-  ['removed-settings-or-route', /\bid\s*:\s*['"`]voice['"`]|(?:router\.(?:push|navigate|replace)|href)\s*\(?\s*['"`]\/settings\/voice/],
+  ['removed-settings-or-route', /\bid\s*:\s*['"`](?:voice|connected-accounts|changelog|about|server)['"`]|(?:router\.(?:push|navigate|replace)|href)\s*=?\s*\(?\s*['"`]\/(?:settings\/(?:voice|connect(?:\/[^'"`]+)?)|dev\/purchases|changelog)/],
 ];
 const BUNDLE_RULES = RULES.filter(([rule]) => !['server-selector', 'removed-settings-or-route'].includes(rule));
 
@@ -40,7 +40,6 @@ const DORMANT_SOURCE_FILES = new Set([
 function isExcluded(relativePath) {
   return /(?:^|\/)(?:__fixtures__|__tests__)(?:\/|$)|\.(?:test|spec)\.[^/]+$/i.test(relativePath)
     || relativePath === 'sources/chimera/clientPolicy.ts'
-    || relativePath.startsWith('sources/app/(app)/dev/')
     || DORMANT_SOURCE_PREFIXES.some((prefix) => relativePath.startsWith(prefix))
     || DORMANT_SOURCE_FILES.has(relativePath);
 }

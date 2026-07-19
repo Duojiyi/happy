@@ -100,3 +100,24 @@ test('fails when the production web export contains a prohibited host', async ()
   });
   assert(result.some((finding) => finding.rule === 'official-host'), JSON.stringify(result));
 });
+
+test('fails for a hidden integration route in the routable dev folder', async () => {
+  const result = await policyResult({
+    'packages/happy-app/sources/app/(app)/dev/index.tsx': "router.push('/dev/purchases');\n",
+  });
+  assert(result.some((finding) => finding.rule === 'removed-settings-or-route'), JSON.stringify(result));
+});
+
+test('fails for a Link server selector', async () => {
+  const result = await policyResult({
+    'packages/happy-app/sources/app/(app)/index.tsx': "<Link href='/server'>Server</Link>\n",
+  });
+  assert(result.some((finding) => finding.rule === 'server-selector'), JSON.stringify(result));
+});
+
+test('fails when a minified production bundle initializes analytics', async () => {
+  const result = await policyResult({
+    'packages/happy-app/dist/_expo/static/js/web/app.js': 'new PostHog("public-key")',
+  });
+  assert(result.some((finding) => finding.rule === 'telemetry-or-purchases'), JSON.stringify(result));
+});

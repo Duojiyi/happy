@@ -13,7 +13,6 @@ import { sync } from '@/sync/sync';
 import { getLogServerUrl, setLogServerUrl, validateServerUrl } from '@/sync/serverConfig';
 import { Switch } from '@/components/Switch';
 import { useUnistyles } from 'react-native-unistyles';
-import { setLastViewedTitle } from '@/changelog';
 
 export default function DevScreen() {
     const router = useRouter();
@@ -279,12 +278,6 @@ export default function DevScreen() {
             {/* Test Features */}
             <ItemGroup title="Test Features" footer="These actions may affect app stability">
                 <Item
-                    title="Claude OAuth Test"
-                    subtitle="Test Claude authentication flow"
-                    icon={<Ionicons name="key-outline" size={28} color="#007AFF" />}
-                    onPress={() => router.push('/settings/connect/claude')}
-                />
-                <Item
                     title="Test Crash"
                     subtitle="Trigger a test crash"
                     destructive={true}
@@ -307,15 +300,6 @@ export default function DevScreen() {
                     onPress={handleClearCache}
                 />
                 <Item
-                    title="Reset Changelog"
-                    subtitle="Show 'What's New' banner again"
-                    icon={<Ionicons name="sparkles-outline" size={28} color="#007AFF" />}
-                    onPress={() => {
-                        setLastViewedTitle('');
-                        Modal.alert('Done', 'Changelog reset. Restart app to see the banner.');
-                    }}
-                />
-                <Item
                     title="Reset App State"
                     subtitle="Clear all user data and preferences"
                     destructive={true}
@@ -335,12 +319,6 @@ export default function DevScreen() {
 
             {/* System */}
             <ItemGroup title="System">
-                <Item
-                    title="Purchases"
-                    subtitle="View subscriptions and entitlements"
-                    icon={<Ionicons name="card-outline" size={28} color="#007AFF" />}
-                    onPress={() => router.push('/dev/purchases')}
-                />
                 <Item
                     title="Expo Constants"
                     subtitle="View expoConfig, manifests, and system constants"
