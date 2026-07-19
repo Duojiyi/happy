@@ -10,3 +10,4 @@ export const RELAY_ORIGIN = "https://39.98.68.173" as const;
 export const REPOSITORY = "Duojiyi/happy" as const;
 export const UPDATE_PUBLIC_KEY = "ze6ngKGbk7dgWN5d6rXGO0YRE5y54hbLMULFoW5YTHc" as const;
 export const UPSTREAM_APP_VERSION = "1.7.0" as const;
+export const VERSION_NAME = "1.7.0-chimera.1" as const;

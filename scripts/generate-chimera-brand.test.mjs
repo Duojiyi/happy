@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import sharp from 'sharp';
 
-import { generateProductModule, validateProduct, writeOutputsAtomically } from './generate-chimera-brand.mjs';
+import { generateProductConfigModule, generateProductModule, validateProduct, writeOutputsAtomically } from './generate-chimera-brand.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const productPath = path.join(root, 'brand/chimera/product.json');
@@ -50,6 +50,7 @@ test('rejects malformed network, version, integer, and key fields', async () => 
     assert.throws(() => validateProduct({ ...value, relayOrigin }), /relayOrigin/i);
   }
   assert.throws(() => validateProduct({ ...value, upstreamAppVersion: '1.7' }), /upstreamAppVersion/i);
+  assert.throws(() => validateProduct({ ...value, upstreamAppVersion: '1.2.3-01' }), /upstreamAppVersion/i);
   assert.throws(() => validateProduct({ ...value, chimeraRevision: 0 }), /chimeraRevision/i);
   assert.throws(() => validateProduct({ ...value, androidVersionCode: 1.5 }), /androidVersionCode/i);
   assert.throws(() => validateProduct({ ...value, updatePublicKey: 'A'.repeat(42) }), /updatePublicKey/i);
@@ -63,6 +64,9 @@ test('generates a deterministic stable product module', async () => {
   assert.match(first, /export const PRODUCT_NAME = "Chimera" as const;/);
   assert.match(first, /export const ANDROID_APPLICATION_ID = "org\.chimerahub\.chimera" as const;/);
   assert.match(first, /export const RELAY_ORIGIN = "https:\/\/39\.98\.68\.173" as const;/);
+  assert.match(first, /export const ANDROID_VERSION_CODE = 1 as const;/);
+  assert.match(first, /export const VERSION_NAME = "1\.7\.0-chimera\.1" as const;/);
+  assert.match(generateProductConfigModule(value), /export const VERSION_NAME = "1\.7\.0-chimera\.1";/);
   assert.ok(first.endsWith('\n'));
 });
 
