@@ -30,8 +30,8 @@ export async function assertSocketAccountActive(socket: any): Promise<boolean> {
     return false;
 }
 
-export function disconnectAccountSockets(accountId: string) {
-    socketServer?.in(`${ACCOUNT_ROOM_PREFIX}${accountId}`).disconnectSockets(true);
+export function disconnectAccountSockets(accountId: string, server: Pick<Server, "in"> | null = socketServer) {
+    server?.in(`${ACCOUNT_ROOM_PREFIX}${accountId}`).disconnectSockets(true);
 }
 
 export function startSocket(app: Fastify) {

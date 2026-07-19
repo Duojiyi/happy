@@ -12,6 +12,19 @@ const UNAUTHORIZED = { error: "Unauthorized" };
 const accountParams = { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", minLength: 43, maxLength: 43, pattern: "^[A-Za-z0-9_-]+$" } } };
 const noBody = { type: "object", additionalProperties: false, required: [] as string[], maxProperties: 0, properties: {} };
 const quotaBody = { type: "object", additionalProperties: false, required: ["attachmentQuotaBytes"], properties: { attachmentQuotaBytes: { type: "integer", minimum: MIN_ATTACHMENT_QUOTA_BYTES, maximum: MAX_ATTACHMENT_QUOTA_BYTES } } };
+const validateNoBody = async (request: any, reply: any) => {
+    if (request.body !== undefined && (request.body === null || typeof request.body !== "object" || Array.isArray(request.body) || Object.keys(request.body).length !== 0)) {
+        return reply.code(400).send({ error: "Invalid request" });
+    }
+};
+const validateQuotaBody = async (request: any, reply: any) => {
+    const body = request.body;
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length !== 1
+        || !Object.prototype.hasOwnProperty.call(body, "attachmentQuotaBytes") || !Number.isSafeInteger(body.attachmentQuotaBytes)
+        || body.attachmentQuotaBytes < MIN_ATTACHMENT_QUOTA_BYTES || body.attachmentQuotaBytes > MAX_ATTACHMENT_QUOTA_BYTES) {
+        return reply.code(400).send({ error: "Invalid attachment quota" });
+    }
+};
 
 type LoginLimits = { acquire(ip: string): boolean; release(): void };
 export function createLoginLimits(now = () => Date.now(), maxConcurrent = 10, maxIdentities = 10_000): LoginLimits {
@@ -36,14 +49,15 @@ function cookie(request: { headers: Record<string, unknown> }) {
     return header.split(/;\s*/).map((part) => part.split("=", 2)).find(([name]) => name === COOKIE_NAME)?.[1] ?? null;
 }
 
-export function adminRoutes(app: any, dependencies: { passwordHash?: string; sessions?: ReturnType<typeof createAdminSessionService>; verifyPassword?: (password: string, hash: string) => Promise<boolean>; loginLimits?: LoginLimits; accountPseudonymKey?: Uint8Array } = {}) {
+export function adminRoutes(app: any, dependencies: { passwordHash?: string; sessions?: ReturnType<typeof createAdminSessionService>; verifyPassword?: (password: string, hash: string) => Promise<boolean>; loginLimits?: LoginLimits; accountPseudonymKey?: Uint8Array; accounts?: ReturnType<typeof createAccountPolicy> } = {}) {
     const config = dependencies.passwordHash ? null : loadChimeraServerConfig(process.env);
     const passwordHash = dependencies.passwordHash ?? config!.adminPasswordHash;
     const sessions = dependencies.sessions ?? createAdminSessionService({ secret: deriveAdminSessionSecret(config!.adminSessionSecret, passwordHash), db });
     const verifyPassword = dependencies.verifyPassword ?? ((password, hash) => argon2.verify(hash, password));
     const limits = dependencies.loginLimits ?? createLoginLimits();
-    // Tests inject only password/session dependencies; production always gets this key from validated config.
-    const accounts = createAccountPolicy({ pseudonymKey: dependencies.accountPseudonymKey ?? config?.accountPseudonymKey ?? new Uint8Array(32), onAccountInvalidated: disconnectAccountSockets });
+    const pseudonymKey = dependencies.accountPseudonymKey ?? config?.accountPseudonymKey;
+    if (!dependencies.accounts && !pseudonymKey) throw new Error("Chimera account pseudonym key is required");
+    const accounts = dependencies.accounts ?? createAccountPolicy({ pseudonymKey: pseudonymKey!, onAccountInvalidated: disconnectAccountSockets });
     const unauthorised = (reply: any) => reply.code(401).send(UNAUTHORIZED);
     app.post("/chimera-control/api/session", async (request: any, reply: any) => {
         if (!request.body || typeof request.body !== "object" || Array.isArray(request.body)
@@ -84,16 +98,16 @@ export function adminRoutes(app: any, dependencies: { passwordHash?: string; ses
         if (Object.keys(request.query ?? {}).length !== 0) return reply.code(400).send({ error: "Invalid request" });
         if (!await accountSession(request, reply)) return; return reply.send(await accounts.list());
     });
-    app.post("/chimera-control/api/accounts/:id/disable", { schema: { params: accountParams, body: noBody } }, async (request: any, reply: any) => {
+    app.post("/chimera-control/api/accounts/:id/disable", { schema: { params: accountParams, body: noBody }, preValidation: validateNoBody }, async (request: any, reply: any) => {
         if (!await accountSession(request, reply, true)) return; try { return reply.send(await accounts.disable(request.params.id)); } catch { return reply.code(404).send({ error: "Account not found" }); }
     });
-    app.post("/chimera-control/api/accounts/:id/restore", { schema: { params: accountParams, body: noBody } }, async (request: any, reply: any) => {
+    app.post("/chimera-control/api/accounts/:id/restore", { schema: { params: accountParams, body: noBody }, preValidation: validateNoBody }, async (request: any, reply: any) => {
         if (!await accountSession(request, reply, true)) return; try { return reply.send(await accounts.restore(request.params.id)); } catch { return reply.code(404).send({ error: "Account not found" }); }
     });
-    app.post("/chimera-control/api/accounts/:id/revoke-tokens", { schema: { params: accountParams, body: noBody } }, async (request: any, reply: any) => {
+    app.post("/chimera-control/api/accounts/:id/revoke-tokens", { schema: { params: accountParams, body: noBody }, preValidation: validateNoBody }, async (request: any, reply: any) => {
         if (!await accountSession(request, reply, true)) return; try { return reply.send(await accounts.revokeTokens(request.params.id)); } catch { return reply.code(404).send({ error: "Account not found" }); }
     });
-    app.put("/chimera-control/api/accounts/:id/quota", { schema: { params: accountParams, body: quotaBody } }, async (request: any, reply: any) => {
+    app.put("/chimera-control/api/accounts/:id/quota", { schema: { params: accountParams, body: quotaBody }, preValidation: validateQuotaBody }, async (request: any, reply: any) => {
         if (!await accountSession(request, reply, true)) return;
         const bytes = request.body?.attachmentQuotaBytes;
         if (!Number.isSafeInteger(bytes) || bytes < MIN_ATTACHMENT_QUOTA_BYTES || bytes > MAX_ATTACHMENT_QUOTA_BYTES) return reply.code(400).send({ error: "Invalid attachment quota" });

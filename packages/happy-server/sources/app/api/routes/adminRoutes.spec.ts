@@ -6,6 +6,14 @@ const passwordHash = "$argon2id$v=19$m=65536,t=3,p=1$c29tZXNhbHQ$MDEyMzQ1Njc4OWF
 
 function app() {
     const server = fastify();
+    const account = { id: "A".repeat(43), createdAt: "2026-07-19T00:00:00.000Z", disabled: false, attachmentUsedBytes: "12", attachmentQuotaBytes: "5368709120" };
+    const accounts = {
+        list: async () => [account],
+        disable: async () => ({ ...account, disabled: true }),
+        restore: async () => account,
+        revokeTokens: async () => account,
+        setQuota: async (_id: string, bytes: number) => ({ ...account, attachmentQuotaBytes: String(bytes) }),
+    };
     const sessions = {
         create: async () => ({ sessionId: "session", csrfToken: "csrf" }),
         authenticate: async (sessionId: string) => sessionId === "session" ? { id: "s1", csrfToken: "csrf" } : null,
@@ -14,7 +22,7 @@ function app() {
         revoke: async (sessionId: string) => { sessions.revoked.push(sessionId); },
         revokeAll: async () => undefined,
     };
-    adminRoutes(server as any, { passwordHash, sessions: sessions as any, verifyPassword: async (password, hash) => password === "correct" && hash === passwordHash, loginLimits: { acquire: () => true, release: () => undefined } });
+    adminRoutes(server as any, { passwordHash, sessions: sessions as any, accounts: accounts as any, verifyPassword: async (password, hash) => password === "correct" && hash === passwordHash, loginLimits: { acquire: () => true, release: () => undefined } });
     return Object.assign(server, { sessions });
 }
 
@@ -76,9 +84,32 @@ describe("Chimera admin routes", () => {
 
     it("does not consume a concurrency slot for malformed login bodies", async () => {
         const server = fastify(); let active = 0;
-        adminRoutes(server as any, { passwordHash, sessions: { create: async () => ({ sessionId: "s", csrfToken: "c" }) } as any, verifyPassword: async () => true, loginLimits: { acquire: () => { active++; return active === 1; }, release: () => { active--; } } });
+        adminRoutes(server as any, { passwordHash, sessions: { create: async () => ({ sessionId: "s", csrfToken: "c" }) } as any, accounts: { list: async () => [] } as any, verifyPassword: async () => true, loginLimits: { acquire: () => { active++; return active === 1; }, release: () => { active--; } } });
         expect((await server.inject({ method: "POST", url: "/chimera-control/api/session", payload: {} })).statusCode).toBe(401);
         expect((await server.inject({ method: "POST", url: "/chimera-control/api/session", payload: { password: "x" } })).statusCode).toBe(200);
+        await server.close();
+    });
+
+    it("requires admin authentication and returns only allowlisted account fields", async () => {
+        const server = app();
+        expect((await server.inject({ method: "GET", url: "/chimera-control/api/accounts" })).statusCode).toBe(401);
+        const response = await server.inject({ method: "GET", url: "/chimera-control/api/accounts", headers: { cookie: "__Secure-chimera_admin=session" } });
+        expect(response.statusCode).toBe(200);
+        expect(Object.keys(response.json()[0]).sort()).toEqual(["attachmentQuotaBytes", "attachmentUsedBytes", "createdAt", "disabled", "id"]);
+        await server.close();
+    });
+
+    it("requires origin and CSRF and rejects unknown account-control inputs", async () => {
+        const server = app();
+        const id = "A".repeat(43);
+        const base = { method: "POST" as const, url: `/chimera-control/api/accounts/${id}/disable`, payload: {} };
+        expect((await server.inject({ ...base, headers: { cookie: "__Secure-chimera_admin=session" } })).statusCode).toBe(401);
+        const headers = { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" };
+        expect((await server.inject({ ...base, headers })).statusCode).toBe(200);
+        expect((await server.inject({ ...base, headers, payload: { extra: true } })).statusCode).toBe(400);
+        expect((await server.inject({ method: "GET", url: "/chimera-control/api/accounts?extra=1", headers: { cookie: "__Secure-chimera_admin=session" } })).statusCode).toBe(400);
+        expect((await server.inject({ method: "PUT", url: `/chimera-control/api/accounts/${id}/quota`, headers, payload: { attachmentQuotaBytes: 100 * 1024 * 1024, extra: true } })).statusCode).toBe(400);
+        expect((await server.inject({ method: "POST", url: "/chimera-control/api/accounts/not-valid/disable", headers, payload: {} })).statusCode).toBe(400);
         await server.close();
     });
 });

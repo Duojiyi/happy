@@ -22,7 +22,7 @@ interface AuthTokens {
     githubGenerator: Awaited<ReturnType<typeof privacyKit.createEphemeralTokenGenerator>>;
 }
 
-class AuthModule {
+export class AuthModule {
     private tokenCache = new Map<string, TokenCacheEntry>();
     private tokens: AuthTokens | null = null;
     private cleanupTimer: ReturnType<typeof setInterval> | null = null;
