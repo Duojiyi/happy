@@ -62,6 +62,14 @@ describe("Chimera auth challenges", () => {
         service.stop();
     });
 
+    it("keeps a public-key bucket separate from client IP buckets", async () => {
+        const rows: any[] = []; const service = createAuthChallengeService({ config, db: fakeDb(rows), now: () => new Date("2026-07-19T10:00:00.000Z") });
+        const issued = await Promise.all(["1", "2", "3"].map((clientIp) => service.issue({ publicKey: key, clientIp })));
+        await Promise.all(issued.map((challenge) => service.consume(challenge.challengeId)));
+        await expect(service.issue({ publicKey: key, clientIp: "4" })).rejects.toMatchObject({ code: "RATE_LIMITED" });
+        expect(rows).toHaveLength(3); service.stop();
+    });
+
     it("cannot consume a challenge using a service with another server secret", async () => {
         const rows: any[] = [];
         const issuer = createAuthChallengeService({ config, db: fakeDb(rows) });
@@ -81,6 +89,19 @@ describe("Chimera auth challenges", () => {
         expect(onCleanupError).toHaveBeenCalledWith(failure);
         service.stop();
         vi.useRealTimers();
+    });
+
+    it("deletes only a bounded batch of expired and old consumed challenges", async () => {
+        const rows: any[] = Array.from({ length: 101 }, (_, i) => ({ id: `old-${i}`, nonceDigest: "x", consumedAt: null, expiresAt: new Date("2026-07-19T09:00:00.000Z") }));
+        rows.push({ id: "consumed", nonceDigest: "x", consumedAt: new Date("2026-07-19T09:00:00.000Z"), expiresAt: new Date("2026-07-20T00:00:00.000Z") });
+        rows.push({ id: "recent", nonceDigest: "x", consumedAt: new Date("2026-07-19T09:59:00.000Z"), expiresAt: new Date("2026-07-20T00:00:00.000Z") });
+        const db = fakeDb(rows);
+        db.chimeraAuthChallenge.findMany = async () => rows.filter((row) => row.expiresAt < new Date("2026-07-19T10:00:00.000Z") || row.consumedAt?.getTime() < new Date("2026-07-19T09:55:00.000Z").getTime()).slice(0, 100).map((row) => ({ id: row.id }));
+        db.chimeraAuthChallenge.deleteMany = async ({ where }: any) => { const ids = new Set(where.id.in); for (let i = rows.length - 1; i >= 0; i--) if (ids.has(rows[i].id)) rows.splice(i, 1); return { count: ids.size }; };
+        const service = createAuthChallengeService({ config, db, now: () => new Date("2026-07-19T10:00:00.000Z") });
+        await service.cleanup();
+        expect(rows).toHaveLength(3); expect(rows.some((row) => row.id === "recent")).toBe(true); expect(rows.some((row) => row.id === "consumed")).toBe(true);
+        service.stop();
     });
 });
 
