@@ -64,6 +64,13 @@ function validateSyncWorkflow(source) {
 
   assert.match(JSON.stringify(workflow), /sync-upstream\.ps1/);
   assert.match(JSON.stringify(workflow), /verify-audit-checks\.mjs/);
+  const gateRun = jobRun(workflow.jobs['gate-executable']);
+  assert.match(gateRun, /CHIMERA_AUDIT_REPORT_PATHS_JSON/);
+  assert.match(gateRun, /CHIMERA_TRUSTED_AUDIT_ACTORS_JSON/);
+  assert.match(gateRun, /CHIMERA_TRUSTED_WORKFLOW_SHA/);
+  assert.match(gateRun, /REPORT_DIR="reports\/content\/\$ARTIFACT_ID"/);
+  assert.match(gateRun, /REPORT="\$REPORT_DIR\/unpacked\/\$FILE"/);
+  assert.doesNotMatch(gateRun, /gh attestation verify|WORKFLOW_BLOB_SHA|actions\/runs\/\$RUN\/jobs/);
   assert.match(JSON.stringify(workflow), /--merge/);
   assert.doesNotMatch(JSON.stringify(workflow), /--squash|--rebase|secrets\.|\bPAT\b|personal.access/i);
   for (const job of Object.values(workflow.jobs)) for (const step of job.steps ?? []) if (step.uses) assert.match(step.uses, pinned);

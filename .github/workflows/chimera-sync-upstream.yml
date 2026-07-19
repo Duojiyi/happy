@@ -170,7 +170,8 @@ jobs:
           PR_NUMBER: ${{ needs.publish.outputs.pr-number }}
         run: |
           set -euo pipefail
-          mkdir reports
+          mkdir -p reports/content
+          printf '{}\n' > reports/paths.json
           for SPEC in 'chimera-sync-audit-security.yml:sync-security-:chimera-sync-security-report:security-report.json' 'chimera-sync-audit-maintainability.yml:sync-maintainability-:chimera-sync-maintainability-report:maintainability-report.json'; do
             IFS=: read -r WORKFLOW PREFIX ARTIFACT FILE <<<"$SPEC"
             RUN=''
@@ -180,23 +181,23 @@ jobs:
               sleep 30
             done
             [[ "$RUN" =~ ^[1-9][0-9]*$ ]]
-            gh api "repos/${{ github.repository }}/actions/runs/$RUN" > reports/run.json
-            jq -e --arg sha '${{ github.sha }}' '.event == "workflow_dispatch" and .head_sha == $sha and .conclusion == "success" and (.actor.login == "github-actions[bot]" or .actor.login == "Duojiyi") and (.triggering_actor.login == "github-actions[bot]" or .triggering_actor.login == "Duojiyi")' reports/run.json
-            CHECK_NAME='Chimera Sync Security Audit'
-            test "$FILE" = security-report.json || CHECK_NAME='Chimera Sync Maintainability Audit'
-            gh api "repos/${{ github.repository }}/actions/runs/$RUN/jobs" --jq "[.jobs[] | select(.name == \"$CHECK_NAME\" and .conclusion == \"success\")] | if length == 1 then .[0].id else error(\"exactly one trusted audit check required\") end" | grep -Eq '^[1-9][0-9]*$'
             ARTIFACT_ID=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN/artifacts" --jq "[.artifacts[] | select(.name == \"$ARTIFACT\" and .expired == false)] | if length == 1 then .[0].id else empty end")
             [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
-            gh api "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" > reports/report.zip
-            unzip -q reports/report.zip -d reports/content
-            REPORT="reports/content/$FILE"
-            WORKFLOW_BLOB_SHA=$(gh api "repos/${{ github.repository }}/contents/.github/workflows/$WORKFLOW?ref=${{ github.sha }}" --jq .sha)
-            jq -e --arg run "$RUN" --arg workflow ".github/workflows/$WORKFLOW" --arg blob "$WORKFLOW_BLOB_SHA" '.runId == $run and .workflowPath == $workflow and .workflowSha == $blob' "$REPORT"
-            gh attestation verify "$REPORT" --repo '${{ github.repository }}' --cert-identity "https://github.com/${{ github.repository }}/.github/workflows/$WORKFLOW@refs/heads/main" --cert-oidc-issuer https://token.actions.githubusercontent.com --signer-workflow "${{ github.repository }}/.github/workflows/$WORKFLOW" --signer-digest '${{ github.sha }}' --source-digest '${{ github.sha }}' --source-ref refs/heads/main --deny-self-hosted-runners
+            REPORT_DIR="reports/content/$ARTIFACT_ID"
+            mkdir "$REPORT_DIR"
+            gh api "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" > "$REPORT_DIR/report.zip"
+            unzip -q "$REPORT_DIR/report.zip" -d "$REPORT_DIR/unpacked"
+            rm "$REPORT_DIR/report.zip"
+            REPORT="$REPORT_DIR/unpacked/$FILE"
+            test -f "$REPORT"
             jq --arg artifactId "$ARTIFACT_ID" '.artifactId=$artifactId' "$REPORT" >> reports/reports.jsonl
-            rm -rf reports/content reports/report.zip
+            jq --arg artifactId "$ARTIFACT_ID" --arg reportPath "$REPORT" '. + {($artifactId): $reportPath}' reports/paths.json > reports/paths.next
+            mv reports/paths.next reports/paths.json
           done
           export CHIMERA_AUDIT_REPORTS_JSON="$(jq -sc . reports/reports.jsonl)"
+          export CHIMERA_AUDIT_REPORT_PATHS_JSON="$(cat reports/paths.json)"
+          export CHIMERA_TRUSTED_AUDIT_ACTORS_JSON='["github-actions[bot]","Duojiyi"]'
+          export CHIMERA_TRUSTED_WORKFLOW_SHA='${{ github.sha }}'
           export CHIMERA_CANDIDATE_SHA="$CANDIDATE_SHA" CHIMERA_UPSTREAM_SHA="$UPSTREAM_SHA" CHIMERA_DIFF_SHA256="$DIFF_SHA256"
           node scripts/chimera/verify-audit-checks.mjs
           gh pr merge "$PR_NUMBER" --repo '${{ github.repository }}' --auto --merge
