@@ -104,7 +104,9 @@ function validateArtifactRetention(deploySource) {
   assert.match(retain, /active_image="\$\(current_image\)"/);
   assert.match(retain, /image" != "\$active_image"/);
   assert.match(retain, /previous_input="\$INPUT_ROOT\/\$previous_id"/);
-  assert.match(retain, /oci_retention_ready && return 1/);
+  assert.match(retain, /legacy_id="\$\(bootstrap_legacy_id\)"/);
+  assert.match(retain, /"\$active_id" == "\$legacy_id"/);
+  assert.match(retain, /"\$previous_id" != "\$legacy_id"/);
   assert.match(retain, /name" != "\$active_id" && "\$name" != "\$previous_id"/);
   assert.match(retain, /id" != "\$active_id" && "\$id" != "\$previous_id"/);
   assert.match(retain, /\^\[a-f0-9\]\{40\}\$/);
@@ -115,8 +117,22 @@ function validateArtifactRetention(deploySource) {
   return true;
 }
 
-function bootstrapRetentionFixture({ retentionReady, previousInputPresent }) {
-  return previousInputPresent || !retentionReady;
+function retainFixture({ active, previous, inputs, legacy }) {
+  const inputSet = new Set(inputs);
+  if (!inputSet.has(active) && active !== legacy) return null;
+  if (previous && !inputSet.has(previous)) {
+    if (legacy && previous !== legacy) return null;
+    legacy ??= previous;
+  }
+  return { active, previous, inputs: [...inputSet].filter((id) => id === active || id === previous), legacy };
+}
+
+function deployFixture(state, next) {
+  return retainFixture({ active: next, previous: state.active, inputs: [...state.inputs, next], legacy: state.legacy });
+}
+
+function rollbackFixture(state, target) {
+  return retainFixture({ active: target, previous: state.active, inputs: state.inputs, legacy: state.legacy });
 }
 
 test('artifact retention keeps active and previous exact releases and enforces reserve space', () => {
@@ -129,12 +145,20 @@ test('artifact retention keeps active and previous exact releases and enforces r
   assert.ok(rollback.indexOf('retain_server_artifacts') < rollback.indexOf('retain_verified_snapshots'));
 });
 
-test('bootstrap fixture permits only the first OCI transition to retain an input-less legacy previous image', () => {
-  assert.equal(bootstrapRetentionFixture({ retentionReady: false, previousInputPresent: false }), true);
-  assert.equal(bootstrapRetentionFixture({ retentionReady: true, previousInputPresent: true }), true);
-  assert.equal(bootstrapRetentionFixture({ retentionReady: true, previousInputPresent: false }), false);
+test('bootstrap deploy to rollback state machine permits only its bound legacy image without an OCI input', () => {
+  const legacy = 'a'.repeat(40);
+  const firstOci = 'b'.repeat(40);
+  const secondOci = 'c'.repeat(40);
+  const initial = { active: legacy, previous: null, inputs: [], legacy: null };
+  const firstDeploy = deployFixture(initial, firstOci);
+  assert.deepEqual(firstDeploy, { active: firstOci, previous: legacy, inputs: [firstOci], legacy });
+  const rollback = rollbackFixture(firstDeploy, legacy);
+  assert.deepEqual(rollback, { active: legacy, previous: firstOci, inputs: [firstOci], legacy });
+  const secondDeploy = deployFixture(rollback, secondOci);
+  assert.deepEqual(secondDeploy, { active: secondOci, previous: legacy, inputs: [secondOci], legacy });
+  assert.equal(retainFixture({ active: firstOci, previous: 'd'.repeat(40), inputs: [firstOci], legacy }), null);
   assert.match(source, /readonly OCI_RETENTION_READY="\$STATE_ROOT\/oci-retention-ready"/);
-  assert.match(source, /mark_oci_retention_ready/);
+  assert.match(source, /mark_oci_retention_ready "\$legacy_id"/);
 });
 
 test('retention contract rejects protected-release, path-safety, and reserve mutations', () => {
@@ -144,7 +168,8 @@ test('retention contract rejects protected-release, path-safety, and reserve mut
     source.replace('"$id" != "$active_id" && ', ''),
     source.replace('&& "$id" != "$previous_id"', ''),
     source.replace('! -L "$entry" && ', ''),
-    source.replace('oci_retention_ready && return 1', ':'),
+    source.replace('"$active_id" == "$legacy_id"', 'false'),
+    source.replace('"$previous_id" != "$legacy_id"', 'false'),
     source.replace('(( free_bytes > MIN_FREE_BYTES ))', ':'),
   ]) assert.throws(() => validateArtifactRetention(mutated));
 });

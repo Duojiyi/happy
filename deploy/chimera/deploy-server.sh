@@ -224,16 +224,19 @@ write_marker() {
   mv -f -- "$STATE_ROOT/$name.next" "$STATE_ROOT/$name"; sync -f "$STATE_ROOT"
 }
 write_current_release() { write_marker current-image "$1"; write_marker current-digest "$2"; }
-oci_retention_ready() {
+bootstrap_legacy_id() {
   if [[ -e "$OCI_RETENTION_READY" || -L "$OCI_RETENTION_READY" ]]; then
     require_root_owned_file "$OCI_RETENTION_READY"
-    [[ "$(stat -c '%s' "$OCI_RETENTION_READY")" == 0 ]] || return 1
-    return 0
+    read_marker "$OCI_RETENTION_READY" '^[a-f0-9]{40}$'
+    return
   fi
   return 1
 }
 mark_oci_retention_ready() {
-  install -m 0600 /dev/null "$OCI_RETENTION_READY.next" || return 1
+  local legacy_id="$1"
+  [[ "$legacy_id" =~ ^[a-f0-9]{40}$ ]] || return 1
+  printf '%s\n' "$legacy_id" > "$OCI_RETENTION_READY.next" || return 1
+  chmod 0600 "$OCI_RETENTION_READY.next" || return 1
   sync -f "$OCI_RETENTION_READY.next" || return 1
   mv -f -- "$OCI_RETENTION_READY.next" "$OCI_RETENTION_READY" || return 1
   sync -f "$STATE_ROOT" || return 1
@@ -335,7 +338,7 @@ retain_verified_snapshots() {
   for (( index=keep; index<${#snapshots[@]}; index++ )); do rm -rf -- "${snapshots[$index]}"; done
 }
 retain_server_artifacts() {
-  local active_image active_id previous_id='' previous_input snapshot snapshot_name image entry name tags tag id free_bytes
+  local active_image active_id previous_id='' previous_input legacy_id='' snapshot snapshot_name image entry name tags tag id free_bytes
   local -a input_entries=() image_ids=()
   active_image="$(current_image)" || return 1
   active_id="${active_image#chimera-relay:}"
@@ -347,13 +350,18 @@ retain_server_artifacts() {
     image="$(read_marker "$snapshot/old-image" '^chimera-relay:[a-f0-9]{40}$')" || return 1
     if [[ "$image" != "$active_image" ]]; then previous_id="${image#chimera-relay:}"; break; fi
   done
-  [[ -d "$INPUT_ROOT/$active_id" && ! -L "$INPUT_ROOT/$active_id" ]] || return 1
+  if [[ -e "$OCI_RETENTION_READY" || -L "$OCI_RETENTION_READY" ]]; then legacy_id="$(bootstrap_legacy_id)" || return 1; fi
+  if [[ -e "$INPUT_ROOT/$active_id" || -L "$INPUT_ROOT/$active_id" ]]; then
+    [[ -d "$INPUT_ROOT/$active_id" && ! -L "$INPUT_ROOT/$active_id" ]] || return 1
+  else
+    [[ -n "$legacy_id" && "$active_id" == "$legacy_id" ]] || return 1
+  fi
   if [[ -n "$previous_id" ]]; then
     previous_input="$INPUT_ROOT/$previous_id"
     if [[ -e "$previous_input" || -L "$previous_input" ]]; then
       [[ -d "$previous_input" && ! -L "$previous_input" ]] || return 1
     else
-      oci_retention_ready && return 1
+      if [[ -z "$legacy_id" ]]; then legacy_id="$previous_id"; elif [[ "$previous_id" != "$legacy_id" ]]; then return 1; fi
     fi
   fi
   while IFS= read -r -d '' entry; do
@@ -379,7 +387,7 @@ retain_server_artifacts() {
   free_bytes="$(df --output=avail -B1 "$ROOT" | tail -n 1 | tr -d ' ')" || return 1
   [[ "$free_bytes" =~ ^[0-9]+$ ]] || return 1
   (( free_bytes > MIN_FREE_BYTES ))
-  mark_oci_retention_ready
+  if [[ ! -e "$OCI_RETENTION_READY" && ! -L "$OCI_RETENTION_READY" ]]; then mark_oci_retention_ready "$legacy_id"; fi
 }
 deploy_server() {
   local id="$1" digest="$2" old_image old_digest
