@@ -11,14 +11,14 @@ const config = { relayOrigin: "https://39.98.68.173" as const, adminSessionSecre
 
 describe("account auth HTTP routes", () => {
     it("registers a new signing key with an invitation and consumes it once", async () => {
-        const { app, tokens, invitationRows, rows } = testApp(new Date(), undefined, undefined, false);
+        const { app, tokens, invitationRows, rows, accounts } = testApp(new Date(), undefined, undefined, false);
         const invitation = createInvitation({ pepper: config.invitationPepper });
         invitationRows.push({ id: "invite", usedCount: 0, revokedAt: null, ...invitation.data });
         const pair = nacl.sign.keyPair(); const publicKey = Buffer.from(pair.publicKey).toString("base64");
         const challenge = (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })).json();
         const signature = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), pair.secretKey)).toString("base64");
         const response = await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature, invitation: invitation.code } });
-        expect(response.statusCode).toBe(200); expect(tokens).toHaveLength(1); expect(invitationRows[0].usedCount).toBe(1); expect(rows).toHaveLength(1);
+        expect(response.statusCode).toBe(200); expect(tokens).toHaveLength(1); expect(invitationRows[0].usedCount).toBe(1); expect(rows[0].consumedAt).toBeInstanceOf(Date); expect(accounts).toEqual([{ id: "new-account", publicKey: Buffer.from(pair.publicKey).toString("hex").toUpperCase() }]);
         await app.close();
     });
     it("returns one generic 401 and leaves all state unchanged for unusable invitations", async () => {
@@ -53,6 +53,21 @@ describe("account auth HTTP routes", () => {
         const signature = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), pair.secretKey)).toString("base64");
         expect((await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature, invitation: invitation.code } })).statusCode).toBe(401);
         expect(invitationRows[0].usedCount).toBe(0); expect(rows[0].consumedAt).toBeNull(); expect(tokens).toEqual([]); await app.close();
+    });
+    it("rolls back invite redemption when the challenge CAS loses", async () => {
+        const { app, rows, invitationRows, accounts, tokens } = testApp(new Date(), undefined, undefined, false, false, true);
+        const invitation = createInvitation({ pepper: config.invitationPepper }); invitationRows.push({ id: "i", usedCount: 0, revokedAt: null, ...invitation.data });
+        const pair = nacl.sign.keyPair(); const publicKey = Buffer.from(pair.publicKey).toString("base64");
+        const challenge = (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })).json(); const signature = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), pair.secretKey)).toString("base64");
+        expect((await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature, invitation: invitation.code } })).statusCode).toBe(401);
+        expect(invitationRows[0].usedCount).toBe(0); expect(rows[0].consumedAt).toBeNull(); expect(accounts).toEqual([]); expect(tokens).toEqual([]); await app.close();
+    });
+    it("permits only one concurrent final-use registration", async () => {
+        const { app, invitationRows, accounts, tokens, rows } = testApp(new Date(), undefined, undefined, false);
+        const invitation = createInvitation({ pepper: config.invitationPepper }); invitationRows.push({ id: "i", usedCount: 0, revokedAt: null, ...invitation.data });
+        const pairs = [nacl.sign.keyPair(), nacl.sign.keyPair()]; const challenges = await Promise.all(pairs.map(async (pair) => (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey: Buffer.from(pair.publicKey).toString("base64") } })).json()));
+        const responses = await Promise.all(challenges.map((challenge, index) => app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature: Buffer.from(nacl.sign.detached(createAuthPayload(challenge), pairs[index].secretKey)).toString("base64"), invitation: invitation.code } })));
+        expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 401]); expect(invitationRows[0].usedCount).toBe(1); expect(accounts).toHaveLength(1); expect(tokens).toHaveLength(1); expect(rows.filter((row) => row.consumedAt).length).toBe(1); await app.close();
     });
     it("issues then completes an existing account exactly once", async () => {
         const { app, tokens, rows } = testApp();
@@ -163,19 +178,19 @@ describe("account auth HTTP routes", () => {
     });
 });
 
-function testApp(now = new Date(), globalPendingCap?: number, issueBucketCapacity?: number, accountExists = true, createFails = false) {
-    const rows: any[] = []; const invitationRows: any[] = []; const tokens: string[] = [];
+function testApp(now = new Date(), globalPendingCap?: number, issueBucketCapacity?: number, accountExists = true, createFails = false, casLose = false) {
+    const rows: any[] = []; const invitationRows: any[] = []; const accounts: any[] = []; const tokens: string[] = [];
     const account = { id: "account", publicKey: Buffer.alloc(32).toString("hex") };
     const db: any = { chimeraAuthChallenge: {
         count: async ({ where }: any) => rows.filter((r) => !r.consumedAt && r.expiresAt > now && (!where.clientIp || r.clientIp === where.clientIp) && (!where.publicKey || r.publicKey === where.publicKey)).length,
         create: async ({ data }: any) => { const row = { id: `c${rows.length}`, consumedAt: null, ...data }; rows.push(row); return row; },
         findUnique: async ({ where }: any) => rows.find((r) => r.id === where.id) ?? null,
-        updateMany: async ({ where, data }: any) => { const r = rows.find((r) => r.id === where.id && !r.consumedAt && r.expiresAt > where.expiresAt.gt); if (!r) return { count: 0 }; Object.assign(r, data); return { count: 1 }; },
+        updateMany: async ({ where, data }: any) => { const r = rows.find((r) => r.id === where.id && !r.consumedAt && r.expiresAt > where.expiresAt.gt); if (!r || casLose) return { count: 0 }; Object.assign(r, data); return { count: 1 }; },
     }, $executeRaw: async (query: any) => { const digest = query.values.find((value: unknown) => typeof value === "string"); const row = invitationRows.find((r) => r.codeDigest === digest && !r.revokedAt && r.expiresAt > now && r.usedCount < r.maxUses); if (!row) return 0; row.usedCount++; row.lastUsedAt = now; return 1; }, account: {
         findUnique: async () => accountExists ? account : null,
-        create: async ({ data }: any) => { if (createFails) throw new Error("write failed"); return { id: "new-account", ...data }; },
+        create: async ({ data }: any) => { if (createFails) throw new Error("write failed"); const created = { id: "new-account", ...data }; accounts.push(created); return created; },
     } };
     const app = fastify({ trustProxy: isTrustedLoopbackProxy }); app.setValidatorCompiler(validatorCompiler); app.setSerializerCompiler(serializerCompiler);
-    authRoutes(app as any, { db, config, globalPendingCap, issueBucketCapacity, inTransaction: async (fn) => { const savedChallenges = rows.map((row) => ({ ...row })); const savedInvitations = invitationRows.map((row) => ({ ...row })); try { return await fn(db); } catch (error) { rows.splice(0, rows.length, ...savedChallenges); invitationRows.splice(0, invitationRows.length, ...savedInvitations); throw error; } }, issueToken: async () => { tokens.push("token"); return "token"; } });
-    return { app, rows, invitationRows, tokens };
+    authRoutes(app as any, { db, config, globalPendingCap, issueBucketCapacity, inTransaction: async (fn) => { const savedChallenges = rows.map((row) => ({ ...row })); const savedInvitations = invitationRows.map((row) => ({ ...row })); const savedAccounts = accounts.map((row) => ({ ...row })); try { return await fn(db); } catch (error) { rows.splice(0, rows.length, ...savedChallenges); invitationRows.splice(0, invitationRows.length, ...savedInvitations); accounts.splice(0, accounts.length, ...savedAccounts); throw error; } }, issueToken: async () => { tokens.push("token"); return "token"; } });
+    return { app, rows, invitationRows, accounts, tokens };
 }
