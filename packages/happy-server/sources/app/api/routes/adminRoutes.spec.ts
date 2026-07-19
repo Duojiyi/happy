@@ -10,11 +10,12 @@ function app() {
         create: async () => ({ sessionId: "session", csrfToken: "csrf" }),
         authenticate: async (sessionId: string) => sessionId === "session" ? { id: "s1", csrfToken: "csrf" } : null,
         authorizeMutation: async (sessionId: string, csrf: string) => sessionId === "session" && csrf === "csrf" ? { id: "s1", csrfToken: "csrf" } : null,
-        revoke: async () => undefined,
+        revoked: [] as string[],
+        revoke: async (sessionId: string) => { sessions.revoked.push(sessionId); },
         revokeAll: async () => undefined,
     };
     adminRoutes(server as any, { passwordHash, sessions: sessions as any, verifyPassword: async (password, hash) => password === "correct" && hash === passwordHash, loginLimits: { acquire: () => true, release: () => undefined } });
-    return server;
+    return Object.assign(server, { sessions });
 }
 
 describe("Chimera admin routes", () => {
@@ -41,7 +42,10 @@ describe("Chimera admin routes", () => {
         for (const headers of [{ cookie: "__Secure-chimera_admin=session", "x-chimera-csrf": "csrf" }, { cookie: "__Secure-chimera_admin=session", origin: "https://example.test", "x-chimera-csrf": "csrf" }, { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "wrong" }]) {
             expect((await server.inject({ method: "DELETE", url: "/chimera-control/api/session", headers })).statusCode).toBe(401);
         }
-        expect((await server.inject({ method: "DELETE", url: "/chimera-control/api/session", headers: { cookie: "foo=bar; __Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" } })).statusCode).toBe(204);
+        const logout = await server.inject({ method: "DELETE", url: "/chimera-control/api/session", headers: { cookie: "foo=bar; __Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" } });
+        expect(logout.statusCode).toBe(204);
+        expect(logout.headers["set-cookie"]).toBe("__Secure-chimera_admin=; Path=/chimera-control; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
+        expect((server as any).sessions.revoked).toEqual(["session"]);
         await server.close();
     });
 
@@ -60,5 +64,13 @@ describe("Chimera admin routes", () => {
         for (let i = 0; i < 5; i++) { expect(limits.acquire("ip")).toBe(true); limits.release(); }
         expect(limits.acquire("ip")).toBe(false); now = 15 * 60 * 1000 + 1;
         expect(limits.acquire("ip")).toBe(true); limits.release();
+    });
+
+    it("does not consume a concurrency slot for malformed login bodies", async () => {
+        const server = fastify(); let active = 0;
+        adminRoutes(server as any, { passwordHash, sessions: { create: async () => ({ sessionId: "s", csrfToken: "c" }) } as any, verifyPassword: async () => true, loginLimits: { acquire: () => { active++; return active === 1; }, release: () => { active--; } } });
+        expect((await server.inject({ method: "POST", url: "/chimera-control/api/session", payload: {} })).statusCode).toBe(401);
+        expect((await server.inject({ method: "POST", url: "/chimera-control/api/session", payload: { password: "x" } })).statusCode).toBe(200);
+        await server.close();
     });
 });

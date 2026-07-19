@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAdminSessionService, digestAdminToken } from "./adminSessions";
+import { createAdminSessionService, deriveAdminSessionSecret, digestAdminToken } from "./adminSessions";
 
 const secret = new Uint8Array(32).fill(7);
 
@@ -70,5 +70,15 @@ describe("Chimera admin sessions", () => {
 
         expect(await fixture.value.authenticate(first.sessionId)).toBeNull();
         expect(await fixture.value.authenticate(second.sessionId)).toBeNull();
+    });
+
+    it("invalidates sessions when the password hash or session secret rotates", async () => {
+        const fixture = service();
+        const created = await fixture.value.create();
+        const unchanged = fixture.rows[0].lastSeenAt;
+        const db = { chimeraAdminSession: { create: async () => fixture.rows[0], findUnique: async ({ where }: any) => fixture.rows.find((row) => row.sessionDigest === where.sessionDigest) ?? null, update: async () => fixture.rows[0], updateMany: async () => ({ count: 0 }) } } as any;
+        expect(await createAdminSessionService({ secret: deriveAdminSessionSecret(secret, "changed"), db }).authenticate(created.sessionId)).toBeNull();
+        expect(await createAdminSessionService({ secret: deriveAdminSessionSecret(new Uint8Array(32).fill(8), "original"), db }).authenticate(created.sessionId)).toBeNull();
+        expect(fixture.rows[0].lastSeenAt).toEqual(unchanged);
     });
 });

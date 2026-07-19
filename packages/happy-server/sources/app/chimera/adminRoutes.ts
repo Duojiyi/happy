@@ -34,8 +34,9 @@ export function adminRoutes(app: any, dependencies: { passwordHash?: string; ses
     const limits = dependencies.loginLimits ?? createLoginLimits();
     const unauthorised = (reply: any) => reply.code(401).send(UNAUTHORIZED);
     app.post("/chimera-control/api/session", async (request: any, reply: any) => {
-        if (!limits.acquire(request.ip) || !request.body || typeof request.body !== "object" || Array.isArray(request.body)
+        if (!request.body || typeof request.body !== "object" || Array.isArray(request.body)
             || Object.keys(request.body).length !== 1 || typeof request.body.password !== "string" || request.body.password.length > 1024) return unauthorised(reply);
+        if (!limits.acquire(request.ip)) return unauthorised(reply);
         let verified = false;
         try { verified = await verifyPassword(request.body.password, passwordHash); } catch { verified = false; } finally { limits.release(); }
         if (!verified) return unauthorised(reply);
