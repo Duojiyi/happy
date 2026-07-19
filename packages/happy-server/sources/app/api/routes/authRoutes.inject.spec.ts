@@ -62,6 +62,17 @@ describe("account auth HTTP routes", () => {
         await app.close();
     });
 
+    it.each(["purpose", "origin"])("rejects a live challenge with a tampered stored %s without consumption", async (field) => {
+        const { app, tokens, rows } = testApp();
+        const pair = nacl.sign.keyPair(); const publicKey = Buffer.from(pair.publicKey).toString("base64");
+        const challenge = (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })).json();
+        rows[0][field] = field === "purpose" ? "other-purpose" : "https://other.example";
+        const signature = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), pair.secretKey)).toString("base64");
+        const result = await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature } });
+        expect(result.statusCode).toBe(401); expect(rows[0].consumedAt).toBeNull(); expect(tokens).toEqual([]);
+        await app.close();
+    });
+
     it("returns the same 429 envelope for every exhausted issuance cap", async () => {
         const { app } = testApp();
         const keys = Array.from({ length: 4 }, () => Buffer.from(nacl.sign.keyPair().publicKey).toString("base64"));
