@@ -12,8 +12,6 @@ const checks = [
   ['sources/app/api/routes/authRoutes.ts', 'required-challenge-completion', /challengeId:\s*z\.string/],
   ['sources/app/api/socket.ts', 'required-socket-event-guard', /socket\.use\(/],
   ['sources/app/api/socket.ts', 'required-socket-origin', /origin:\s*['"]https:\/\/39\.98\.68\.173['"]/],
-  ['sources/app/api/routes/attachmentRoutes.ts', 'required-quota-reservation', /quota\.reserve\(/],
-  ['sources/app/api/routes/attachmentRoutes.ts', 'required-quota-claim', /quota\.claim\(/],
   ['sources/app/chimera/control/index.html', 'required-control-ui', /Chimera Control/],
   ['sources/app/chimera/control/control.js', 'required-csrf-client', /X-Chimera-CSRF/],
   ['sources/standalone.ts', 'required-loopback-standalone', /const host = ['"]127\.0\.0\.1['"]/],
@@ -70,7 +68,7 @@ function staticRoutes(sourceText, fileName) {
 
 function attachmentPolicyFindings(sourceText) {
   const sourceFile = ts.createSourceFile('attachmentRoutes.ts', sourceText, ts.ScriptTarget.Latest, true);
-  let putHandler;
+  let putHandler, requestUploadHandler;
   const calls = new Set();
   const visit = (node) => {
     if (ts.isCallExpression(node) && ((ts.isIdentifier(node.expression) && ['newPostPolicy', 'presignedPostPolicy'].includes(node.expression.text))
@@ -84,36 +82,65 @@ function attachmentPolicyFindings(sourceText) {
         const candidate = node.arguments.at(-1);
         if (candidate && (ts.isArrowFunction(candidate) || ts.isFunctionExpression(candidate))) putHandler = candidate;
       }
+      if (ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'app'
+        && node.expression.name.text === 'post' && ts.isStringLiteralLike(node.arguments[0])
+        && node.arguments[0].text === '/v1/sessions/:sessionId/attachments/request-upload') {
+        const candidate = node.arguments.at(-1);
+        if (candidate && (ts.isArrowFunction(candidate) || ts.isFunctionExpression(candidate))) requestUploadHandler = candidate;
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
   const findings = [];
   if (calls.has('presigned')) findings.push('attachment-presigned-post');
-  // Minimal fixture sources intentionally use a handler identifier; production
-  // route code must keep the complete server-owned PUT transaction together.
+  const isConstantFalse = (expression) => (expression.kind === ts.SyntaxKind.FalseKeyword)
+    || (ts.isNumericLiteral(expression) && expression.text === '0')
+    || (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken && isConstantFalse(expression.left));
+  const callName = (node) => {
+    if (ts.isIdentifier(node.expression)) return node.expression.text;
+    if (ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)) return `${node.expression.expression.text}.${node.expression.name.text}`;
+    return '';
+  };
+  const reachable = (handler) => {
+    const calls = new Set();
+    const selectors = [];
+    const visit = (node) => {
+      if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return;
+      if (ts.isCallExpression(node)) calls.add(callName(node));
+      if (ts.isConditionalExpression(node)) { ts.forEachChild(node, visit); return; }
+      ts.forEachChild(node, visit);
+    };
+    const statement = (node) => {
+      if (ts.isBlock(node)) return block(node);
+      if (ts.isIfStatement(node)) {
+        if (isConstantFalse(node.expression)) { if (node.elseStatement) statement(node.elseStatement); return; }
+        visit(node.expression); selectors.push(node); statement(node.thenStatement); if (node.elseStatement) statement(node.elseStatement); return;
+      }
+      if (ts.isTryStatement(node)) { block(node.tryBlock); if (node.catchClause) block(node.catchClause.block); if (node.finallyBlock) block(node.finallyBlock); return; }
+      visit(node);
+    };
+    const block = (node) => { for (const item of node.statements) { statement(item); if (ts.isReturnStatement(item) || ts.isThrowStatement(item)) break; } };
+    if (handler.body && ts.isBlock(handler.body)) block(handler.body); else if (handler.body) visit(handler.body);
+    return { calls, selectors };
+  };
+  if (!requestUploadHandler || !reachable(requestUploadHandler).calls.has('quota.reserve')) findings.push('attachment-request-upload-missing-reserve');
   if (!putHandler) return findings;
-  const handlerCalls = new Set();
-  const collect = (node) => {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) handlerCalls.add(node.expression.text);
-    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-      const owner = ts.isIdentifier(node.expression.expression) ? node.expression.expression.text : '';
-      handlerCalls.add(`${owner}.${node.expression.name.text}`);
-    }
-    ts.forEachChild(node, collect);
+  const { calls: handlerCalls, selectors } = reachable(putHandler);
+  const isLocalStorageCall = (node) => ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'isLocalStorage';
+  const selector = selectors.filter((node) => isLocalStorageCall(node.expression));
+  const branchesContain = (node, call) => reachable({ body: node }).calls.has(call);
+  const isValidSelector = selector.length === 1 && selector[0].elseStatement
+    && branchesContain(selector[0].thenStatement, 'putLocalFileAtomic')
+    && branchesContain(selector[0].elseStatement, 's3client.putObject');
+  const allIsLocalCalls = [];
+  const inspect = (node) => {
+    if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) return;
+    if (isLocalStorageCall(node)) allIsLocalCalls.push(node);
+    ts.forEachChild(node, inspect);
   };
-  collect(putHandler);
-  const hasS3Bypass = (node) => {
-    if (ts.isIfStatement(node) && ts.isPrefixUnaryExpression(node.expression) && node.expression.operator === ts.SyntaxKind.ExclamationToken
-      && ts.isCallExpression(node.expression.operand) && ts.isIdentifier(node.expression.operand.expression)
-      && node.expression.operand.expression.text === 'isLocalStorage') {
-      let returns = false;
-      const look = (child) => { if (ts.isReturnStatement(child)) returns = true; ts.forEachChild(child, look); };
-      look(node.thenStatement); if (returns) return true;
-    }
-    return ts.forEachChild(node, hasS3Bypass) || false;
-  };
-  if (hasS3Bypass(putHandler)) findings.push('attachment-put-s3-bypass');
+  if (putHandler.body) inspect(putHandler.body);
+  if (!isValidSelector || allIsLocalCalls.length !== 1) findings.push('attachment-put-s3-bypass');
   for (const [call, rule] of [
     ['quota.claim', 'attachment-put-missing-claim'], ['putLocalFileAtomic', 'attachment-put-missing-local-write'],
     ['s3client.putObject', 'attachment-put-missing-s3-write'], ['quota.finalize', 'attachment-put-missing-finalize'],

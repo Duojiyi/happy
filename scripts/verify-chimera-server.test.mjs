@@ -20,7 +20,7 @@ const defaults = {
   ].map((route) => { const [method, path] = route.split(' '); return `app.${method.toLowerCase()}('${path}', handler);`; }).join('\n'),
   'sources/app/chimera/publicConfig.ts': "app.get('/v1/chimera/config', handler); app.get('/chimera-control/api/config', handler); app.put('/chimera-control/api/config', handler);\n",
   'sources/app/api/socket.ts': "const cors = { origin: 'https://39.98.68.173' }; socket.use(guard);\n",
-  'sources/app/api/routes/attachmentRoutes.ts': "app.post('/v1/sessions/:sessionId/attachments/request-upload', handler); app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', handler); app.post('/v1/sessions/:sessionId/attachments/request-download', handler); app.get('/v1/sessions/:sessionId/attachments/:attachmentFile', handler); await quota.reserve(account, size); await quota.claim(id);\n",
+  'sources/app/api/routes/attachmentRoutes.ts': "app.post('/v1/sessions/:sessionId/attachments/request-upload', async () => { await quota.reserve(account, size); }); app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', {}, async () => { await quota.claim(); if (isLocalStorage()) { await putLocalFileAtomic(); } else { await s3client.putObject(); } await quota.finalize(); try { work(); } catch { await quota.rollback(); await deleteAttachmentObject(); } }); app.post('/v1/sessions/:sessionId/attachments/request-download', handler); app.get('/v1/sessions/:sessionId/attachments/:attachmentFile', handler);\n",
   'sources/app/chimera/control/index.html': '<title>Chimera Control</title>\n',
   'sources/app/chimera/control/control.js': "headers['X-Chimera-CSRF'] = csrf;\n",
   'sources/standalone.ts': "const host = '127.0.0.1';\n",
@@ -61,6 +61,15 @@ test('does not count a required route hidden in a dead branch', async () => {
   });
   assert(findings.some((item) => item.rule === 'missing-route:get:/v1/chimera/config'), JSON.stringify(findings));
 });
+for (const [name, source] of [
+  ['an uncalled nested function', 'function unused() { app.get("/v1/chimera/config", handler); }'],
+  ['a statement after return', 'return; app.get("/v1/chimera/config", handler);'],
+  ['an if zero branch', 'if (0) app.get("/v1/chimera/config", handler);'],
+  ['a false and branch', 'false && app.get("/v1/chimera/config", handler);'],
+]) test(`does not count a required route hidden in ${name}`, async () => {
+  const findings = await result({ 'sources/app/chimera/publicConfig.ts': source });
+  assert(findings.some((item) => item.rule === 'missing-route:get:/v1/chimera/config'), JSON.stringify(findings));
+});
 
 test('rejects a presigned POST upload bypass', async () => {
   const findings = await result({
@@ -69,7 +78,7 @@ test('rejects a presigned POST upload bypass', async () => {
   assert(findings.some((item) => item.rule === 'attachment-presigned-post'), JSON.stringify(findings));
 });
 
-const attachmentPut = "app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', {}, async () => { await quota.claim(); await putLocalFileAtomic(); await s3client.putObject(); await quota.finalize(); await quota.rollback(); await deleteAttachmentObject(); });";
+const attachmentPut = "app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', {}, async () => { await quota.claim(); if (isLocalStorage()) { await putLocalFileAtomic(); } else { await s3client.putObject(); } await quota.finalize(); try { work(); } catch { await quota.rollback(); await deleteAttachmentObject(); } });";
 const attachmentWithPut = defaults['sources/app/api/routes/attachmentRoutes.ts'].replace("app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', handler);", attachmentPut);
 for (const [removed, rule] of [
   ['quota.claim()', 'attachment-put-missing-claim'], ['putLocalFileAtomic()', 'attachment-put-missing-local-write'],
@@ -79,9 +88,31 @@ for (const [removed, rule] of [
   const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': attachmentWithPut.replace(removed, '') });
   assert(findings.some((item) => item.rule === rule), JSON.stringify(findings));
 });
+for (const [call, rule] of [
+  ['quota.claim()', 'attachment-put-missing-claim'], ['putLocalFileAtomic()', 'attachment-put-missing-local-write'],
+  ['s3client.putObject()', 'attachment-put-missing-s3-write'], ['quota.finalize()', 'attachment-put-missing-finalize'],
+  ['quota.rollback()', 'attachment-put-missing-rollback'], ['deleteAttachmentObject()', 'attachment-put-missing-delete'],
+]) for (const [name, hidden] of [
+  ['if false', `if (false) { await ${call}; }`],
+  ['unused function', `function unused() { return ${call}; }`],
+  ['after return', `return; await ${call};`],
+]) test(`does not count ${call} hidden in ${name}`, async () => {
+  const source = attachmentWithPut.replace(`await ${call};`, hidden);
+  const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': source });
+  assert(findings.some((item) => item.rule === rule), JSON.stringify(findings));
+});
+for (const [name, hidden] of [
+  ['if false', 'if (false) { await quota.reserve(account, size); }'],
+  ['unused function', 'function unused() { return quota.reserve(account, size); }'],
+  ['after return', 'return; await quota.reserve(account, size);'],
+]) test(`does not count request-upload reserve hidden in ${name}`, async () => {
+  const source = defaults['sources/app/api/routes/attachmentRoutes.ts'].replace('await quota.reserve(account, size);', hidden);
+  const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': source });
+  assert(findings.some((item) => item.rule === 'attachment-request-upload-missing-reserve'), JSON.stringify(findings));
+});
 test('rejects an S3-only early return in the server-owned PUT handler', async () => {
-  const bypass = attachmentPut.replace('await quota.claim();', 'if (!isLocalStorage()) { return reply.code(404).send(); } await quota.claim();');
-  const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': defaults['sources/app/api/routes/attachmentRoutes.ts'].replace("app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', handler);", bypass) });
+  const bypass = defaults['sources/app/api/routes/attachmentRoutes.ts'].replace('if (isLocalStorage())', 'if (!isLocalStorage()) { return reply.code(404).send(); } if (isLocalStorage())');
+  const findings = await result({ 'sources/app/api/routes/attachmentRoutes.ts': bypass });
   assert(findings.some((item) => item.rule === 'attachment-put-s3-bypass'), JSON.stringify(findings));
 });
 
