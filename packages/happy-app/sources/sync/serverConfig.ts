@@ -12,6 +12,10 @@ function isDevelopment(): boolean {
     return __DEV__;
 }
 
+export function isServerConfigurationAvailable(): boolean {
+    return isDevelopment();
+}
+
 function isLoopbackServerUrl(url: string): boolean {
     try {
         const parsed = new URL(url);

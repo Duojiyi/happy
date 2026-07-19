@@ -6,7 +6,7 @@ import { Typography } from '@/constants/Typography';
 import { StatusDot } from './StatusDot';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useSegments } from 'expo-router';
-import { getServerInfo } from '@/sync/serverConfig';
+import { getServerInfo, isServerConfigurationAvailable } from '@/sync/serverConfig';
 import { Image } from 'expo-image';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { t } from '@/text';
@@ -135,6 +135,9 @@ function HeaderRightNotAuth() {
     const { theme } = useUnistyles();
     const styles = stylesheet;
 
+    if (!isServerConfigurationAvailable()) {
+        return null;
+    }
 
     return (
         <Pressable

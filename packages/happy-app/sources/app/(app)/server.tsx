@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
+import { Redirect, Stack, useRouter } from 'expo-router';
 import { Text } from '@/components/StyledText';
 import { Typography } from '@/constants/Typography';
 import { ItemGroup } from '@/components/ItemGroup';
@@ -9,7 +9,7 @@ import { RoundButton } from '@/components/RoundButton';
 import { Modal } from '@/modal';
 import { layout } from '@/components/layout';
 import { t } from '@/text';
-import { getServerUrl, setServerUrl, validateServerUrl, getServerInfo } from '@/sync/serverConfig';
+import { getServerUrl, setServerUrl, validateServerUrl, getServerInfo, isServerConfigurationAvailable } from '@/sync/serverConfig';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
 const stylesheet = StyleSheet.create((theme) => ({
@@ -76,6 +76,10 @@ const stylesheet = StyleSheet.create((theme) => ({
 }));
 
 export default function ServerConfigScreen() {
+    if (!isServerConfigurationAvailable()) {
+        return <Redirect href="/" />;
+    }
+
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const router = useRouter();
@@ -141,7 +145,11 @@ export default function ServerConfigScreen() {
         );
 
         if (confirmed) {
-            setServerUrl(inputUrl);
+            try {
+                setServerUrl(inputUrl);
+            } catch (error) {
+                setError(error instanceof Error ? error.message : t('errors.invalidFormat'));
+            }
         }
     };
 
@@ -153,8 +161,12 @@ export default function ServerConfigScreen() {
         );
 
         if (confirmed) {
-            setServerUrl(null);
-            setInputUrl('');
+            try {
+                setServerUrl(null);
+                setInputUrl('');
+            } catch (error) {
+                setError(error instanceof Error ? error.message : t('errors.invalidFormat'));
+            }
         }
     };
 

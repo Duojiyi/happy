@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const storage = vi.hoisted(() => ({
     getString: vi.fn(),
@@ -9,6 +9,9 @@ const storage = vi.hoisted(() => ({
 vi.mock('react-native-mmkv', () => ({
     MMKV: vi.fn(() => storage),
 }));
+
+const originalHappyConfigDescriptor = Object.getOwnPropertyDescriptor(globalThis, '__HAPPY_CONFIG__');
+const originalServerUrl = process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
 
 async function loadServerConfig(dev: boolean) {
     vi.stubGlobal('__DEV__', dev);
@@ -29,6 +32,23 @@ describe('serverConfig', () => {
         process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = 'https://environment-attacker.invalid';
     });
 
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        storage.getString.mockClear();
+        storage.set.mockClear();
+        storage.delete.mockClear();
+        if (originalHappyConfigDescriptor) {
+            Object.defineProperty(globalThis, '__HAPPY_CONFIG__', originalHappyConfigDescriptor);
+        } else {
+            Reflect.deleteProperty(globalThis, '__HAPPY_CONFIG__');
+        }
+        if (originalServerUrl === undefined) {
+            delete process.env.EXPO_PUBLIC_HAPPY_SERVER_URL;
+        } else {
+            process.env.EXPO_PUBLIC_HAPPY_SERVER_URL = originalServerUrl;
+        }
+    });
+
     test('returns the generated relay without reading hostile production overrides', async () => {
         const { getServerUrl } = await loadServerConfig(false);
 
@@ -42,6 +62,14 @@ describe('serverConfig', () => {
         expect(() => setServerUrl('http://localhost:3000')).toThrow();
         expect(storage.set).not.toHaveBeenCalled();
         expect(storage.delete).not.toHaveBeenCalled();
+    });
+
+    test('only makes server configuration available in development', async () => {
+        const productionConfig = await loadServerConfig(false);
+        expect(productionConfig.isServerConfigurationAvailable()).toBe(false);
+
+        const developmentConfig = await loadServerConfig(true);
+        expect(developmentConfig.isServerConfigurationAvailable()).toBe(true);
     });
 
     test('allows a development localhost override', async () => {
