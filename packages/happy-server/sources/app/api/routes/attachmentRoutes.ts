@@ -177,7 +177,7 @@ export function attachmentRoutes(app: Fastify, dependencies: { quota?: Attachmen
 
         const ref = `sessions/${sessionId}/attachments/${attachmentFile}`;
         let claim;
-        try { claim = await quota.claim(reservation, userId, ref, body.length); }
+        try { claim = await quota.claim(sessionId, reservation, userId, ref, body.length); }
         catch { return reply.code(507).send({ error: 'Attachment upload unavailable' }); }
         try {
             if (isLocalStorage()) await putLocalFileAtomic(ref, body);

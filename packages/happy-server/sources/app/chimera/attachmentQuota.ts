@@ -72,12 +72,15 @@ export function createAttachmentQuotaService(dependencies: {
                 return tx.chimeraAttachmentReservation.create({ data: { accountId, bytes: requested, objectKey, expiresAt: new Date(now().getTime() + reservationTtlMs) } });
             });
         },
-        async claim(reservationId: string, accountId: string, objectKey: string, actualBytes: number): Promise<Claim> {
+        async claim(sessionId: string, reservationId: string, accountId: string, objectKey: string, actualBytes: number): Promise<Claim> {
             if (!reservationId || !Number.isSafeInteger(actualBytes) || actualBytes < 0) throw new AttachmentQuotaError();
             return runTransaction(async (tx) => {
                 const reservation = await tx.chimeraAttachmentReservation.findUnique({ where: { id: reservationId } });
                 const account = await tx.account.findUnique({ where: { id: accountId }, select: { disabledAt: true } });
-                if (!reservation || reservation.accountId !== accountId || reservation.objectKey !== objectKey || reservation.expiresAt <= now() || !account || account.disabledAt || BigInt(actualBytes) > reservation.bytes) throw new AttachmentQuotaError();
+                const session = await tx.session.findFirst({ where: { id: sessionId, accountId } });
+                const cleanup = await tx.chimeraAttachmentCleanup.findUnique({ where: { sessionId } });
+                const expected = new RegExp(`^sessions/${sessionId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/attachments/[^/]+\\.enc$`);
+                if (!session || cleanup || !expected.test(objectKey) || !reservation || reservation.accountId !== accountId || reservation.objectKey !== objectKey || reservation.expiresAt <= now() || !account || account.disabledAt || BigInt(actualBytes) > reservation.bytes) throw new AttachmentQuotaError();
                 const claimTime = now();
                 const claimed = await tx.chimeraAttachmentReservation.updateMany({
                     where: { id: reservationId, accountId, objectKey, claimedAt: null, expiresAt: { gt: claimTime } },

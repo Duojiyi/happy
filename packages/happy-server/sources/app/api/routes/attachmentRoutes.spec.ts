@@ -100,7 +100,7 @@ const {
             state.reservations.push(reservation);
             return reservation;
         }),
-        claim: vi.fn(async (reservationId: string, accountId: string, objectKey: string, bytes: number) => {
+        claim: vi.fn(async (_sessionId: string, reservationId: string, accountId: string, objectKey: string, bytes: number) => {
             if (state.claimedReservationIds.has(reservationId)) throw new Error("claimed");
             state.claimedReservationIds.add(reservationId);
             state.claims.push({ reservationId, accountId, objectKey, bytes });

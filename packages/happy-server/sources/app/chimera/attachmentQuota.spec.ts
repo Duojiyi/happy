@@ -10,6 +10,8 @@ function database() {
     const reservations: Array<{ id: string; accountId: string; bytes: bigint; objectKey: string; expiresAt: Date; createdAt: Date; claimedAt?: Date | null }> = [];
     let sequence = 0;
     const db: any = {
+        session: { findFirst: async ({ where }: any) => where.id === "s1" && where.accountId === "account" ? { id: "s1" } : null },
+        chimeraAttachmentCleanup: { findUnique: async () => null },
         account: {
             findUnique: async ({ where }: any) => where.id === account.id ? { ...account } : null,
             update: async ({ data }: any) => {
@@ -82,13 +84,14 @@ describe("Chimera attachment quota", () => {
     it("claims a reservation once, accounts actual bytes, and rolls back failed writes", async () => {
         const state = database();
         const service = createAttachmentQuotaService({ db: state.db, runTransaction: state.runTransaction, inspectDisk: healthyDisk });
-        const reservation = await service.reserve("account", 400, "a.enc");
-        await expect(service.claim(reservation.id, "account", "other.enc", 250)).rejects.toBeInstanceOf(AttachmentQuotaError);
-        const claim = await service.claim(reservation.id, "account", "a.enc", 250);
+        const objectKey = "sessions/s1/attachments/a.enc";
+        const reservation = await service.reserve("account", 400, objectKey);
+        await expect(service.claim("s1", reservation.id, "account", "other.enc", 250)).rejects.toBeInstanceOf(AttachmentQuotaError);
+        const claim = await service.claim("s1", reservation.id, "account", objectKey, 250);
         expect(state.account).toMatchObject({ attachmentReservedBytes: 400n, attachmentUsedBytes: 100n });
         await service.finalize(claim);
         expect(state.account).toMatchObject({ attachmentReservedBytes: 0n, attachmentUsedBytes: 350n });
-        await expect(service.claim(reservation.id, "account", "a.enc", 250)).rejects.toBeInstanceOf(AttachmentQuotaError);
+        await expect(service.claim("s1", reservation.id, "account", objectKey, 250)).rejects.toBeInstanceOf(AttachmentQuotaError);
     });
 
     it("releases expired reservations in bounded cleanup", async () => {
@@ -104,10 +107,10 @@ describe("Chimera attachment quota", () => {
     it("claims a reservation only once under concurrent callers", async () => {
         const state = database();
         const service = createAttachmentQuotaService({ db: state.db, runTransaction: state.runTransaction, inspectDisk: healthyDisk });
-        const reservation = await service.reserve("account", 400, "a.enc");
+        const reservation = await service.reserve("account", 400, "sessions/s1/attachments/a.enc");
         const claims = await Promise.allSettled([
-            service.claim(reservation.id, "account", "a.enc", 100),
-            service.claim(reservation.id, "account", "a.enc", 100),
+            service.claim("s1", reservation.id, "account", "sessions/s1/attachments/a.enc", 100),
+            service.claim("s1", reservation.id, "account", "sessions/s1/attachments/a.enc", 100),
         ]);
         expect(claims.filter((claim) => claim.status === "fulfilled")).toHaveLength(1);
     });

@@ -10,6 +10,8 @@ function statefulTransaction() {
         const tx: any = {
             session: { findFirst: async ({ where }: any) => sessions.has(where.id) && where.accountId === "u1" ? { id: where.id } : null, delete: async ({ where }: any) => { sessions.delete(where.id); } },
             sessionMessage: { deleteMany: async () => ({ count: 0 }) }, usageReport: { deleteMany: async () => ({ count: 0 }) }, accessKey: { deleteMany: async () => ({ count: 0 }) },
+            chimeraAttachmentReservation: { findMany: async () => [], deleteMany: async () => ({ count: 0 }) },
+            account: { update: async () => undefined },
             chimeraAttachmentCleanup: { upsert: async ({ where, create }: any) => { const existing = cleanups.find((row) => row.sessionId === where.sessionId); if (existing) return existing; const row = { id: `c${cleanups.length + 1}`, sessionId: create.sessionId }; cleanups.push(row); return row; } },
             callbacks,
         };
