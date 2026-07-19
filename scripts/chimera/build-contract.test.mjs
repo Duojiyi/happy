@@ -31,7 +31,7 @@ function assertBuildJob(job, name, requiredCommands, artifactName) {
   assert.ok(job, `${name} job is required`);
   assert.deepEqual(job.permissions, { contents: 'read' }, `${name} permissions must be read-only`);
   assertNoCandidateCredentials(job, name);
-  assert.ok(allSteps(job).some((step) => step.uses?.startsWith('actions/checkout@')), `${name} must checkout candidate source`);
+  assert.ok(allSteps(job).some((step) => step.uses?.startsWith('actions/checkout@') && step.with?.['persist-credentials'] === false), `${name} checkout must not persist credentials`);
   assert.ok(allSteps(job).some((step) => step.uses?.startsWith('pnpm/action-setup@') && step.with?.version === '10.11.0'), `${name} must pin pnpm 10.11.0`);
   assert.ok(allSteps(job).some((step) => step.uses?.startsWith('actions/setup-node@') && String(step.with?.['node-version']) === '22'), `${name} must use Node 22`);
   const text = runText(job);
@@ -45,6 +45,11 @@ export function validateBuildWorkflow(workflow) {
   assert.ok(triggers?.pull_request, 'pull_request trigger is required');
   assert.ok(triggers?.push?.branches?.includes('main'), 'main push trigger is required');
   assert.ok(triggers?.workflow_dispatch !== undefined, 'manual dispatch trigger is required');
+  for (const trigger of ['pull_request', 'push']) {
+    for (const requiredPath of ['.npmrc', 'pnpm-workspace.yaml', 'patches/**']) {
+      assert.ok(triggers?.[trigger]?.paths?.includes(requiredPath), `${trigger} paths must include ${requiredPath}`);
+    }
+  }
 
   const jobs = workflow.jobs;
   assert.ok(jobs, 'jobs are required');
@@ -134,5 +139,18 @@ if (!source) {
     const step = workflow.jobs.provenance.steps.find((item) => item.with?.['subject-path'] === 'provenance/android/Chimera-unsigned.apk');
     step.with['subject-path'] = 'provenance/android/**/*.apk';
     assert.throws(() => validateBuildWorkflow(workflow), /exact files verified/);
+  });
+
+  test('contract rejects persisted checkout credentials', () => {
+    const workflow = parse(source);
+    const checkout = workflow.jobs.web.steps.find((item) => item.uses?.startsWith('actions/checkout@'));
+    checkout.with['persist-credentials'] = true;
+    assert.throws(() => validateBuildWorkflow(workflow), /checkout must not persist credentials/);
+  });
+
+  test('contract rejects missing dependency path inputs', () => {
+    const workflow = parse(source);
+    workflow.on.push.paths = workflow.on.push.paths.filter((item) => item !== 'patches/**');
+    assert.throws(() => validateBuildWorkflow(workflow), /push paths must include patches/);
   });
 }

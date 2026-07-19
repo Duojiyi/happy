@@ -7,7 +7,10 @@ on:
       - 'packages/happy-app/**'
       - 'packages/happy-wire/**'
       - 'scripts/**'
+      - 'patches/**'
+      - '.npmrc'
       - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
       - 'package.json'
       - '.github/workflows/chimera-build.yml'
   push:
@@ -17,7 +20,10 @@ on:
       - 'packages/happy-app/**'
       - 'packages/happy-wire/**'
       - 'scripts/**'
+      - 'patches/**'
+      - '.npmrc'
       - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
       - 'package.json'
       - '.github/workflows/chimera-build.yml'
   workflow_dispatch:
@@ -41,6 +47,8 @@ jobs:
     steps:
       - name: Checkout candidate
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
 
       - name: Install pnpm
         uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
@@ -134,6 +142,8 @@ jobs:
     steps:
       - name: Checkout candidate
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
 
       - name: Install pnpm
         uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
