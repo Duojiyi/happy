@@ -1,5 +1,3 @@
-import Constants from 'expo-constants';
-import * as Updates from 'expo-updates';
 import { tracking } from './tracking';
 import type { Metadata, Session } from '@/sync/storageTypes';
 
@@ -59,9 +57,8 @@ export function trackMessageSent(source: MessageSentSource, metadata?: Metadata 
                 ? 'cli'
                 : null,
         happy_cli_version: metadata?.version ?? null,
-        ota_version: Updates.updateId ?? null,
-        ota_runtime_version: Updates.runtimeVersion
-            ?? (typeof Constants.expoConfig?.runtimeVersion === 'string' ? Constants.expoConfig.runtimeVersion : null),
+        ota_version: null,
+        ota_runtime_version: null,
     });
 }
 
