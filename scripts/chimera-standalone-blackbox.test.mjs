@@ -12,6 +12,14 @@ const entry = join(root, 'packages/happy-server/dist/standalone.mjs');
 const secret = Buffer.alloc(32, 7).toString('base64url');
 const passwordHash = '$argon2id$v=19$m=65536,t=3,p=1$QUJDREVGR0g$QUJDREVGR0hJSktMTU5PUA';
 
+export function buildEnv(dir, port, parent = process.env) {
+  const env = { ...parent };
+  for (const key of ['DATABASE_URL', 'S3_HOST', 'S3_PORT', 'S3_USE_SSL', 'S3_REGION', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'S3_BUCKET', 'S3_PUBLIC_URL', 'S3_ENDPOINT']) delete env[key];
+  return { ...env, DB_PROVIDER: 'pglite', DATA_DIR: dir, PGLITE_DIR: join(dir, 'pglite'), FILES_DIR: join(dir, 'files'), PORT: String(port), HANDY_MASTER_SECRET: secret,
+    CHIMERA_ADMIN_PASSWORD_HASH: passwordHash, CHIMERA_ADMIN_SESSION_SECRET: secret, CHIMERA_INVITATION_PEPPER: secret, CHIMERA_ACCOUNT_PSEUDONYM_KEY: secret, CHIMERA_UPDATE_PUBLIC_KEY: secret,
+    PUBLIC_URL: 'https://39.98.68.173', RELAY_URL: 'https://39.98.68.173' };
+}
+
 async function freePort() {
   const server = createServer();
   await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve));
@@ -38,9 +46,7 @@ async function stop(child) {
 test('built standalone serves the Chimera public and control surfaces on loopback only', { timeout: 90_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'chimera-standalone-'));
   const port = await freePort();
-  const env = { ...process.env, DATA_DIR: dir, PGLITE_DIR: join(dir, 'pglite'), FILES_DIR: join(dir, 'files'), PORT: String(port), HANDY_MASTER_SECRET: secret,
-    CHIMERA_ADMIN_PASSWORD_HASH: passwordHash, CHIMERA_ADMIN_SESSION_SECRET: secret, CHIMERA_INVITATION_PEPPER: secret, CHIMERA_ACCOUNT_PSEUDONYM_KEY: secret, CHIMERA_UPDATE_PUBLIC_KEY: secret,
-    PUBLIC_URL: 'https://39.98.68.173', RELAY_URL: 'https://39.98.68.173', S3_ENDPOINT: '', S3_ACCESS_KEY: '', S3_SECRET_KEY: '', S3_BUCKET: '' };
+  const env = buildEnv(dir, port);
   let child;
   try {
     await run(['migrate'], env);
@@ -58,4 +64,12 @@ test('built standalone serves the Chimera public and control surfaces on loopbac
     for (const path of ['/v1/voice/conversations', '/v1/push-tokens']) assert.equal((await fetch(`${base}${path}`)).status, 404);
     await assert.rejects(fetch(`http://127.0.0.2:${port}/v1/chimera/config`));
   } finally { if (child) await stop(child); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('standalone environment drops inherited database and S3 settings', () => {
+  const env = buildEnv('C:/temporary', 4321, { DATABASE_URL: 'postgres://evil', DB_PROVIDER: 'postgres', S3_HOST: 'evil', S3_BUCKET: 'evil' });
+  assert.equal(env.DB_PROVIDER, 'pglite');
+  assert.equal(env.DATABASE_URL, undefined);
+  assert.equal(env.S3_HOST, undefined);
+  assert.equal(env.S3_BUCKET, undefined);
 });

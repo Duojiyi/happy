@@ -32,7 +32,8 @@ const defaults = {
 async function fixture(overrides = {}) {
   const root = await mkdtemp(join(tmpdir(), 'chimera-server-policy-'));
   for (const [path, value] of Object.entries({ ...defaults, ...overrides })) {
-    const target = join(root, 'packages/happy-server', path); await mkdir(join(target, '..'), { recursive: true }); await writeFile(target, value);
+    const target = join(root, 'packages/happy-server', path); await mkdir(join(target, '..'), { recursive: true });
+    await writeFile(target, requiredRoutes[path] ? `export function routes() { ${value} }` : value);
   }
   return root;
 }

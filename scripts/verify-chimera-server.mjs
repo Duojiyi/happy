@@ -45,23 +45,26 @@ export const requiredRoutes = {
 function staticRoutes(sourceText, fileName) {
   const sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
   const routes = [];
-  const isDeadBranch = (node) => {
-    for (let parent = node.parent; parent; parent = parent.parent) {
-      if (ts.isIfStatement(parent) && parent.expression.kind === ts.SyntaxKind.FalseKeyword
-        && node.pos >= parent.thenStatement.pos && node.end <= parent.thenStatement.end) return true;
-    }
-    return false;
-  };
   const visit = (node) => {
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
       && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'app'
       && ['get', 'post', 'put', 'patch', 'delete'].includes(node.expression.name.text)) {
       const argument = node.arguments[0];
-      if (argument && ts.isStringLiteralLike(argument) && !isDeadBranch(node)) routes.push(`${node.expression.name.text.toUpperCase()} ${argument.text}`);
+      if (argument && ts.isStringLiteralLike(argument)) routes.push(`${node.expression.name.text.toUpperCase()} ${argument.text}`);
     }
-    ts.forEachChild(node, visit);
   };
-  visit(sourceFile);
+  const statements = (block) => {
+    for (const statement of block.statements) {
+      if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) break;
+      if (ts.isExpressionStatement(statement)) visit(statement.expression);
+      // Route registrations in conditional, nested or uncalled functions are
+      // intentionally not live policy evidence. Try/catch remains executable.
+      if (ts.isTryStatement(statement)) { statements(statement.tryBlock); if (statement.catchClause) statements(statement.catchClause.block); if (statement.finallyBlock) statements(statement.finallyBlock); }
+    }
+  };
+  for (const declaration of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(declaration) && declaration.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) && declaration.body) statements(declaration.body);
+  }
   return routes;
 }
 
