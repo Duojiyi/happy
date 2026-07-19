@@ -46,6 +46,14 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
+                name="register"
+                options={{
+                    headerShown: true,
+                    headerTitle: 'Create account',
+                    headerBackTitle: t('common.cancel'),
+                }}
+            />
+            <Stack.Screen
                 name="inbox/index"
                 options={{
                     headerShown: false,
