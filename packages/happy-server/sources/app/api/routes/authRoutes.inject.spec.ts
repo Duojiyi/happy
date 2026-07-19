@@ -100,6 +100,16 @@ describe("account auth HTTP routes", () => {
         await app.close();
     });
 
+    it("isolates concurrent per-key pending cap across independent client IPs", async () => {
+        const { app, rows } = testApp(new Date(), undefined, 10);
+        const publicKey = Buffer.from(nacl.sign.keyPair().publicKey).toString("base64");
+        const results = await Promise.all([1, 2, 3, 4].map((n) => app.inject({ method: "POST", url: "/v1/auth/challenge", headers: { "x-forwarded-for": `198.51.100.${n}` }, payload: { publicKey } })));
+        expect(results.filter((r) => r.statusCode === 200)).toHaveLength(3); expect(rows).toHaveLength(3);
+        const limited = results.find((r) => r.statusCode === 429)!;
+        expect(limited.json()).toEqual({ error: "Too many requests" });
+        await app.close();
+    });
+
     it("uses XFF only from a loopback proxy", async () => {
         const app = fastify({ trustProxy: isTrustedLoopbackProxy }); app.get("/ip", (req) => ({ ip: req.ip }));
         expect((await app.inject({ method: "GET", url: "/ip", headers: { "x-forwarded-for": "198.51.100.7" }, remoteAddress: "127.0.0.1" })).json().ip).toBe("198.51.100.7");
