@@ -16,6 +16,8 @@ readonly CANDIDATE_PORT=13005
 readonly LOCAL_HEALTH_URL=http://127.0.0.1:3000/health
 readonly CANDIDATE_URL=http://127.0.0.1:${CANDIDATE_PORT}
 readonly PUBLIC_HEALTH_URL=https://39.98.68.173/health
+readonly MIN_FREE_BYTES=$((15 * 1024 * 1024 * 1024))
+declare -a RESTORE_BACKUPS=()
 
 die() { printf 'Chimera server deployment rejected\n' >&2; exit 1; }
 require_root_owned_file() {
@@ -233,16 +235,44 @@ verify_running_new() {
   container="$(docker compose --file "$COMPOSE_FILE" ps -q relay)"
   [[ -n "$container" && "$(docker inspect --format '{{.Config.Image}}' "$container")" == "chimera-relay:$id" ]]
 }
+remove_candidate_if_present() {
+  if docker container inspect "$CANDIDATE_NAME" >/dev/null 2>&1; then
+    docker rm --force "$CANDIDATE_NAME" >/dev/null
+  fi
+}
 restore_snapshot() {
-  local id="$1" snapshot="$SNAPSHOT_ROOT/$1" failed="$ROOT/.failed-data-$1"
-  [[ -f "$snapshot/.verified" ]] || die
-  docker rm --force "$CANDIDATE_NAME" >/dev/null 2>&1 || true
-  docker compose --file "$COMPOSE_FILE" stop relay >/dev/null 2>&1 || true
-  rm -rf -- "$failed" "$DATA_ROOT.restore"
-  mv -- "$DATA_ROOT" "$failed"
-  install -d -m 0750 "$DATA_ROOT.restore"; cp -a -- "$snapshot/data/." "$DATA_ROOT.restore/"
-  mv -- "$DATA_ROOT.restore" "$DATA_ROOT"
-  rm -rf -- "$failed"
+  local id="$1" image="$2" snapshot="$SNAPSHOT_ROOT/$1"
+  local transaction="$1-$$-${RANDOM}" candidate="$DATA_ROOT.restore-$transaction" backup="$DATA_ROOT.failed-$transaction"
+  local parent; parent="$(dirname "$DATA_ROOT")"
+  [[ -f "$snapshot/.verified" && ! -L "$snapshot/.verified" && -d "$snapshot/data" && ! -L "$snapshot/data" ]] || return 1
+  [[ -d "$DATA_ROOT" && ! -L "$DATA_ROOT" && ! -e "$candidate" && ! -e "$backup" ]] || return 1
+  remove_candidate_if_present || return 1
+  docker compose --file "$COMPOSE_FILE" stop relay >/dev/null || return 1
+  install -d -m 0750 "$candidate" || return 1
+  cp -a -- "$snapshot/data/." "$candidate/" || return 1
+  find "$candidate" -type f -exec sync -f {} + || return 1
+  sync -f "$candidate" || return 1
+  open_test_path "$image" "$candidate" || return 1
+  mv -- "$DATA_ROOT" "$backup" || return 1
+  sync -f "$parent" || return 1
+  if ! mv -- "$candidate" "$DATA_ROOT"; then
+    if ! mv -- "$backup" "$DATA_ROOT"; then
+      printf 'Chimera restore swap failed; original data remains at %s\n' "$backup" >&2
+    fi
+    sync -f "$parent"
+    return 1
+  fi
+  sync -f "$parent" || return 1
+  RESTORE_BACKUPS+=("$backup")
+}
+finish_restores() {
+  local backup
+  for backup in "${RESTORE_BACKUPS[@]}"; do
+    [[ "$backup" =~ ^/data\.failed-[a-f0-9-]+-[0-9]+-[0-9]+$ && -d "$backup" && ! -L "$backup" ]] || return 1
+    rm -rf -- "$backup" || return 1
+  done
+  sync -f "$(dirname "$DATA_ROOT")" || return 1
+  RESTORE_BACKUPS=()
 }
 snapshot_markers() {
   local id="$1" image digest
@@ -252,31 +282,81 @@ snapshot_markers() {
 }
 rollback_failed_deploy() {
   local id="$1" old_image="$2" old_digest="$3"
-  trap - ERR EXIT; set +e
-  if [[ -f "$SNAPSHOT_ROOT/$id/.verified" ]]; then restore_snapshot "$id"; open_test_data "$id" "$old_image"; else docker rm --force "$CANDIDATE_NAME" >/dev/null 2>&1 || true; fi
-  write_current_release "$old_image" "$old_digest"
-  CHIMERA_IMAGE="$old_image" docker compose --file "$COMPOSE_FILE" up -d --remove-orphans
-  if verify_running_old; then maintenance_off && verify_public; fi
+  trap - ERR EXIT
+  if ! recover_release "$id" "$old_image" "$old_digest"; then
+    if ! maintenance_on; then printf 'Chimera recovery failed and maintenance reload also failed\n' >&2; fi
+  fi
   exit 1
 }
 rollback_failed_rollback() {
   local rescue="$1" image="$2" digest="$3"
-  trap - ERR EXIT; set +e
-  if [[ -f "$SNAPSHOT_ROOT/$rescue/.verified" ]]; then
-    restore_snapshot "$rescue"
-    open_test_data "$rescue" "$image"
-  else
-    docker rm --force "$CANDIDATE_NAME" >/dev/null 2>&1 || true
+  trap - ERR EXIT
+  if ! recover_release "$rescue" "$image" "$digest"; then
+    if ! maintenance_on; then printf 'Chimera rollback recovery failed and maintenance reload also failed\n' >&2; fi
   fi
-  write_current_release "$image" "$digest"
-  CHIMERA_IMAGE="$image" docker compose --file "$COMPOSE_FILE" up -d --remove-orphans
-  if verify_running_old; then maintenance_off && verify_public; fi
   exit 1
+}
+recover_release() {
+  local snapshot_id="$1" image="$2" digest="$3"
+  if [[ -f "$SNAPSHOT_ROOT/$snapshot_id/.verified" && ! -L "$SNAPSHOT_ROOT/$snapshot_id/.verified" ]]; then
+    restore_snapshot "$snapshot_id" "$image" || return 1
+  else
+    remove_candidate_if_present || return 1
+  fi
+  write_current_release "$image" "$digest" || return 1
+  CHIMERA_IMAGE="$image" docker compose --file "$COMPOSE_FILE" up -d --remove-orphans || return 1
+  verify_running_old || return 1
+  finish_restores || return 1
+  verify_public || return 1
+  maintenance_off || return 1
+  if ! verify_public; then
+    maintenance_on || return 1
+    return 1
+  fi
 }
 retain_verified_snapshots() {
   local keep="$1"
   mapfile -t snapshots < <(find "$SNAPSHOT_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.tmp-*' -exec test -f '{}/.verified' \; -printf '%T@ %p\n' | sort -nr | cut -d ' ' -f 2-)
   for (( index=keep; index<${#snapshots[@]}; index++ )); do rm -rf -- "${snapshots[$index]}"; done
+}
+retain_server_artifacts() {
+  local active_image active_id previous_id='' snapshot snapshot_name image entry name tags tag id free_bytes
+  local -a input_entries=() image_ids=()
+  active_image="$(current_image)" || return 1
+  active_id="${active_image#chimera-relay:}"
+  mapfile -t snapshots < <(find "$SNAPSHOT_ROOT" -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/.verified' \; -printf '%T@ %p\n' | sort -nr | cut -d ' ' -f 2-)
+  for snapshot in "${snapshots[@]}"; do
+    snapshot_name="${snapshot##*/}"
+    [[ ! -L "$snapshot" && "$snapshot_name" =~ ^([a-f0-9]{40}|rollback-[a-f0-9]{40}-[0-9]+)$ ]] || return 1
+    [[ -f "$snapshot/old-image" && ! -L "$snapshot/old-image" ]] || return 1
+    image="$(read_marker "$snapshot/old-image" '^chimera-relay:[a-f0-9]{40}$')" || return 1
+    if [[ "$image" != "$active_image" ]]; then previous_id="${image#chimera-relay:}"; break; fi
+  done
+  [[ -d "$INPUT_ROOT/$active_id" && ! -L "$INPUT_ROOT/$active_id" ]] || return 1
+  if [[ -n "$previous_id" ]]; then [[ -d "$INPUT_ROOT/$previous_id" && ! -L "$INPUT_ROOT/$previous_id" ]] || return 1; fi
+  while IFS= read -r -d '' entry; do
+    name="${entry##*/}"
+    [[ ! -L "$entry" && -d "$entry" && "$name" =~ ^[a-f0-9]{40}$ ]] || return 1
+    input_entries+=("$entry")
+  done < <(find "$INPUT_ROOT" -mindepth 1 -maxdepth 1 -print0)
+  tags="$(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter 'reference=chimera-relay:*')" || return 1
+  while IFS= read -r tag; do
+    [[ -n "$tag" ]] || continue
+    [[ "$tag" =~ ^chimera-relay:([a-f0-9]{40})$ ]] || return 1
+    image_ids+=("${BASH_REMATCH[1]}")
+  done <<< "$tags"
+  docker image inspect "$active_image" >/dev/null || return 1
+  if [[ -n "$previous_id" ]]; then docker image inspect "chimera-relay:$previous_id" >/dev/null || return 1; fi
+  for entry in "${input_entries[@]}"; do
+    name="${entry##*/}"
+    if [[ "$name" != "$active_id" && "$name" != "$previous_id" ]]; then rm -rf -- "$entry" || return 1; fi
+  done
+  for id in "${image_ids[@]}"; do
+    if [[ "$id" != "$active_id" && "$id" != "$previous_id" ]]; then docker image rm "chimera-relay:$id" >/dev/null || return 1; fi
+  done
+  free_bytes="$(df --output=avail -B1 "$ROOT" | tail -n 1 | tr -d ' ')" || return 1
+  [[ "$free_bytes" =~ ^[0-9]+$ ]] || return 1
+  (( free_bytes > MIN_FREE_BYTES ))
 }
 deploy_server() {
   local id="$1" digest="$2" old_image old_digest
@@ -289,10 +369,10 @@ deploy_server() {
   create_snapshot "$id" "$old_image" "$old_digest"; open_test_snapshot "$id" "$old_image"
   migrate_candidate "$id"; start_candidate "$id"; verify_candidate "$id"
   promote_candidate "$id" "$digest"; verify_running_new "$id"
+  retain_server_artifacts; retain_verified_snapshots 2
   maintenance_off; verify_public
   trap - ERR EXIT
   rm -f -- "$STAGING_ROOT/$id.oci.partial" "$STAGING_ROOT/$id.json.partial" "$STAGING_ROOT/$id.attestation.partial"
-  retain_verified_snapshots 2
   printf 'deployed digest=%s\nrunning digest=%s\n' "$digest" "$(current_digest)"
 }
 rollback_server() {
@@ -304,12 +384,13 @@ rollback_server() {
   maintenance_on
   stop_runtime; assert_pglite_closed; check_snapshot_space
   create_snapshot "$rescue" "$current_image_value" "$current_digest_value"; open_test_snapshot "$rescue" "$current_image_value"
-  restore_snapshot "$id"; open_test_data "$id" "$target_image"
+  restore_snapshot "$id" "$target_image"
   write_current_release "$target_image" "$target_digest"
   CHIMERA_IMAGE="$target_image" docker compose --file "$COMPOSE_FILE" up -d --remove-orphans
-  verify_running_old; maintenance_off; verify_public
+  verify_running_old; finish_restores
+  retain_server_artifacts; retain_verified_snapshots 2
+  maintenance_off; verify_public
   trap - ERR EXIT
-  retain_verified_snapshots 2
   printf 'rolled back digest=%s\nrunning digest=%s\n' "$target_digest" "$(current_digest)"
 }
 main() {

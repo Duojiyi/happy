@@ -27,6 +27,7 @@ export function validateServerDeployProtocol(workflow, forcedSource = forced, de
     'server-archive-attestation.jsonl', '--bundle deploy-input/server-archive-attestation.jsonl',
     'chimera-server-deploy@39.98.68.173', 'deploy-server $REVIEWED_SHA $IMAGE_DIGEST',
   ]) assert.match(runs, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal((runs.match(/\bscp -O\b/g) ?? []).length, 3);
   assert.doesNotMatch(runs, /chimera-deploy@|docker build|Dockerfile\.server/);
   assert.ok(forcedSource.includes('\\.chimera-staging/server/[a-f0-9]{40}\\.(oci|json|attestation)\\.partial'));
   assert.match(forcedSource, /\^deploy-server\\ \(\[a-f0-9\]\{40\}\)\\ \(sha256:\[a-f0-9\]\{64\}\)\$/);
@@ -62,7 +63,75 @@ test('deploy and rollback install recovery traps before maintenance mutation', (
   const rollback = source.slice(source.indexOf('rollback_server() {'), source.indexOf('\nmain() {'));
   assert.ok(rollback.indexOf("trap 'rollback_failed_rollback") < rollback.indexOf('maintenance_on'));
   assert.match(rollback, /create_snapshot "\$rescue"/);
-  assert.match(source, /if verify_running_old; then maintenance_off && verify_public; fi/);
+  assert.match(source, /if ! recover_release/);
+});
+
+test('snapshot restore is transactional and preserves original data until restored runtime health', () => {
+  const restore = body('restore_snapshot', 'finish_restores');
+  const finish = body('finish_restores', 'snapshot_markers');
+  const recovery = body('recover_release', 'retain_verified_snapshots');
+  const rollback = source.slice(source.indexOf('rollback_server() {'), source.indexOf('\nmain() {'));
+  assert.ok(restore.indexOf('cp -a -- "$snapshot/data/." "$candidate/"') < restore.indexOf('mv -- "$DATA_ROOT" "$backup"'));
+  assert.ok(restore.indexOf('open_test_path "$image" "$candidate"') < restore.indexOf('mv -- "$DATA_ROOT" "$backup"'));
+  assert.match(restore, /if ! mv -- "\$candidate" "\$DATA_ROOT"/);
+  assert.match(restore, /if ! mv -- "\$backup" "\$DATA_ROOT"/);
+  assert.doesNotMatch(restore, /rm -rf -- "\$backup"/);
+  assert.match(finish, /rm -rf -- "\$backup" \|\| return 1/);
+  assert.ok(recovery.indexOf('verify_running_old || return 1') < recovery.indexOf('finish_restores || return 1'));
+  assert.ok(rollback.indexOf('verify_running_old; finish_restores') > rollback.indexOf('docker compose --file "$COMPOSE_FILE" up'));
+  assert.doesNotMatch(source, /set \+e/);
+});
+
+test('rollback handlers explicitly recover or force maintenance to remain enabled', () => {
+  const failedDeploy = body('rollback_failed_deploy', 'rollback_failed_rollback');
+  const failedRollback = body('rollback_failed_rollback', 'recover_release');
+  const recovery = body('recover_release', 'retain_verified_snapshots');
+  for (const handler of [failedDeploy, failedRollback]) {
+    assert.match(handler, /if ! recover_release/);
+    assert.match(handler, /if ! maintenance_on/);
+  }
+  for (const required of [
+    /restore_snapshot .* \|\| return 1/, /write_current_release .* \|\| return 1/,
+    /docker compose .* \|\| return 1/, /verify_running_old \|\| return 1/,
+    /finish_restores \|\| return 1/, /verify_public \|\| return 1/,
+  ]) assert.match(recovery, required);
+});
+
+function validateArtifactRetention(deploySource) {
+  const start = deploySource.indexOf('retain_server_artifacts() {');
+  const end = deploySource.indexOf('\ndeploy_server() {', start);
+  const retain = deploySource.slice(start, end);
+  assert.match(retain, /active_image="\$\(current_image\)"/);
+  assert.match(retain, /image" != "\$active_image"/);
+  assert.match(retain, /name" != "\$active_id" && "\$name" != "\$previous_id"/);
+  assert.match(retain, /id" != "\$active_id" && "\$id" != "\$previous_id"/);
+  assert.match(retain, /\^\[a-f0-9\]\{40\}\$/);
+  assert.match(retain, /! -L "\$entry" && -d "\$entry"/);
+  assert.match(retain, /docker image rm "chimera-relay:\$id"/);
+  assert.match(retain, /free_bytes > MIN_FREE_BYTES/);
+  assert.doesNotMatch(retain, /docker image prune|docker system prune/);
+  return true;
+}
+
+test('artifact retention keeps active and previous exact releases and enforces reserve space', () => {
+  validateArtifactRetention(source);
+  const deploy = body('deploy_server', 'rollback_server');
+  const rollback = source.slice(source.indexOf('rollback_server() {'), source.indexOf('\nmain() {'));
+  assert.ok(deploy.indexOf('retain_server_artifacts') < deploy.indexOf('maintenance_off'));
+  assert.ok(rollback.indexOf('retain_server_artifacts') < rollback.indexOf('maintenance_off'));
+  assert.ok(deploy.indexOf('retain_server_artifacts') < deploy.indexOf('retain_verified_snapshots'));
+  assert.ok(rollback.indexOf('retain_server_artifacts') < rollback.indexOf('retain_verified_snapshots'));
+});
+
+test('retention contract rejects protected-release, path-safety, and reserve mutations', () => {
+  for (const mutated of [
+    source.replace('"$name" != "$active_id" && ', ''),
+    source.replace('&& "$name" != "$previous_id"', ''),
+    source.replace('"$id" != "$active_id" && ', ''),
+    source.replace('&& "$id" != "$previous_id"', ''),
+    source.replace('! -L "$entry" && ', ''),
+    source.replace('(( free_bytes > MIN_FREE_BYTES ))', ':'),
+  ]) assert.throws(() => validateArtifactRetention(mutated));
 });
 
 test('Android APK target is immutable while the manifest remains the final pointer', () => {

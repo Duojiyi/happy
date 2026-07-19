@@ -482,9 +482,9 @@ jobs:
           printf '%s\n' "$CHIMERA_SERVER_DEPLOY_HOST_KEY" > "$KNOWN"
           chmod 600 "$KEY" "$KNOWN"
           SSH_ARGS=(-i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN")
-          scp "${SSH_ARGS[@]}" deploy-input/server-image.tar "chimera-server-deploy@39.98.68.173:.chimera-staging/server/$REVIEWED_SHA.oci.partial"
-          scp "${SSH_ARGS[@]}" deploy-input/server-release-input.json "chimera-server-deploy@39.98.68.173:.chimera-staging/server/$REVIEWED_SHA.json.partial"
-          scp "${SSH_ARGS[@]}" deploy-input/server-archive-attestation.jsonl "chimera-server-deploy@39.98.68.173:.chimera-staging/server/$REVIEWED_SHA.attestation.partial"
+          scp -O "${SSH_ARGS[@]}" deploy-input/server-image.tar "chimera-server-deploy@39.98.68.173:.chimera-staging/server/$REVIEWED_SHA.oci.partial"
+          scp -O "${SSH_ARGS[@]}" deploy-input/server-release-input.json "chimera-server-deploy@39.98.68.173:.chimera-staging/server/$REVIEWED_SHA.json.partial"
+          scp -O "${SSH_ARGS[@]}" deploy-input/server-archive-attestation.jsonl "chimera-server-deploy@39.98.68.173:.chimera-staging/server/$REVIEWED_SHA.attestation.partial"
           RESULT=$(ssh "${SSH_ARGS[@]}" chimera-server-deploy@39.98.68.173 "deploy-server $REVIEWED_SHA $IMAGE_DIGEST")
           printf '%s\n' "$RESULT"
           DEPLOYED_DIGEST=$(printf '%s\n' "$RESULT" | sed -n 's/^deployed digest=//p')
