@@ -1,0 +1,11 @@
+import { strict as assert } from 'node:assert';
+process.env.APP_ENV = 'production';
+const mod = await import('../packages/happy-app/app.config.js');
+const config = mod.default.expo;
+assert.equal(config.name, 'Chimera'); assert.equal(config.slug, 'chimera');
+assert.equal(config.android.package, 'org.chimerahub.chimera'); assert.deepEqual(config.scheme, ['chimera', 'happy']);
+assert.equal(config.updates?.enabled, false); assert.equal(config.android.googleServicesFile, undefined);
+assert(!config.plugins.some(p => (Array.isArray(p) ? p[0] : p) === 'expo-notifications'));
+const permissions = config.android.permissions ?? [];
+assert(!permissions.includes('android.permission.RECORD_AUDIO')); assert(!permissions.includes('android.permission.POST_NOTIFICATIONS'));
+console.log('Chimera Expo config verified');

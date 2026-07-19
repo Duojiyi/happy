@@ -6,7 +6,6 @@ import { UserCard } from '@/components/UserCard';
 import { t } from '@/text';
 import { trackFriendsSearch, trackFriendsProfileView } from '@/track';
 import { ItemGroup } from '@/components/ItemGroup';
-import { UpdateBanner } from './UpdateBanner';
 import { Typography } from '@/constants/Typography';
 import { useRouter } from 'expo-router';
 import { layout } from '@/components/layout';
@@ -128,7 +127,6 @@ export const InboxView = React.memo(({}: InboxViewProps) => {
                         )}
                     </View>
                 )}
-                <UpdateBanner />
                 <View style={styles.emptyContainer}>
                     <ActivityIndicator size="large" color={theme.colors.textSecondary} />
                 </View>
@@ -153,7 +151,6 @@ export const InboxView = React.memo(({}: InboxViewProps) => {
                         )}
                     </View>
                 )}
-                <UpdateBanner />
                 <View style={styles.emptyContainer}>
                     <Image
                         source={require('@/assets/images/brutalist/Brutalism-10.png')}
@@ -189,7 +186,6 @@ export const InboxView = React.memo(({}: InboxViewProps) => {
                 alignSelf: 'center',
                 width: '100%'
             }}>
-                <UpdateBanner />
                 
                 {feedItems.length > 0 && (
                     <>
