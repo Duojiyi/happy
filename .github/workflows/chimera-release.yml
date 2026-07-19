@@ -1,0 +1,447 @@
+name: Chimera Protected Client Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit_sha:
+        description: Reviewed 40-character client commit SHA
+        required: true
+        type: string
+      build_run_id:
+        description: Successful Chimera build workflow run ID
+        required: true
+        type: string
+      android_artifact_id:
+        description: Immutable unsigned Android artifact ID
+        required: true
+        type: string
+      web_artifact_id:
+        description: Immutable Web artifact ID
+        required: true
+        type: string
+      trusted_build_workflow_sha:
+        description: Trusted full SHA of the build workflow execution
+        required: true
+        type: string
+      audit_run_ids_json:
+        description: JSON array containing security then maintainability audit check run IDs
+        required: true
+        type: string
+      expected_signer_sha256:
+        description: Expected public Android certificate SHA-256
+        required: true
+        type: string
+      client_release_required:
+        description: Resolve false for a server-only change
+        required: true
+        default: true
+        type: boolean
+      server_deploy_required:
+        description: Require successful server deployment before signing
+        required: true
+        default: false
+        type: boolean
+      server_release_run_id:
+        description: Server release run ID when server deployment is required
+        required: false
+        type: string
+
+concurrency:
+  group: chimera-production-release
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  signing:
+    name: Verify provenance and sign Android release
+    if: ${{ inputs.client_release_required }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: android-signing
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    outputs:
+      no-op: ${{ steps.preflight.outputs.no-op }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      version-name: ${{ steps.metadata.outputs.version-name }}
+      version-code: ${{ steps.metadata.outputs.version-code }}
+    steps:
+      - name: Validate reviewed release and independent audit identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO='${{ github.repository }}'
+          SHA='${{ inputs.reviewed_commit_sha }}'
+          RUN='${{ inputs.build_run_id }}'
+          ANDROID_ARTIFACT_ID='${{ inputs.android_artifact_id }}'
+          TRUSTED_WORKFLOW_SHA='${{ inputs.trusted_build_workflow_sha }}'
+          AUDIT_RUN_IDS='${{ inputs.audit_run_ids_json }}'
+          SECURITY_AUDIT_RUN_ID=$(jq -er 'if type == "array" and length == 2 then .[0] | tostring else error("two audit IDs required") end' <<<"$AUDIT_RUN_IDS")
+          MAINTAINABILITY_AUDIT_RUN_ID=$(jq -er 'if type == "array" and length == 2 then .[1] | tostring else error("two audit IDs required") end' <<<"$AUDIT_RUN_IDS")
+          EXPECTED_SIGNER='${{ inputs.expected_signer_sha256 }}'
+          test "${{ github.ref }}" = 'refs/heads/main'
+          printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$TRUSTED_WORKFLOW_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s' "$RUN" | grep -Eq '^[1-9][0-9]*$'
+          printf '%s' "$ANDROID_ARTIFACT_ID" | grep -Eq '^[1-9][0-9]*$'
+          test "$EXPECTED_SIGNER" = '58AA84B6C0D84963E841EED5EF953FC35D4B17D612C923D19A2264F96E4C8A93'
+          gh api "repos/$REPO/actions/runs/$RUN" > /tmp/build-run.json
+          jq -e --arg repo "$REPO" --arg sha "$SHA" --arg workflowSha "$TRUSTED_WORKFLOW_SHA" '
+            .repository.full_name == $repo and .head_sha == $sha and .head_sha == $workflowSha and
+            .path == ".github/workflows/chimera-build.yml" and .conclusion == "success"
+          ' /tmp/build-run.json
+          test "$SECURITY_AUDIT_RUN_ID" != "$MAINTAINABILITY_AUDIT_RUN_ID"
+          for SPEC in "$SECURITY_AUDIT_RUN_ID:Chimera Security Audit" "$MAINTAINABILITY_AUDIT_RUN_ID:Chimera Maintainability Audit"; do
+            ID=${SPEC%%:*}; NAME=${SPEC#*:}
+            printf '%s' "$ID" | grep -Eq '^[1-9][0-9]*$'
+            gh api "repos/$REPO/check-runs/$ID" > "/tmp/check-$ID.json"
+            jq -e --arg sha "$SHA" --arg name "$NAME" '.head_sha == $sha and .name == $name and .status == "completed" and .conclusion == "success" and .app.slug == "github-actions"' "/tmp/check-$ID.json"
+            ACTION_RUN=$(jq -er '.details_url | capture("/actions/runs/(?<id>[0-9]+)").id' "/tmp/check-$ID.json")
+            EXPECTED_PATH='.github/workflows/chimera-audit-security.yml'
+            test "$NAME" = 'Chimera Security Audit' || EXPECTED_PATH='.github/workflows/chimera-audit-maintainability.yml'
+            gh api "repos/$REPO/actions/runs/$ACTION_RUN" > "/tmp/audit-run-$ID.json"
+            jq -e --arg sha "$SHA" --arg path "$EXPECTED_PATH" '.head_sha == $sha and .path == $path and .conclusion == "success"' "/tmp/audit-run-$ID.json"
+          done
+          if test '${{ inputs.server_deploy_required }}' = 'true'; then
+            SERVER_RUN='${{ inputs.server_release_run_id }}'
+            printf '%s' "$SERVER_RUN" | grep -Eq '^[1-9][0-9]*$'
+            gh api "repos/$REPO/actions/runs/$SERVER_RUN" > /tmp/server-run.json
+            jq -e --arg sha "$SHA" '.path == ".github/workflows/chimera-server-release.yml" and .head_sha == $sha and .status == "completed" and .conclusion == "success"' /tmp/server-run.json
+            gh api "repos/$REPO/actions/runs/$SERVER_RUN/jobs" --jq '.jobs[] | select(.name == "Deploy attested server digest") | select(.conclusion == "success") | .id' | grep -Eq '^[1-9][0-9]*$'
+          fi
+
+      - name: Download unsigned Android artifact by immutable ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.build_run_id }}
+          artifact-ids: ${{ inputs.android_artifact_id }}
+          github-token: ${{ github.token }}
+          path: candidate/android
+
+      - name: Verify build attestation and release input binding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(find candidate/android -type f | wc -l)" -eq 2
+          APK=candidate/android/Chimera-unsigned.apk
+          INPUT=candidate/android/release-input.json
+          test -f "$APK" && test -f "$INPUT"
+          ACTUAL_SHA=$(sha256sum "$APK" | cut -d ' ' -f 1)
+          ACTUAL_SIZE=$(stat -c '%s' "$APK")
+          jq -e --arg repo '${{ github.repository }}' --arg sha '${{ inputs.reviewed_commit_sha }}' --arg run '${{ inputs.build_run_id }}' --arg digest "$ACTUAL_SHA" --arg size "$ACTUAL_SIZE" '
+            keys == ["artifactKind","artifactName","buildRunId","commitSha","packageName","schemaVersion","sha256","size","versionCode","versionName"] and
+            .schemaVersion == 1 and .artifactKind == "android-apk-unsigned" and .artifactName == "chimera-android-unsigned" and
+            .commitSha == $sha and .buildRunId == $run and .packageName == "org.chimerahub.chimera" and
+            .sha256 == $digest and .size == ($size | tonumber) and (.versionCode | type) == "number"
+          ' "$INPUT"
+          gh attestation verify "$APK" --repo '${{ github.repository }}' \
+            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-build.yml@refs/heads/main' \
+            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --signer-repo '${{ github.repository }}' \
+            --signer-workflow '${{ github.repository }}/.github/workflows/chimera-build.yml' \
+            --signer-digest '${{ inputs.trusted_build_workflow_sha }}' \
+            --source-digest '${{ inputs.reviewed_commit_sha }}' --source-ref 'refs/heads/main' \
+            --deny-self-hosted-runners --format json > /tmp/android-attestation.json
+          jq -e --arg digest "$ACTUAL_SHA" '
+            length >= 1 and any(.[].verificationResult.statement.subject[]?; .digest.sha256 == $digest)
+          ' /tmp/android-attestation.json
+
+      - name: Setup fixed Android build tools
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+
+      - name: Install Android build-tools 35.0.0
+        run: sdkmanager 'build-tools;35.0.0'
+
+      - name: Verify unsigned package and version before signing
+        id: metadata
+        run: |
+          set -euo pipefail
+          APK=candidate/android/Chimera-unsigned.apk
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          AAPT2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          VERSION_NAME=$(jq -r '.versionName' candidate/android/release-input.json)
+          VERSION_CODE=$(jq -r '.versionCode' candidate/android/release-input.json)
+          TAG="app-v$VERSION_NAME"
+          if "$APKSIGNER" verify "$APK" >/tmp/pre-sign.txt 2>&1; then
+            echo 'unsigned APK unexpectedly verifies' >&2
+            exit 1
+          fi
+          grep -Eiq 'DOES NOT VERIFY|not verified|failed' /tmp/pre-sign.txt
+          "$AAPT2" dump badging "$APK" | grep -F "package: name='org.chimerahub.chimera' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version-name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "version-code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag release and versionCode idempotency before signing
+        id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO='${{ github.repository }}'
+          TAG='${{ steps.metadata.outputs.tag }}'
+          SHA='${{ inputs.reviewed_commit_sha }}'
+          VERSION='${{ steps.metadata.outputs.version-name }}'
+          VERSION_CODE='${{ steps.metadata.outputs.version-code }}'
+          echo 'no-op=false' >> "$GITHUB_OUTPUT"
+          if gh api "repos/$REPO/releases/tags/$TAG" >/tmp/existing-release.json 2>/dev/null; then
+            mkdir -p /tmp/existing
+            EXPECTED_ASSETS=$(printf '%s\n' "Chimera-$VERSION.apk" "Chimera-$VERSION.apk.sha256" "Chimera-$VERSION-web.tar.gz" "Chimera-$VERSION-web.tar.gz.sha256" chimera-update.json release-metadata.json | sort)
+            ACTUAL_ASSETS=$(jq -r '.assets[].name' /tmp/existing-release.json | sort)
+            test "$ACTUAL_ASSETS" = "$EXPECTED_ASSETS"
+            gh release download "$TAG" --repo "$REPO" --pattern chimera-update.json --pattern release-metadata.json --dir /tmp/existing
+            UNSIGNED_SHA=$(jq -r '.sha256' candidate/android/release-input.json)
+            jq -e --arg sha "$SHA" --arg version "$VERSION" --argjson code "$VERSION_CODE" --arg signer '${{ inputs.expected_signer_sha256 }}' '.payload.commitSha == $sha and .payload.versionName == $version and .payload.versionCode == $code and .payload.packageName == "org.chimerahub.chimera" and .payload.signerSha256 == $signer' /tmp/existing/chimera-update.json
+            jq -e --arg sha "$SHA" --arg unsigned "$UNSIGNED_SHA" --arg version "$VERSION" --argjson code "$VERSION_CODE" --arg signer '${{ inputs.expected_signer_sha256 }}' '.commitSha == $sha and .unsignedSha256 == $unsigned and .versionName == $version and .versionCode == $code and .signerSha256 == $signer' /tmp/existing/release-metadata.json
+            test "$(jq -r '.payload.sha256' /tmp/existing/chimera-update.json)" = "$(jq -r '.signedSha256' /tmp/existing/release-metadata.json)"
+            TARGET=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.sha')
+            test "$TARGET" = "$SHA"
+            echo 'no-op=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo 'tag occupied without matching immutable release' >&2
+            exit 1
+          fi
+          gh api --paginate "repos/$REPO/releases?per_page=100" --jq '.[] | .assets[]? | select(.name == "chimera-update.json") | .url' | while read -r URL; do
+            test -n "$URL" || continue
+            EXISTING_CODE=$(gh api "$URL" -H 'Accept: application/octet-stream' --jq '.payload.versionCode')
+            test "$EXISTING_CODE" != "$VERSION_CODE" || { echo 'versionCode already occupied' >&2; exit 1; }
+          done
+
+      - name: Sign APK and canonical Ed25519 update manifest
+        if: ${{ steps.preflight.outputs.no-op != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHIMERA_ANDROID_KEYSTORE_BASE64: ${{ secrets.CHIMERA_ANDROID_KEYSTORE_BASE64 }}
+          CHIMERA_ANDROID_STORE_PASSWORD: ${{ secrets.CHIMERA_ANDROID_STORE_PASSWORD }}
+          CHIMERA_ANDROID_KEY_PASSWORD: ${{ secrets.CHIMERA_ANDROID_KEY_PASSWORD }}
+          CHIMERA_MANIFEST_PRIVATE_KEY_PKCS8_BASE64: ${{ secrets.CHIMERA_MANIFEST_PRIVATE_KEY_PKCS8_BASE64 }}
+        run: |
+          set -euo pipefail
+          PRIVATE="$RUNNER_TEMP/chimera-private"
+          mkdir -m 700 "$PRIVATE"
+          cleanup() { shred -u "$PRIVATE/chimera-release.jks" "$PRIVATE/manifest.pk8" 2>/dev/null || true; rm -rf "$PRIVATE"; }
+          trap cleanup EXIT
+          printf '%s' "$CHIMERA_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$PRIVATE/chimera-release.jks"
+          printf '%s' "$CHIMERA_MANIFEST_PRIVATE_KEY_PKCS8_BASE64" | base64 --decode > "$PRIVATE/manifest.pk8"
+          chmod 600 "$PRIVATE/chimera-release.jks" "$PRIVATE/manifest.pk8"
+          REPO='${{ github.repository }}'
+          TAG='${{ steps.metadata.outputs.tag }}'
+          if gh api "repos/$REPO/releases/tags/$TAG" >/dev/null 2>&1 || gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo 'release metadata became occupied before signing' >&2
+            exit 1
+          fi
+          mkdir -p signed
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          AAPT2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          "$APKSIGNER" sign --ks "$PRIVATE/chimera-release.jks" --ks-key-alias chimera-release \
+            --ks-pass env:CHIMERA_ANDROID_STORE_PASSWORD --key-pass env:CHIMERA_ANDROID_KEY_PASSWORD \
+            --out signed/Chimera.apk candidate/android/Chimera-unsigned.apk
+          "$APKSIGNER" verify --verbose --print-certs signed/Chimera.apk > /tmp/post-sign.txt
+          ACTUAL_SIGNER=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' /tmp/post-sign.txt | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')
+          test "$ACTUAL_SIGNER" = '${{ inputs.expected_signer_sha256 }}'
+          VERSION_NAME='${{ steps.metadata.outputs.version-name }}'
+          VERSION_CODE='${{ steps.metadata.outputs.version-code }}'
+          "$AAPT2" dump badging signed/Chimera.apk | grep -F "package: name='org.chimerahub.chimera' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
+          SIGNED_SHA=$(sha256sum signed/Chimera.apk | cut -d ' ' -f 1)
+          SIGNED_SIZE=$(stat -c '%s' signed/Chimera.apk)
+          UNSIGNED_SHA=$(jq -r '.sha256' candidate/android/release-input.json)
+          printf '%s  %s\n' "$SIGNED_SHA" Chimera.apk > signed/Chimera.apk.sha256
+          export VERSION_NAME VERSION_CODE SIGNED_SHA SIGNED_SIZE UNSIGNED_SHA ACTUAL_SIGNER
+          export REVIEWED_SHA='${{ inputs.reviewed_commit_sha }}'
+          export KEY_PATH="$PRIVATE/manifest.pk8"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+            ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+          const payload = {
+            schemaVersion: 1,
+            packageName: 'org.chimerahub.chimera',
+            versionName: process.env.VERSION_NAME,
+            versionCode: Number(process.env.VERSION_CODE),
+            apkPath: `/downloads/chimera-${process.env.VERSION_NAME}-${process.env.SIGNED_SHA.slice(0, 12)}.apk`,
+            size: Number(process.env.SIGNED_SIZE),
+            sha256: process.env.SIGNED_SHA,
+            signerSha256: process.env.ACTUAL_SIGNER,
+            commitSha: process.env.REVIEWED_SHA,
+            publishedAt: new Date().toISOString(),
+          };
+          const bytes = Buffer.from(JSON.stringify(canonical(payload)), 'utf8');
+          const key = crypto.createPrivateKey(fs.readFileSync(process.env.KEY_PATH));
+          if (key.asymmetricKeyType !== 'ed25519') throw new Error('manifest key must be Ed25519');
+          const publicDer = crypto.createPublicKey(key).export({ format: 'der', type: 'spki' });
+          if (publicDer.subarray(-32).toString('base64url') !== 'ze6ngKGbk7dgWN5d6rXGO0YRE5y54hbLMULFoW5YTHc') throw new Error('manifest key does not match pinned public key');
+          const signatureBytes = crypto.sign(null, bytes, key);
+          if (!crypto.verify(null, bytes, crypto.createPublicKey(key), signatureBytes)) throw new Error('manifest signature self-test failed');
+          const signature = signatureBytes.toString('base64url');
+          fs.writeFileSync('signed/chimera-update.json', `${JSON.stringify({ payload, signature })}\n`, { mode: 0o644 });
+          const metadata = {
+            schemaVersion: 1, commitSha: process.env.REVIEWED_SHA, versionName: process.env.VERSION_NAME,
+            versionCode: Number(process.env.VERSION_CODE), unsignedSha256: process.env.UNSIGNED_SHA,
+            signedSha256: process.env.SIGNED_SHA, signedSize: Number(process.env.SIGNED_SIZE), signerSha256: process.env.ACTUAL_SIGNER,
+          };
+          fs.writeFileSync('signed/release-metadata.json', `${JSON.stringify(metadata)}\n`, { mode: 0o644 });
+          NODE
+          MANIFEST_SHA=$(sha256sum signed/chimera-update.json | cut -d ' ' -f 1)
+          jq --arg manifestSha256 "$MANIFEST_SHA" '. + {manifestSha256: $manifestSha256}' signed/release-metadata.json > signed/release-metadata.next
+          mv signed/release-metadata.next signed/release-metadata.json
+
+      - name: Upload signed release handoff
+        if: ${{ steps.preflight.outputs.no-op != 'true' }}
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: chimera-signed-release
+          path: signed
+          if-no-files-found: error
+          retention-days: 3
+
+  signed-provenance:
+    name: Attest signed client artifacts
+    needs: signing
+    if: ${{ inputs.client_release_required && needs.signing.outputs.no-op != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download signed release by immutable artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.signing.outputs.artifact-id }}
+          path: signed-attest
+
+      - name: Verify exact signed bytes and recorded digests
+        run: |
+          set -euo pipefail
+          test "$(find signed-attest -type f | wc -l)" -eq 4
+          APK_SHA=$(sha256sum signed-attest/Chimera.apk | cut -d ' ' -f 1)
+          MANIFEST_SHA=$(sha256sum signed-attest/chimera-update.json | cut -d ' ' -f 1)
+          jq -e --arg commit '${{ inputs.reviewed_commit_sha }}' --arg apk "$APK_SHA" --arg manifest "$MANIFEST_SHA" --arg signer '${{ inputs.expected_signer_sha256 }}' '
+            .commitSha == $commit and .signedSha256 == $apk and .manifestSha256 == $manifest and .signerSha256 == $signer
+          ' signed-attest/release-metadata.json
+          test "$(jq -r '.payload.sha256' signed-attest/chimera-update.json)" = "$APK_SHA"
+
+      - name: Attest exact signed APK
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: signed-attest/Chimera.apk
+
+      - name: Attest exact signed update manifest
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: signed-attest/chimera-update.json
+
+  publication:
+    name: Publish immutable client release
+    needs: [signing, signed-provenance]
+    if: ${{ inputs.client_release_required && needs.signing.outputs.no-op != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production-release
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    steps:
+      - name: Download signed release by immutable artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.signing.outputs.artifact-id }}
+          path: publish/signed
+
+      - name: Download Web release by immutable artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.build_run_id }}
+          artifact-ids: ${{ inputs.web_artifact_id }}
+          github-token: ${{ github.token }}
+          path: publish/web
+
+      - name: Reverify signed and Web artifact bindings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(find publish/signed -type f | wc -l)" -eq 4
+          test "$(find publish/web -type f | wc -l)" -eq 2
+          test -f publish/signed/Chimera.apk
+          test -f publish/signed/Chimera.apk.sha256
+          test -f publish/signed/chimera-update.json
+          test -f publish/signed/release-metadata.json
+          test -f publish/web/Chimera-web.tar.gz
+          test -f publish/web/release-input.json
+          APK_SHA=$(sha256sum publish/signed/Chimera.apk | cut -d ' ' -f 1)
+          MANIFEST_SHA=$(sha256sum publish/signed/chimera-update.json | cut -d ' ' -f 1)
+          WEB_SHA=$(sha256sum publish/web/Chimera-web.tar.gz | cut -d ' ' -f 1)
+          jq -e --arg sha '${{ inputs.reviewed_commit_sha }}' --arg apk "$APK_SHA" --arg manifest "$MANIFEST_SHA" --argjson code '${{ needs.signing.outputs.version-code }}' '.commitSha == $sha and .signedSha256 == $apk and .manifestSha256 == $manifest and .versionCode == $code' publish/signed/release-metadata.json
+          jq -e --arg sha '${{ inputs.reviewed_commit_sha }}' --arg run '${{ inputs.build_run_id }}' --arg digest "$WEB_SHA" '.commitSha == $sha and .buildRunId == $run and .sha256 == $digest and .artifactKind == "web-archive"' publish/web/release-input.json
+          for FILE in publish/signed/Chimera.apk publish/signed/chimera-update.json; do
+            gh attestation verify "$FILE" --repo '${{ github.repository }}' \
+              --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-release.yml@refs/heads/main' \
+              --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              --signer-repo '${{ github.repository }}' \
+              --signer-workflow '${{ github.repository }}/.github/workflows/chimera-release.yml' \
+              --signer-digest '${{ inputs.reviewed_commit_sha }}' \
+              --source-digest '${{ inputs.reviewed_commit_sha }}' --source-ref 'refs/heads/main' \
+              --deny-self-hosted-runners
+          done
+          gh attestation verify publish/web/Chimera-web.tar.gz --repo '${{ github.repository }}' \
+            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-build.yml@refs/heads/main' \
+            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --signer-repo '${{ github.repository }}' \
+            --signer-workflow '${{ github.repository }}/.github/workflows/chimera-build.yml' \
+            --signer-digest '${{ inputs.trusted_build_workflow_sha }}' \
+            --source-digest '${{ inputs.reviewed_commit_sha }}' --source-ref 'refs/heads/main' \
+            --deny-self-hosted-runners
+          VERSION='${{ needs.signing.outputs.version-name }}'
+          mv publish/signed/Chimera.apk "publish/signed/Chimera-$VERSION.apk"
+          mv publish/signed/Chimera.apk.sha256 "publish/signed/Chimera-$VERSION.apk.sha256"
+          printf '%s  %s\n' "$APK_SHA" "Chimera-$VERSION.apk" > "publish/signed/Chimera-$VERSION.apk.sha256"
+          mv publish/web/Chimera-web.tar.gz "publish/web/Chimera-$VERSION-web.tar.gz"
+          printf '%s  %s\n' "$WEB_SHA" "Chimera-$VERSION-web.tar.gz" > "publish/web/Chimera-$VERSION-web.tar.gz.sha256"
+
+      - name: Recheck occupancy and publish without replacement
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO='${{ github.repository }}'
+          TAG='${{ needs.signing.outputs.tag }}'
+          SHA='${{ inputs.reviewed_commit_sha }}'
+          VERSION='${{ needs.signing.outputs.version-name }}'
+          VERSION_CODE='${{ needs.signing.outputs.version-code }}'
+          if gh api "repos/$REPO/releases/tags/$TAG" >/dev/null 2>&1; then
+            echo 'existing release appeared before publication; immutable publication refused' >&2
+            exit 1
+          fi
+          if gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo 'existing tag appeared before publication; immutable publication refused' >&2
+            exit 1
+          fi
+          jq -e --arg sha "$SHA" --argjson code "$VERSION_CODE" '.payload.commitSha == $sha and .payload.versionCode == $code' publish/signed/chimera-update.json
+          gh api --method POST "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/tmp/tag.json
+          test "$(jq -r '.object.sha' /tmp/tag.json)" = "$SHA"
+          gh release create "$TAG" --repo "$REPO" --verify-tag --title "Chimera $VERSION" \
+            --notes "Immutable Chimera Android and Web release for $SHA" \
+            "publish/signed/Chimera-$VERSION.apk" \
+            "publish/signed/Chimera-$VERSION.apk.sha256" \
+            'publish/signed/chimera-update.json' \
+            'publish/signed/release-metadata.json' \
+            "publish/web/Chimera-$VERSION-web.tar.gz" \
+            "publish/web/Chimera-$VERSION-web.tar.gz.sha256"
+          gh api "repos/$REPO/releases/tags/$TAG" --jq '.assets | length' | grep -Fx 6
+          test "$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.sha')" = "$SHA"
