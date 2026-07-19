@@ -1,11 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { TokenStorage, AuthCredentials } from '@/auth/tokenStorage';
 import { syncCreate } from '@/sync/sync';
-import * as Updates from 'expo-updates';
-import { clearPersistence, loadRegisteredPushToken } from '@/sync/persistence';
-import { unregisterPushToken } from '@/sync/apiPush';
-import { Platform } from 'react-native';
-import { trackLogout } from '@/track';
+import { clearPersistence } from '@/sync/persistence';
 
 interface AuthContextType {
     isAuthenticated: boolean;
@@ -38,15 +34,6 @@ export function AuthProvider({ children, initialCredentials }: { children: React
     };
 
     const logout = async () => {
-        trackLogout();
-        const registeredPushToken = credentials ? loadRegisteredPushToken() : null;
-        if (credentials && registeredPushToken) {
-            try {
-                await unregisterPushToken(credentials, registeredPushToken);
-            } catch (error) {
-                console.log('Failed to unregister push token during logout:', error);
-            }
-        }
         clearPersistence();
         await TokenStorage.removeCredentials();
         
@@ -54,16 +41,6 @@ export function AuthProvider({ children, initialCredentials }: { children: React
         setCredentials(null);
         setIsAuthenticated(false);
         
-        if (Platform.OS === 'web') {
-            window.location.reload();
-        } else {
-            try {
-                await Updates.reloadAsync();
-            } catch (error) {
-                // In dev mode, reloadAsync will throw ERR_UPDATES_DISABLED
-                console.log('Reload failed (expected in dev mode):', error);
-            }
-        }
     };
 
     return (

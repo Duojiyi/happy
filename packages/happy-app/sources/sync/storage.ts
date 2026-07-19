@@ -168,11 +168,11 @@ interface StorageState {
     realtimeStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
     realtimeMode: 'idle' | 'agent-speaking' | 'user-speaking';
     voiceSessionGeneration: number;
+    nativeUpdateStatus: { available: boolean; updateUrl?: string } | null;
     socketStatus: 'disconnected' | 'connecting' | 'connected' | 'error';
     socketLastConnectedAt: number | null;
     socketLastDisconnectedAt: number | null;
     isDataReady: boolean;
-    nativeUpdateStatus: { available: boolean; updateUrl?: string } | null;
     applySessions: (sessions: (Omit<Session, 'presence'> & { presence?: "online" | number })[]) => void;
     applyMachines: (machines: Machine[], replace?: boolean) => void;
     deleteMachine: (machineId: string) => void;
@@ -192,12 +192,12 @@ interface StorageState {
     applyProjectFiles: (pathKey: string, files: ProjectFilesList | null) => void;
     getSessionPathKey: (sessionId: string) => string | null;
     applyFileCache: (sessionId: string, filePath: string, content: string | null, diff: string | null, isBinary: boolean) => void;
-    applyNativeUpdateStatus: (status: { available: boolean; updateUrl?: string } | null) => void;
     isMutableToolCall: (sessionId: string, callId: string) => boolean;
     setRealtimeStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void;
     setRealtimeMode: (mode: 'idle' | 'agent-speaking' | 'user-speaking', immediate?: boolean) => void;
     clearRealtimeModeDebounce: () => void;
     incrementVoiceSessionGeneration: () => void;
+    applyNativeUpdateStatus: (status: { available: boolean; updateUrl?: string } | null) => void;
     setSocketStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void;
     getActiveSessions: () => Session[];
     updateSessionDraft: (sessionId: string, draft: string | null) => void;
@@ -361,11 +361,11 @@ export const storage = create<StorageState>()((set, get) => {
         realtimeStatus: 'disconnected',
         realtimeMode: 'idle',
         voiceSessionGeneration: 0,
+        nativeUpdateStatus: null,
         socketStatus: 'disconnected',
         socketLastConnectedAt: null,
         socketLastDisconnectedAt: null,
         isDataReady: false,
-        nativeUpdateStatus: null,
         unreadSessionIds: new Set<string>(),
         currentViewingSessionId: null,
         isMutableToolCall: (sessionId: string, callId: string) => {
@@ -906,10 +906,7 @@ export const storage = create<StorageState>()((set, get) => {
                 }
             }
         })),
-        applyNativeUpdateStatus: (status: { available: boolean; updateUrl?: string } | null) => set((state) => ({
-            ...state,
-            nativeUpdateStatus: status
-        })),
+        applyNativeUpdateStatus: (status) => set({ nativeUpdateStatus: status }),
         setRealtimeStatus: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => set((state) => ({
             ...state,
             realtimeStatus: status

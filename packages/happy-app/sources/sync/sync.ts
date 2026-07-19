@@ -1,4 +1,3 @@
-import Constants from 'expo-constants';
 import { apiSocket, getCurrentAppState, getHappyClientId } from '@/sync/apiSocket';
 import { notifyUnreadMessage } from '@/sync/webTabTitle';
 import { AuthCredentials } from '@/auth/tokenStorage';
@@ -21,24 +20,15 @@ import { InvalidateSync } from '@/utils/sync';
 import { ActivityUpdateAccumulator } from './reducer/activityUpdateAccumulator';
 import { randomUUID } from 'expo-crypto';
 import * as Notifications from 'expo-notifications';
-import { syncCurrentPushToken } from './pushRegistration';
 import { Platform, AppState, type AppStateStatus } from 'react-native';
 import { isRunningOnMac } from '@/utils/platform';
 import { NormalizedMessage, normalizeRawMessage, RawRecord } from './typesRaw';
 import { applySettings, Settings, settingsDefaults, settingsParse, settingsToSyncPayload, SUPPORTED_SCHEMA_VERSION } from './settings';
 import { Profile, profileParse } from './profile';
 import { loadPendingSettings, savePendingSettings } from './persistence';
-import {
-    initializeTracking,
-    trackGitHubConnected,
-    trackMessageSent,
-    tracking,
-    trackPaywallCancelled,
-    trackPaywallError,
-    trackPaywallPresented,
-    trackPaywallPurchased,
-    trackPaywallRestored,
-} from '@/track';
+import { trackGitHubConnected, trackMessageSent, trackPaywallCancelled, trackPaywallError, trackPaywallPresented, trackPaywallPurchased, trackPaywallRestored, tracking } from '@/track';
+import Constants from 'expo-constants';
+import { syncCurrentPushToken } from './pushRegistration';
 import type { MessageSentSource } from '@/track';
 import { parseToken } from '@/utils/parseToken';
 import { RevenueCat, LogLevel, PaywallResult } from './revenueCat';
@@ -47,7 +37,6 @@ import { config } from '@/config';
 import { log } from '@/log';
 import { gitStatusSync } from './gitStatusSync';
 import { AsyncLock } from '@/utils/lock';
-import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { Message } from './typesMessage';
 import { EncryptionCache } from './encryption/encryptionCache';
 import { systemPrompt } from './prompt/systemPrompt';
@@ -129,8 +118,6 @@ class Sync {
     private profileSync: InvalidateSync;
     private purchasesSync: InvalidateSync;
     private machinesSync: InvalidateSync;
-    private pushTokenSync: InvalidateSync;
-    private nativeUpdateSync: InvalidateSync;
     private artifactsSync: InvalidateSync;
     private friendsSync: InvalidateSync;
     private friendRequestsSync: InvalidateSync;
@@ -153,16 +140,11 @@ class Sync {
         this.profileSync = new InvalidateSync(this.fetchProfile);
         this.purchasesSync = new InvalidateSync(this.syncPurchases);
         this.machinesSync = new InvalidateSync(this.fetchMachines);
-        this.nativeUpdateSync = new InvalidateSync(this.fetchNativeUpdate);
         this.artifactsSync = new InvalidateSync(this.fetchArtifactsList);
         this.friendsSync = new InvalidateSync(this.fetchFriends);
         this.friendRequestsSync = new InvalidateSync(this.fetchFriendRequests);
         this.feedSync = new InvalidateSync(this.fetchFeed);
 
-        const registerPushToken = async () => {
-            await this.registerPushToken();
-        }
-        this.pushTokenSync = new InvalidateSync(registerPushToken);
         this.activityAccumulator = new ActivityUpdateAccumulator(this.flushActivityUpdates.bind(this), 2000);
 
         // Listen for app state changes to refresh purchases
@@ -190,9 +172,7 @@ class Sync {
                 this.purchasesSync.invalidate();
                 this.profileSync.invalidate();
                 this.machinesSync.invalidate();
-                this.pushTokenSync.invalidate();
                 this.sessionsSync.invalidate();
-                this.nativeUpdateSync.invalidate();
                 log.log('📱 App became active: Invalidating artifacts sync');
                 this.artifactsSync.invalidate();
                 this.friendsSync.invalidate();
@@ -247,19 +227,6 @@ class Sync {
 
     async #init() {
 
-        // Subscribe to updates
-        this.subscribeToUpdates();
-
-        // Sync initial PostHog opt-out state with stored settings
-        if (tracking) {
-            const currentSettings = storage.getState().settings;
-            if (currentSettings.analyticsOptOut) {
-                tracking.optOut();
-            } else {
-                tracking.optIn();
-            }
-        }
-
         // Invalidate sync
         log.log('🔄 #init: Invalidating all syncs');
         this.sessionsSync.invalidate();
@@ -267,8 +234,6 @@ class Sync {
         this.profileSync.invalidate();
         this.purchasesSync.invalidate();
         this.machinesSync.invalidate();
-        this.pushTokenSync.invalidate();
-        this.nativeUpdateSync.invalidate();
         this.friendsSync.invalidate();
         this.friendRequestsSync.invalidate();
         this.artifactsSync.invalidate();
@@ -297,7 +262,6 @@ class Sync {
         // Notify voice assistant about session visibility
         const session = storage.getState().sessions[sessionId];
         if (session) {
-            voiceHooks.onSessionFocus(sessionId, session.metadata || undefined);
         }
     }
 
@@ -753,16 +717,6 @@ class Sync {
         // Save pending settings
         this.pendingSettings = { ...this.pendingSettings, ...delta };
         savePendingSettings(this.pendingSettings);
-
-        // Sync PostHog opt-out state if it was changed
-        if (tracking && 'analyticsOptOut' in delta) {
-            const currentSettings = storage.getState().settings;
-            if (currentSettings.analyticsOptOut) {
-                tracking.optOut();
-            } else {
-                tracking.optIn();
-            }
-        }
 
         // Invalidate settings sync
         this.settingsSync.invalidate();
@@ -2312,7 +2266,6 @@ class Sync {
                         const requestIds = Object.keys(agentState.requests);
                         const firstRequest = agentState.requests[requestIds[0]];
                         const toolName = firstRequest?.tool;
-                        voiceHooks.onPermissionRequested(updateData.body.id, requestIds[0], toolName, firstRequest?.arguments);
                     }
 
                     // Re-fetch messages on control handoff so the newly active
@@ -2738,10 +2691,8 @@ class Sync {
             }
         }
         if (m.length > 0) {
-            voiceHooks.onMessages(sessionId, m);
         }
         if (result.hasReadyEvent) {
-            voiceHooks.onReady(sessionId);
         }
         if (result.enteredPlanMode) {
             // The EnterPlanMode auto-switch only wrote the local mirror; push
@@ -2765,12 +2716,10 @@ class Sync {
         let isActive = new Set(newActive.map(s => s.id));
         for (let s of active) {
             if (!isActive.has(s.id)) {
-                voiceHooks.onSessionOffline(s.id, s.metadata ?? undefined);
             }
         }
         for (let s of newActive) {
             if (!wasActive.has(s.id)) {
-                voiceHooks.onSessionOnline(s.id, s.metadata ?? undefined);
             }
         }
     }
@@ -2812,8 +2761,6 @@ async function syncInit(credentials: AuthCredentials, restore: boolean) {
     }
     const encryption = await Encryption.create(secretKey);
 
-    // Initialize tracking
-    initializeTracking(encryption.anonID);
 
     // Initialize socket connection
     const API_ENDPOINT = getServerUrl();
