@@ -93,6 +93,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     foreach ($pattern in @('\^\[a-f0-9\]\{40\}\$', 'path\.is_absolute\(\)', 'member\.issym\(\)', 'current-image\.next', 'curl.*127\.0\.0\.1:3000/health')) {
         Assert-Match $Sources.bootstrap $pattern "bootstrap deployment missing: $pattern"
     }
+    Assert-Match $Sources.bootstrap 'tls_healthy=0[\s\S]*for attempt in \{1\.\.90\}[\s\S]*curl.*--proto ''=https''[\s\S]*https://39\.98\.68\.173/health[\s\S]*\[\[ "\$tls_healthy" -eq 1 \]\]' 'bootstrap must wait with a bounded retry for initial ACME certificate readiness'
     Assert-NoMatch $Sources.bootstrap 'ip-(?:cert|key)\.pem' 'bootstrap must let Caddy provision and renew the IP certificate automatically'
     return $true
 }
@@ -133,5 +134,8 @@ Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'arbitrary command'
 $mutated = $sources.Clone()
 $mutated.caddy = $sources.caddy.Replace('profile shortlived', 'tls internal')
 Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'automatic trusted IP certificate'
+$mutated = $sources.Clone()
+$mutated.bootstrap = $sources.bootstrap.Replace('for attempt in {1..90}', 'for attempt in {1..1}')
+Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'ACME certificate readiness'
 
 Write-Output 'Chimera release helper contract and mutation tests passed.'

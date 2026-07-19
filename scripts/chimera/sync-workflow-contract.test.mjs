@@ -59,6 +59,8 @@ function validateSyncWorkflow(source) {
   const blockedRun = jobRun(blocked);
   assert.match(blockedRun, /git ls-remote --exit-code/);
   assert.match(blockedRun, /TITLE="Upstream sync blocked: \$SHA"/);
+  assert.match(blockedRun, /gh api --paginate --slurp .*issues\?state=open&per_page=100/);
+  assert.match(blockedRun, /select\(\.pull_request == null\)/);
   assert.match(blockedRun, /select\(\.title == \$title\)/);
   assert.match(blockedRun, /duplicate blocked issues/);
 
@@ -93,6 +95,7 @@ test('contract mutations fail closed', async () => {
     ['missing post-merge dispatch', source.replace("          gh workflow run chimera-build.yml --repo '${{ github.repository }}' --ref main\n", '')],
     ['missing exact head SHA', source.replaceAll(' and .head_sha == $sha', '')],
     ['missing blocked stage', source.replace('needs: [prepare, publish, dispatch, merge-docs, gate-executable, post-merge-build]', 'needs: [prepare, publish, dispatch, merge-docs, gate-executable]')],
+    ['non-paginated issue lookup', source.replace('gh api --paginate --slurp', 'gh api')],
   ];
   for (const [name, mutation] of mutations) assert.throws(() => validateSyncWorkflow(mutation), name);
 });

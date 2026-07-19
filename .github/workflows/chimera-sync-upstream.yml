@@ -281,6 +281,6 @@ jobs:
             FILES=$(jq -r '(.files // []) | map(select(test("^[A-Za-z0-9._/-]+$")) | "- `" + . + "`") | join("\n")' handoff/result.json)
           fi
           BODY=$(printf 'Reason: %s\n\nFailed stages:\n%s\n\nFiles:\n%s\n' "$REASON" "${FAILED_STAGES:-- prepare: blocked}" "${FILES:-- none}")
-          gh issue list --repo '${{ github.repository }}' --state open --limit 100 --json number,title > /tmp/open-issues.json
+          gh api --paginate --slurp "repos/${{ github.repository }}/issues?state=open&per_page=100" --jq '[.[][] | select(.pull_request == null) | {number,title}]' > /tmp/open-issues.json
           ISSUE=$(jq -r --arg title "$TITLE" '[.[] | select(.title == $title)] | if length == 0 then empty elif length == 1 then .[0].number else error("duplicate blocked issues") end' /tmp/open-issues.json)
           if test -n "$ISSUE"; then gh issue edit "$ISSUE" --repo '${{ github.repository }}' --body "$BODY"; else gh issue create --repo '${{ github.repository }}' --title "$TITLE" --body "$BODY"; fi
