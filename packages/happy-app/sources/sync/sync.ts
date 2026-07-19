@@ -147,13 +147,6 @@ class Sync {
         AppState.addEventListener('change', (nextAppState) => {
             this.appState = nextAppState;
 
-            // Notify server of focus state for push notification routing.
-            // Mobile: AppState.currentState reflects fg/bg directly.
-            // Web/desktop: visibilitychange/focus listeners below drive this same path
-            // by updating this.appState too — re-derive via getCurrentAppState() so
-            // the wire value matches what the server uses for suppression.
-            apiSocket.sendAppState(getCurrentAppState());
-
             if (nextAppState === 'active') {
                 const shouldFailAfterResume = this.backgroundSendStartedAt !== null
                     && this.hasPendingOutboxMessages()
@@ -178,18 +171,6 @@ class Sync {
             }
         });
 
-        // Web/desktop: AppState alone doesn't capture tab focus/visibility.
-        // Notify server when the tab becomes hidden, regains visibility,
-        // or window focus changes — so push routing can suppress only when
-        // the user is actually looking at this client.
-        if (Platform.OS === 'web' && typeof document !== 'undefined') {
-            const broadcast = () => {
-                apiSocket.sendAppState(getCurrentAppState());
-            };
-            document.addEventListener('visibilitychange', broadcast);
-            window.addEventListener('focus', broadcast);
-            window.addEventListener('blur', broadcast);
-        }
     }
 
     async create(credentials: AuthCredentials, encryption: Encryption) {
@@ -1915,11 +1896,6 @@ class Sync {
         // Subscribe to connection state changes
         apiSocket.onReconnected(() => {
             log.log('🔌 Socket reconnected');
-
-            // Send current focus state on reconnect so the server's
-            // suppression rules pick up where we left off (handshake.auth.appState
-            // covers the very first connect; this covers reconnects).
-            apiSocket.sendAppState(getCurrentAppState());
 
             this.sessionsSync.invalidate();
             this.machinesSync.invalidate();
