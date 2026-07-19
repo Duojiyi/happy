@@ -52,6 +52,16 @@ describe("account auth HTTP routes", () => {
         await app.close();
     });
 
+    it("does not consume a fresh challenge when its signature is from another key", async () => {
+        const { app, tokens, rows } = testApp();
+        const owner = nacl.sign.keyPair(); const publicKey = Buffer.from(owner.publicKey).toString("base64");
+        const challenge = (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })).json();
+        const foreign = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), nacl.sign.keyPair().secretKey)).toString("base64");
+        expect((await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature: foreign } })).statusCode).toBe(401);
+        expect(rows[0].consumedAt).toBeNull(); expect(tokens).toEqual([]);
+        await app.close();
+    });
+
     it("returns the same 429 envelope for every exhausted issuance cap", async () => {
         const { app } = testApp();
         const keys = Array.from({ length: 4 }, () => Buffer.from(nacl.sign.keyPair().publicKey).toString("base64"));

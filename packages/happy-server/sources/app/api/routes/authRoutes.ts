@@ -63,9 +63,10 @@ export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any;
         }
     }, async (request, reply) => {
         const result = await transaction(async (tx) => {
-            const challenge = await challengeService.consume(request.body.challengeId, tx);
+            const challenge = await challengeService.peek(request.body.challengeId, tx);
             if (!challenge) return null;
             if (!await verifyAuthChallengeSignature({ ...challenge, signature: request.body.signature })) return null;
+            if (!await challengeService.consume(request.body.challengeId, tx)) return null;
             return tx.account.findUnique({ where: { publicKey: privacyKit.encodeHex(privacyKit.decodeBase64(challenge.publicKey)) } });
         });
         if (!result) return reply.code(401).send({ error: 'Unauthorized' });

@@ -85,6 +85,16 @@ export function createAuthChallengeService(options: {
         if (stale.length) await db.chimeraAuthChallenge.deleteMany({ where: { id: { in: stale.map((row: { id: string }) => row.id) } } });
     }
 
+    async function peek(challengeId: string, tx: ChallengeDb = db) {
+        const separator = challengeId.lastIndexOf("."); const id = challengeId.slice(0, separator); const nonce = challengeId.slice(separator + 1);
+        if (!id || !/^[A-Za-z0-9_-]{22}$/.test(nonce) || Buffer.from(nonce, "base64url").length !== 16) return null;
+        const row = await tx.chimeraAuthChallenge.findUnique({ where: { id } });
+        if (!row || row.consumedAt || row.expiresAt <= now() || row.origin !== options.config.relayOrigin || row.purpose !== PURPOSE) return null;
+        const expected = Buffer.from(row.nonceDigest, "hex"); const actual = Buffer.from(nonceDigest(nonce), "hex");
+        if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
+        return { ...row, challengeId, nonce };
+    }
+
     return {
         async issue(input: { publicKey: string; clientIp: string }) { return serialized(async () => {
             const current = now();
@@ -126,6 +136,7 @@ export function createAuthChallengeService(options: {
             if (updated.count !== 1) return null;
             return { ...row, challengeId, nonce };
         },
+        peek,
         stop() { clearInterval(timer); },
         cleanup,
     };
