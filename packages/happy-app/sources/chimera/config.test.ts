@@ -36,6 +36,29 @@ describe('ChimeraConfigSchema', () => {
         })).toMatchObject({ announcement: { enabled: false } });
     });
 
+    test('requires non-empty trimmed primary text and a complete optional HTTPS link pair', () => {
+        expect(() => ChimeraConfigSchema.parse({
+            ...validConfig,
+            announcement: { ...validConfig.announcement, title: '   ' },
+        })).toThrow();
+        expect(() => ChimeraConfigSchema.parse({
+            ...validConfig,
+            announcement: { ...validConfig.announcement, primaryButtonLabel: '\t' },
+        })).toThrow();
+        expect(() => ChimeraConfigSchema.parse({
+            ...validConfig,
+            announcement: { ...validConfig.announcement, linkButtonLabel: ' ' },
+        })).toThrow();
+        expect(() => ChimeraConfigSchema.parse({
+            ...validConfig,
+            announcement: { ...validConfig.announcement, linkButtonLabel: null },
+        })).toThrow();
+        expect(() => ChimeraConfigSchema.parse({
+            ...validConfig,
+            announcement: { ...validConfig.announcement, linkUrl: null },
+        })).toThrow();
+    });
+
     test('rejects oversized announcement fields, control characters, non-HTTPS links, unknown fields, and mutable manifest paths', () => {
         expect(() => ChimeraConfigSchema.parse({
             ...validConfig,

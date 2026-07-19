@@ -9,25 +9,40 @@ function plainText(maximumLength: number) {
     });
 }
 
+function requiredPlainText(maximumLength: number) {
+    return plainText(maximumLength).refine((value) => value.trim().length > 0, {
+        message: 'Must not be empty',
+    });
+}
+
 export const ChimeraConfigSchema = z.object({
     announcement: z.object({
         enabled: z.boolean(),
-        title: plainText(120),
+        title: requiredPlainText(120),
         body: plainText(4000),
-        primaryButtonLabel: plainText(40),
-        linkButtonLabel: plainText(40).nullable(),
+        primaryButtonLabel: requiredPlainText(40),
+        linkButtonLabel: requiredPlainText(40).nullable(),
         linkUrl: z.string().url().refine((value) => new URL(value).protocol === 'https:', {
             message: 'Must use HTTPS',
         }).nullable(),
-    }).strict(),
+    }).strict().superRefine((announcement, context) => {
+        if ((announcement.linkButtonLabel === null) !== (announcement.linkUrl === null)) {
+            context.addIssue({ code: 'custom', message: 'Link label and URL must be supplied together' });
+        }
+    }),
     androidUpdateManifestPath: z.literal('/downloads/chimera-update.json'),
 }).strict();
 
 export type ChimeraConfig = z.infer<typeof ChimeraConfigSchema>;
 
-export async function fetchChimeraConfig(): Promise<ChimeraConfig | null> {
+export async function fetchChimeraConfig(externalSignal?: AbortSignal): Promise<ChimeraConfig | null> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 1500);
+    const abortFromExternalSignal = () => controller.abort();
+    externalSignal?.addEventListener('abort', abortFromExternalSignal, { once: true });
+    if (externalSignal?.aborted) {
+        controller.abort();
+    }
 
     try {
         const response = await fetch(`${RELAY_ORIGIN}/v1/chimera/config`, { signal: controller.signal });
@@ -40,5 +55,6 @@ export async function fetchChimeraConfig(): Promise<ChimeraConfig | null> {
         return null;
     } finally {
         clearTimeout(timeout);
+        externalSignal?.removeEventListener('abort', abortFromExternalSignal);
     }
 }

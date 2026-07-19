@@ -9,11 +9,11 @@ export type StartupAnnouncementState = {
 };
 
 type Announcement = ChimeraConfig['announcement'];
-type AnnouncementButton = { text: string; onPress: () => void | Promise<void> };
+type AnnouncementButton = { text: string; onPress: () => void };
 
 type StartupAnnouncementDependencies = {
-    fetchConfig: () => Promise<ChimeraConfig | null>;
-    show: (announcement: Announcement, onDismiss: () => void) => void;
+    fetchConfig: (signal: AbortSignal) => Promise<ChimeraConfig | null>;
+    show: (announcement: Announcement, onDismiss: () => void, signal: AbortSignal) => void;
     onStateChange?: (state: StartupAnnouncementState) => void;
 };
 
@@ -23,28 +23,48 @@ export function createStartupAnnouncementOrchestrator({
     onStateChange,
 }: StartupAnnouncementDependencies) {
     let started = false;
+    let cancelled = false;
+    const controller = new AbortController();
     let state: StartupAnnouncementState = { settled: false, dismissed: false };
 
     const updateState = (nextState: StartupAnnouncementState) => {
+        if (cancelled) {
+            return;
+        }
         state = nextState;
         onStateChange?.(state);
     };
 
     return {
         getState: () => state,
+        cancel: () => {
+            cancelled = true;
+            controller.abort();
+        },
         start: async () => {
             if (started) {
                 return;
             }
             started = true;
 
-            const config = await fetchConfig();
+            let config: ChimeraConfig | null;
+            try {
+                config = await fetchConfig(controller.signal);
+            } catch {
+                if (!cancelled) {
+                    updateState({ settled: true, dismissed: false });
+                }
+                return;
+            }
+            if (cancelled) {
+                return;
+            }
             if (!config?.announcement.enabled) {
                 updateState({ settled: true, dismissed: false });
                 return;
             }
 
-            show(config.announcement, () => updateState({ settled: true, dismissed: true }));
+            show(config.announcement, () => updateState({ settled: true, dismissed: true }), controller.signal);
         },
     };
 }
@@ -58,13 +78,12 @@ export function createAnnouncementButtons(
     if (announcement.linkButtonLabel && announcement.linkUrl) {
         buttons.push({
             text: announcement.linkButtonLabel,
-            onPress: async () => {
+            onPress: () => {
+                onDismiss();
                 try {
-                    await openExternalUrl(announcement.linkUrl!);
+                    void openExternalUrl(announcement.linkUrl!).catch(() => {});
                 } catch {
                     // Opening an optional external link must not keep startup blocked.
-                } finally {
-                    onDismiss();
                 }
             },
         });
@@ -73,12 +92,14 @@ export function createAnnouncementButtons(
     return buttons;
 }
 
-async function showAnnouncement(announcement: Announcement, onDismiss: () => void): Promise<void> {
+async function showAnnouncement(announcement: Announcement, onDismiss: () => void, signal: AbortSignal): Promise<void> {
     const [{ Modal }, { openExternalUrl }] = await Promise.all([
         import('@/modal'),
         import('@/utils/openExternalUrl'),
     ]);
-    Modal.alert(announcement.title, announcement.body, createAnnouncementButtons(announcement, onDismiss, openExternalUrl));
+    if (!signal.aborted) {
+        Modal.alert(announcement.title, announcement.body, createAnnouncementButtons(announcement, onDismiss, openExternalUrl));
+    }
 }
 
 export function useStartupAnnouncement(): StartupAnnouncementState {
@@ -96,6 +117,7 @@ export function useStartupAnnouncement(): StartupAnnouncementState {
             onStateChange: setState,
         });
         void announcement.start();
+        return announcement.cancel;
     }, []);
 
     return state;

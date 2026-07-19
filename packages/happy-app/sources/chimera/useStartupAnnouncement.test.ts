@@ -59,10 +59,44 @@ describe('startup announcement orchestration', () => {
         primaryButtons.at(-1)?.onPress?.();
         expect(onDismiss).toHaveBeenCalledOnce();
 
-        const openExternalUrl = vi.fn().mockRejectedValue(new Error('browser unavailable'));
+        const openExternalUrl = vi.fn().mockReturnValue(new Promise<void>(() => {}));
         const linkButtons = createAnnouncementButtons(announcement, onDismiss, openExternalUrl);
-        await linkButtons[0]?.onPress?.();
+        linkButtons[0]?.onPress?.();
         expect(openExternalUrl).toHaveBeenCalledWith('https://chimera.example');
         expect(onDismiss).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not show or update state after cancellation during an in-flight fetch', async () => {
+        let resolveConfig: (value: ChimeraConfig) => void = () => {};
+        const fetchConfig = vi.fn(() => new Promise<ChimeraConfig>((resolve) => { resolveConfig = resolve; }));
+        const show = vi.fn();
+        const onStateChange = vi.fn();
+        const announcement = createStartupAnnouncementOrchestrator({ fetchConfig, show, onStateChange });
+
+        const start = announcement.start();
+        announcement.cancel();
+        resolveConfig(enabledConfig);
+        await start;
+
+        expect(show).not.toHaveBeenCalled();
+        expect(onStateChange).not.toHaveBeenCalled();
+    });
+
+    test('only the current overlapping mount shows after an older mount is cancelled', async () => {
+        let resolveFirst: (value: ChimeraConfig) => void = () => {};
+        const first = createStartupAnnouncementOrchestrator({
+            fetchConfig: () => new Promise<ChimeraConfig>((resolve) => { resolveFirst = resolve; }),
+            show: vi.fn(),
+        });
+        const currentShow = vi.fn();
+        const current = createStartupAnnouncementOrchestrator({ fetchConfig: async () => enabledConfig, show: currentShow });
+
+        const firstStart = first.start();
+        first.cancel();
+        await current.start();
+        resolveFirst(enabledConfig);
+        await firstStart;
+
+        expect(currentShow).toHaveBeenCalledOnce();
     });
 });
