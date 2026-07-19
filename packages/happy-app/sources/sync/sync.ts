@@ -27,8 +27,6 @@ import { applySettings, Settings, settingsDefaults, settingsParse, settingsToSyn
 import { Profile, profileParse } from './profile';
 import { loadPendingSettings, savePendingSettings } from './persistence';
 import { trackGitHubConnected, trackMessageSent, trackPaywallCancelled, trackPaywallError, trackPaywallPresented, trackPaywallPurchased, trackPaywallRestored, tracking } from '@/track';
-import Constants from 'expo-constants';
-import { syncCurrentPushToken } from './pushRegistration';
 import type { MessageSentSource } from '@/track';
 import { parseToken } from '@/utils/parseToken';
 import { RevenueCat, LogLevel, PaywallResult } from './revenueCat';
@@ -1545,10 +1543,6 @@ class Sync {
                     // Update local storage with merged result at server's version
                     this.applyServerSettings(mergedSettings, data.currentVersion);
 
-                    // Sync tracking state with merged settings
-                    if (tracking) {
-                        mergedSettings.analyticsOptOut ? tracking.optOut() : tracking.optIn();
-                    }
 
                     // Log and retry
                     console.log('settings version-mismatch, retrying', {
@@ -1602,14 +1596,6 @@ class Sync {
         // Apply settings to storage, re-layering any pending local changes on top
         this.applyServerSettings(parsedSettings, data.settingsVersion);
 
-        // Sync PostHog opt-out state with settings
-        if (tracking) {
-            if (parsedSettings.analyticsOptOut) {
-                tracking.optOut();
-            } else {
-                tracking.optIn();
-            }
-        }
     }
 
     private fetchProfile = async () => {
@@ -1643,64 +1629,6 @@ class Sync {
 
         // Apply profile to storage
         storage.getState().applyProfile(parsedProfile);
-    }
-
-    private fetchNativeUpdate = async () => {
-        try {
-            // Skip in development
-            if ((Platform.OS !== 'android' && Platform.OS !== 'ios') || !Constants.expoConfig?.version) {
-                return;
-            }
-            if (Platform.OS === 'ios' && !Constants.expoConfig?.ios?.bundleIdentifier) {
-                return;
-            }
-            if (Platform.OS === 'android' && !Constants.expoConfig?.android?.package) {
-                return;
-            }
-
-            const serverUrl = getServerUrl();
-
-            // Get platform and app identifiers
-            const platform = Platform.OS;
-            const version = Constants.expoConfig?.version!;
-            const appId = (Platform.OS === 'ios' ? Constants.expoConfig?.ios?.bundleIdentifier! : Constants.expoConfig?.android?.package!);
-
-            const response = await fetch(`${serverUrl}/v1/version`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Happy-Client': getHappyClientId(),
-                },
-                body: JSON.stringify({
-                    platform,
-                    version,
-                    app_id: appId,
-                }),
-            });
-
-            if (!response.ok) {
-                console.log(`[fetchNativeUpdate] Request failed: ${response.status}`);
-                return;
-            }
-
-            const data = await response.json();
-            console.log('[fetchNativeUpdate] Data:', data);
-
-            // Apply update status to storage
-            if (data.update_required && data.update_url) {
-                storage.getState().applyNativeUpdateStatus({
-                    available: true,
-                    updateUrl: data.update_url
-                });
-            } else {
-                storage.getState().applyNativeUpdateStatus({
-                    available: false
-                });
-            }
-        } catch (error) {
-            console.log('[fetchNativeUpdate] Error:', error);
-            storage.getState().applyNativeUpdateStatus(null);
-        }
     }
 
     private syncPurchases = async () => {
@@ -2038,23 +1966,6 @@ class Sync {
             });
         } finally {
             storage.getState().applyOlderMessagesLoading(sessionId, false);
-        }
-    }
-
-    private registerPushToken = async () => {
-        log.log('registerPushToken');
-        try {
-            const result = await syncCurrentPushToken(this.credentials);
-            log.log('Push token sync result: ' + JSON.stringify({
-                registered: result.registered,
-                hasToken: !!result.token,
-                permission: result.permission.status,
-            }));
-            if (!result.permission.granted) {
-                console.log('Failed to get push token for push notification!');
-            }
-        } catch (error) {
-            log.log('Failed to register push token: ' + JSON.stringify(error));
         }
     }
 
