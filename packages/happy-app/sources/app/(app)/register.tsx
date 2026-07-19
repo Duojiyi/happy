@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { getRandomBytesAsync } from 'expo-crypto';
@@ -10,6 +10,7 @@ import { RoundButton } from '@/components/RoundButton';
 import { Modal } from '@/modal';
 import { Typography } from '@/constants/Typography';
 import { trackAccountCreated } from '@/track';
+import { canRegister } from '@/auth/registerAccess';
 
 const styles = StyleSheet.create((theme) => ({
     container: { flex: 1, alignItems: 'center', padding: 24, backgroundColor: theme.colors.surface },
@@ -25,10 +26,17 @@ export default function Register() {
     const router = useRouter();
     const [invitation, setInvitation] = useState('');
     const [loading, setLoading] = useState(false);
+    const registrationAllowed = canRegister(auth.isAuthenticated);
+
+    useEffect(() => {
+        if (!registrationAllowed) {
+            router.replace('/');
+        }
+    }, [registrationAllowed, router]);
 
     const register = async () => {
         const code = invitation.trim();
-        if (!code || loading) {
+        if (!registrationAllowed || !code || loading) {
             return;
         }
 
@@ -50,6 +58,10 @@ export default function Register() {
             setLoading(false);
         }
     };
+
+    if (!registrationAllowed) {
+        return null;
+    }
 
     return (
         <View style={styles.container}>

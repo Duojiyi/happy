@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { RELAY_ORIGIN } from '@/chimera/product.generated';
+import { decodeBase64 } from '@/encryption/base64';
 
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const BASE64URL = /^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2,3})?$/;
@@ -25,8 +26,19 @@ export const AuthCompletionResponseSchema = z.object({
 
 export type AuthCompletionResponse = z.infer<typeof AuthCompletionResponseSchema>;
 
-export function parseAuthChallengeResponse(value: unknown): AuthChallengeResponse {
-    return AuthChallengeResponseSchema.parse(value);
+export function parseAuthChallengeResponse(value: unknown, now = new Date()): AuthChallengeResponse {
+    const challenge = AuthChallengeResponseSchema.parse(value);
+    if (decodeBase64(challenge.nonce, 'base64url').length !== 16) {
+        throw new Error('Challenge nonce must be 16 bytes');
+    }
+
+    const expiresAt = new Date(challenge.expiresAt).getTime();
+    const nowMs = now.getTime();
+    if (expiresAt <= nowMs || expiresAt > nowMs + 2 * 60 * 1000) {
+        throw new Error('Challenge expiry is outside the allowed lifetime');
+    }
+
+    return challenge;
 }
 
 export function parseAuthCompletionResponse(value: unknown): AuthCompletionResponse {

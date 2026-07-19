@@ -33,4 +33,31 @@ describe('authChallengeV2', () => {
             ...mutation,
         })).toThrow();
     });
+
+    it('rejects a nonce that does not decode to 16 bytes', () => {
+        expect(() => parseAuthChallengeResponse({
+            version: 2,
+            origin: 'https://39.98.68.173',
+            purpose: 'chimera-account-auth',
+            challengeId: 'challenge-id',
+            nonce: 'YWJjZA',
+            publicKey: 'YWJjZA==',
+            expiresAt: '2026-07-19T10:01:00.000Z',
+        }, new Date('2026-07-19T10:00:00.000Z'))).toThrow();
+    });
+
+    it.each([
+        ['expired', '2026-07-19T09:59:59.999Z'],
+        ['more than two minutes away', '2026-07-19T10:02:00.001Z'],
+    ])('rejects a %s challenge expiry', (_name, expiresAt) => {
+        expect(() => parseAuthChallengeResponse({
+            version: 2,
+            origin: 'https://39.98.68.173',
+            purpose: 'chimera-account-auth',
+            challengeId: 'challenge-id',
+            nonce: 'AAECAwQFBgcICQoLDA0ODw',
+            publicKey: 'YWJjZA==',
+            expiresAt,
+        }, new Date('2026-07-19T10:00:00.000Z'))).toThrow();
+    });
 });
