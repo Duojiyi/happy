@@ -34,6 +34,11 @@ export interface StartApiOptions {
     injectHtmlConfig?: Record<string, unknown>;
 }
 
+/** The public listener sits behind a local Nginx proxy; no remote peer may set client IP headers. */
+export function isTrustedLoopbackProxy(address: string): boolean {
+    return address === '127.0.0.1' || address === '::1';
+}
+
 export async function startApi(opts: StartApiOptions = {}) {
 
     // Configure
@@ -43,6 +48,7 @@ export async function startApi(opts: StartApiOptions = {}) {
     const app = fastify({
         loggerInstance: logger,
         bodyLimit: 1024 * 1024 * 100, // 100MB
+        trustProxy: isTrustedLoopbackProxy,
     });
     app.register(import('@fastify/cors'), {
         origin: '*',

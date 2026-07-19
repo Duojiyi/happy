@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAuthChallengeService, createAuthPayload } from "./authChallenge";
 
 const key = Buffer.alloc(32, 7).toString("base64");
@@ -38,6 +38,49 @@ describe("Chimera auth challenges", () => {
         expect(await service.consume(issued.challengeId)).toMatchObject({ publicKey: key });
         expect(await service.consume(issued.challengeId)).toBeNull();
         service.stop();
+    });
+
+    it("serializes concurrent issuance at the pending cap", async () => {
+        const rows: any[] = [];
+        const service = createAuthChallengeService({ config, db: fakeDb(rows), now: () => new Date("2026-07-19T10:00:00.000Z") });
+        const settled = await Promise.allSettled(Array.from({ length: 8 }, () => service.issue({ publicKey: key, clientIp: "127.0.0.1" })));
+        expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(3);
+        expect(rows).toHaveLength(3);
+        service.stop();
+    });
+
+    it("refills a deterministic IP token bucket without mixing keys", async () => {
+        const rows: any[] = [];
+        let current = new Date("2026-07-19T10:00:00.000Z");
+        const service = createAuthChallengeService({ config, db: fakeDb(rows), now: () => current });
+        const issued = [];
+        for (let i = 0; i < 3; i++) issued.push(await service.issue({ publicKey: `${key}${i}`, clientIp: "127.0.0.1" }));
+        await Promise.all(issued.map((challenge) => service.consume(challenge.challengeId)));
+        await expect(service.issue({ publicKey: `${key}4`, clientIp: "127.0.0.1" })).rejects.toMatchObject({ code: "RATE_LIMITED" });
+        current = new Date(current.getTime() + 20_000);
+        await expect(service.issue({ publicKey: `${key}5`, clientIp: "127.0.0.1" })).resolves.toBeTruthy();
+        service.stop();
+    });
+
+    it("cannot consume a challenge using a service with another server secret", async () => {
+        const rows: any[] = [];
+        const issuer = createAuthChallengeService({ config, db: fakeDb(rows) });
+        const issued = await issuer.issue({ publicKey: key, clientIp: "127.0.0.1" });
+        const other = createAuthChallengeService({ config: { ...config, adminSessionSecret: new Uint8Array(32).fill(9) }, db: fakeDb(rows) });
+        expect(await other.consume(issued.challengeId)).toBeNull();
+        expect(rows[0].consumedAt).toBeNull();
+        issuer.stop(); other.stop();
+    });
+
+    it("runs bounded timer cleanup and captures cleanup failures", async () => {
+        vi.useFakeTimers();
+        const failure = new Error("database unavailable");
+        const onCleanupError = vi.fn();
+        const service = createAuthChallengeService({ config, db: { chimeraAuthChallenge: { findMany: vi.fn().mockRejectedValue(failure) } } as any, cleanupIntervalMs: 10, onCleanupError });
+        await vi.advanceTimersByTimeAsync(10);
+        expect(onCleanupError).toHaveBeenCalledWith(failure);
+        service.stop();
+        vi.useRealTimers();
     });
 });
 

@@ -41,12 +41,13 @@ export function createAuthChallengeService(options: {
     now?: () => Date;
     globalPendingCap?: number;
     cleanupIntervalMs?: number;
+    onCleanupError?: (error: unknown) => void;
 }) {
     const now = options.now ?? (() => new Date());
     const db = options.db;
     const limits = new Map<string, TokenBucket>();
     const globalPendingCap = options.globalPendingCap ?? DEFAULT_GLOBAL_PENDING_CAP;
-    const timer = setInterval(() => void cleanup(), options.cleanupIntervalMs ?? 30_000);
+    const timer = setInterval(() => { void cleanup().catch((error) => options.onCleanupError?.(error)); }, options.cleanupIntervalMs ?? 30_000);
     (timer as unknown as { unref?: () => void }).unref?.();
     let issuanceLock = Promise.resolve();
 
