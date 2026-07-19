@@ -30,6 +30,11 @@ model Account {
     settingsVersion Int         @default(0)
     githubUserId    String?     @unique
     githubUser      GithubUser? @relation(fields: [githubUserId], references: [id])
+    disabledAt              DateTime?
+    tokenEpoch              Int       @default(0)
+    attachmentQuotaBytes    BigInt    @default(5368709120)
+    attachmentUsedBytes     BigInt    @default(0)
+    attachmentReservedBytes BigInt    @default(0)
 
     // Profile
     firstName String?
@@ -53,6 +58,61 @@ model Account {
     UserFeedItem        UserFeedItem[]
     UserKVStore         UserKVStore[]
     VoiceConversation   VoiceConversation[]
+    chimeraReservations ChimeraAttachmentReservation[]
+}
+
+model ChimeraAuthChallenge {
+    id          String    @id @default(cuid())
+    nonceDigest String    @unique
+    publicKey   String
+    origin      String
+    purpose     String
+    expiresAt   DateTime
+    consumedAt  DateTime?
+    createdAt   DateTime  @default(now())
+
+    @@index([expiresAt])
+}
+
+model ChimeraInvitation {
+    id         String    @id @default(cuid())
+    codeDigest String    @unique
+    label      String?
+    maxUses    Int
+    usedCount  Int       @default(0)
+    expiresAt  DateTime
+    revokedAt  DateTime?
+    lastUsedAt DateTime?
+    createdAt  DateTime  @default(now())
+}
+
+model ChimeraAdminSession {
+    id            String    @id @default(cuid())
+    sessionDigest String    @unique
+    csrfDigest    String
+    lastSeenAt    DateTime
+    expiresAt     DateTime
+    revokedAt     DateTime?
+    createdAt     DateTime  @default(now())
+
+    @@index([expiresAt])
+}
+
+model ChimeraConfiguration {
+    key       String   @id
+    value     Json
+    updatedAt DateTime @updatedAt
+}
+
+model ChimeraAttachmentReservation {
+    id        String   @id @default(cuid())
+    accountId String
+    bytes     BigInt
+    expiresAt DateTime
+    createdAt DateTime @default(now())
+    account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+    @@index([accountId, expiresAt])
 }
 
 model TerminalAuthRequest {
