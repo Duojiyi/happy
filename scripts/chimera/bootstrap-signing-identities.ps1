@@ -45,6 +45,23 @@ function Assert-ExactKeys($Value, [string[]] $Keys, [string] $Name) {
     if (($actual -join '|') -ne (($Keys | Sort-Object) -join '|')) { throw "$Name has an invalid schema." }
 }
 
+New-Item -ItemType Directory -Path $BackupRoot -Force | Out-Null
+Protect-PrivatePath $BackupRoot $true
+$lockPath = Join-Path $BackupRoot '.chimera-signing-bootstrap.lock'
+$bootstrapLock = $null
+try {
+    try {
+        $bootstrapLock = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    }
+    catch [System.IO.IOException] {
+        throw 'Signing identity bootstrap is already in progress.'
+    }
+    Protect-PrivatePath $lockPath
+    if ($env:CHIMERA_TEST_HOLD_LOCK_MS -match '^\d+$') {
+        if ($BackupRoot -notlike "$([System.IO.Path]::GetTempPath())*") { throw 'Test lock delay is only permitted for temporary paths.' }
+        Start-Sleep -Milliseconds ([int]$env:CHIMERA_TEST_HOLD_LOCK_MS)
+    }
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $productPath = if ($ProductPath) { $ProductPath } else { Join-Path $repoRoot 'brand\chimera\product.json' }
 $inputProduct = Get-Content -LiteralPath $productPath -Raw | ConvertFrom-Json
@@ -82,10 +99,15 @@ try {
         $transaction = Get-Content -LiteralPath $transactionPath -Raw | ConvertFrom-Json
         Assert-ExactKeys $transaction @('schemaVersion','status','expectedProduct','pendingBundlePath','finalBundlePath','pendingBundleSha256','finalBundleSha256') 'Transaction record'
         Assert-ExactKeys $transaction.expectedProduct $productKeys 'Transaction expected product'
-        if ($transaction.schemaVersion -ne 1 -or $transaction.status -ne 'bundle-final-product-pending' -or $transaction.finalBundlePath -ne $bundlePath -or -not (Test-Path -LiteralPath $bundlePath)) { throw 'Incomplete signing transaction record is invalid.' }
-        if ((Get-FileHash -LiteralPath $bundlePath -Algorithm SHA256).Hash -ne $transaction.finalBundleSha256) { throw 'Incomplete signing transaction bundle digest does not match.' }
+        if ($transaction.schemaVersion -ne 1 -or $transaction.status -ne 'bundle-final-product-pending' -or $transaction.finalBundlePath -ne $bundlePath) { throw 'Incomplete signing transaction record is invalid.' }
+        $finalExists = Test-Path -LiteralPath $bundlePath
+        $pendingExists = Test-Path -LiteralPath $transaction.pendingBundlePath
+        if ($finalExists -eq $pendingExists) { throw 'Incomplete signing transaction bundle state is invalid.' }
+        $resumeBundle = if ($finalExists) { $bundlePath } else { [string]$transaction.pendingBundlePath }
+        $expectedDigest = if ($finalExists) { [string]$transaction.finalBundleSha256 } else { [string]$transaction.pendingBundleSha256 }
+        if ((Get-FileHash -LiteralPath $resumeBundle -Algorithm SHA256).Hash -ne $expectedDigest) { throw 'Incomplete signing transaction bundle digest does not match.' }
         $resumeArchive = Join-Path $staging 'resume.zip'
-        & $openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in $bundlePath -out $resumeArchive -pass "file:$opensslPassFile" 2>$null
+        & $openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -in $resumeBundle -out $resumeArchive -pass "file:$opensslPassFile" 2>$null
         if ($LASTEXITCODE -ne 0) { throw 'Incomplete signing transaction bundle could not be decrypted.' }
         $resumeMaterial = Join-Path $staging 'resume'
         Expand-Archive -LiteralPath $resumeArchive -DestinationPath $resumeMaterial
@@ -100,6 +122,10 @@ try {
         $expected = $transaction.expectedProduct
         $fixed = [ordered]@{ productName='Chimera'; slug='chimera'; androidApplicationId='org.chimerahub.chimera'; deepLinkSchemes=@('chimera','happy'); relayOrigin='https://39.98.68.173'; repository='Duojiyi/happy'; upstreamAppVersion='1.7.0'; chimeraRevision=1; androidVersionCode=1; updatePublicKey=$resumePublic; androidSignerSha256=$resumeSha }
         if (($expected | ConvertTo-Json -Depth 8 -Compress) -ne ($fixed | ConvertTo-Json -Depth 8 -Compress)) { throw 'Incomplete signing transaction public identity validation failed.' }
+        if (-not $finalExists) {
+            Move-Item -LiteralPath $resumeBundle -Destination $bundlePath
+            Protect-PrivatePath $bundlePath
+        }
         Write-ProductAtomic $productPath $fixed
         Remove-Item -LiteralPath $transactionPath -Force
         [pscustomobject]@{ encryptedPrivateBundle = $bundlePath; androidKeystore = $bundlePath; updatePublicKey = $resumePublic; androidSignerSha256 = $resumeSha; resumed = $true } | ConvertTo-Json -Compress
@@ -157,6 +183,10 @@ try {
     $transaction = [pscustomobject]@{ schemaVersion = 1; status = 'bundle-final-product-pending'; expectedProduct = $product; pendingBundlePath = $pendingBundle; finalBundlePath = $bundlePath; pendingBundleSha256 = (Get-FileHash -LiteralPath $pendingBundle -Algorithm SHA256).Hash; finalBundleSha256 = (Get-FileHash -LiteralPath $pendingBundle -Algorithm SHA256).Hash }
     [System.IO.File]::WriteAllText($transactionPath, ($transaction | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
     Protect-PrivatePath $transactionPath
+    if ($env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -eq '1') {
+        if ($BackupRoot -notlike "$([System.IO.Path]::GetTempPath())*" -or $productPath -notlike "$([System.IO.Path]::GetTempPath())*") { throw 'Test fault injection is only permitted for temporary paths.' }
+        throw 'Injected failure after transaction record.'
+    }
     Move-Item -LiteralPath $pendingBundle -Destination $bundlePath -Force
     Protect-PrivatePath $bundlePath
     if ($env:CHIMERA_TEST_FAIL_AFTER_BUNDLE_RENAME -eq '1') {
@@ -176,4 +206,8 @@ try {
 finally {
     Remove-Item Env:CHIMERA_STORE_PASSWORD, Env:CHIMERA_KEY_PASSWORD -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+}
+}
+finally {
+    if ($null -ne $bootstrapLock) { $bootstrapLock.Dispose() }
 }

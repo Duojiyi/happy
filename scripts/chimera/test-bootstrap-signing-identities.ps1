@@ -1,3 +1,8 @@
+param(
+    [string] $KeytoolPath,
+    [string] $OpenSslPath
+)
+
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -8,8 +13,8 @@ $passwordFile = Join-Path $workspace 'store-password.protected'
 $keyPasswordFile = Join-Path $workspace 'key-password.protected'
 $productPath = Join-Path $repoRoot 'brand\chimera\product.json'
 $originalProduct = Get-Content -Raw $productPath
-$keytool = 'D:\Desktop\Hack\tools\jdk21\bin\keytool.exe'
-$openssl = 'D:\Scoop\apps\git\2.55.0.3\mingw64\bin\openssl.exe'
+$keytool = if ($KeytoolPath) { $KeytoolPath } else { (Get-Command keytool.exe -ErrorAction Stop).Source }
+$openssl = if ($OpenSslPath) { $OpenSslPath } else { (Get-Command openssl.exe -ErrorAction Stop).Source }
 $toolArgs = @{ KeytoolPath = $keytool; OpenSslPath = $openssl }
 
 function Assert-True([bool] $Condition, [string] $Message) {
@@ -114,6 +119,62 @@ try {
     $resumed = & $bootstrap -BackupRoot $faultRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $faultProductPath @toolArgs 2>&1 | ConvertFrom-Json
     Assert-True $resumed.resumed 'next invocation resumes incomplete transaction'
     Assert-True (-not (Test-Path (Join-Path $faultRoot 'chimera-signing-transaction.json'))) 'resume clears transaction record'
+
+    $pendingFaultRoot = Join-Path $workspace 'pending-fault-backups'
+    $pendingFaultProductPath = Join-Path $workspace 'pending-fault-product.json'
+    $testProduct.updatePublicKey = ''
+    $testProduct.androidSignerSha256 = ''
+    $testProduct | ConvertTo-Json | Set-Content -LiteralPath $pendingFaultProductPath
+    $env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD = '1'
+    $pendingFaulted = $false
+    try { & $bootstrap -BackupRoot $pendingFaultRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $pendingFaultProductPath @toolArgs | Out-Null }
+    catch { $pendingFaulted = $_.Exception.Message -match 'Injected failure' }
+    Remove-Item Env:CHIMERA_TEST_FAIL_AFTER_TRANSACTION_RECORD -ErrorAction SilentlyContinue
+    Assert-True $pendingFaulted 'fault injection fails after transaction record before bundle rename'
+    Assert-True (-not (Test-Path (Join-Path $pendingFaultRoot 'chimera-private-signing-material.zip.enc'))) 'pre-rename fault leaves final absent'
+    Assert-True (@(Get-ChildItem -LiteralPath $pendingFaultRoot -Filter '*.pending').Count -eq 1) 'pre-rename fault leaves one pending bundle'
+    Assert-True (Test-Path (Join-Path $pendingFaultRoot 'chimera-signing-transaction.json')) 'pre-rename fault leaves transaction record'
+    $pendingResumed = & $bootstrap -BackupRoot $pendingFaultRoot -StorePasswordFile $passwordFile -KeyPasswordFile $keyPasswordFile -ProductPath $pendingFaultProductPath @toolArgs 2>&1 | ConvertFrom-Json
+    Assert-True $pendingResumed.resumed 'next invocation resumes pending bundle transaction'
+    Assert-True (Test-Path (Join-Path $pendingFaultRoot 'chimera-private-signing-material.zip.enc')) 'pending resume promotes final bundle'
+    Assert-True (@(Get-ChildItem -LiteralPath $pendingFaultRoot -Filter '*.pending').Count -eq 0) 'pending resume consumes pending bundle'
+    Assert-True (-not (Test-Path (Join-Path $pendingFaultRoot 'chimera-signing-transaction.json'))) 'pending resume clears transaction record'
+
+    $concurrentRoot = Join-Path $workspace 'concurrent-backups'
+    $concurrentProductPath = Join-Path $workspace 'concurrent-product.json'
+    $testProduct.updatePublicKey = ''
+    $testProduct.androidSignerSha256 = ''
+    $testProduct | ConvertTo-Json | Set-Content -LiteralPath $concurrentProductPath
+    $runner = Join-Path $workspace 'concurrent-runner.ps1'
+    @'
+param($Bootstrap,$BackupRoot,$StorePasswordFile,$KeyPasswordFile,$ProductPath,$KeytoolPath,$OpenSslPath,$OutputPath)
+$ErrorActionPreference = 'Stop'
+try {
+    $result = & $Bootstrap -BackupRoot $BackupRoot -StorePasswordFile $StorePasswordFile -KeyPasswordFile $KeyPasswordFile -ProductPath $ProductPath -KeytoolPath $KeytoolPath -OpenSslPath $OpenSslPath 2>&1
+    [pscustomobject]@{ ok = $true; output = ($result -join "`n") } | ConvertTo-Json -Compress | Set-Content -LiteralPath $OutputPath
+} catch {
+    [pscustomobject]@{ ok = $false; output = $_.Exception.Message } | ConvertTo-Json -Compress | Set-Content -LiteralPath $OutputPath
+}
+'@ | Set-Content -LiteralPath $runner
+    $shell = (Get-Process -Id $PID).Path
+    $output1 = Join-Path $workspace 'concurrent-1.json'
+    $output2 = Join-Path $workspace 'concurrent-2.json'
+    $commonArgs = @('-NoProfile','-File',$runner,$bootstrap,$concurrentRoot,$passwordFile,$keyPasswordFile,$concurrentProductPath,$keytool,$openssl)
+    $env:CHIMERA_TEST_HOLD_LOCK_MS = '1500'
+    $process1 = Start-Process -FilePath $shell -ArgumentList ($commonArgs + $output1) -PassThru -WindowStyle Hidden
+    Start-Sleep -Milliseconds 150
+    $process2 = Start-Process -FilePath $shell -ArgumentList ($commonArgs + $output2) -PassThru -WindowStyle Hidden
+    $process1.WaitForExit()
+    $process2.WaitForExit()
+    Remove-Item Env:CHIMERA_TEST_HOLD_LOCK_MS -ErrorAction SilentlyContinue
+    $concurrentResults = @((Get-Content -Raw $output1 | ConvertFrom-Json), (Get-Content -Raw $output2 | ConvertFrom-Json))
+    Assert-True (@($concurrentResults | Where-Object ok).Count -eq 1) 'exactly one concurrent bootstrap succeeds'
+    Assert-True (@($concurrentResults | Where-Object { -not $_.ok -and $_.output -match 'already exist|in progress' }).Count -eq 1) 'other concurrent bootstrap is safely rejected'
+    $concurrentProduct = Get-Content -Raw $concurrentProductPath | ConvertFrom-Json
+    $successfulInventory = ($concurrentResults | Where-Object ok).output | ConvertFrom-Json
+    Assert-True ($concurrentProduct.updatePublicKey -eq $successfulInventory.updatePublicKey) 'concurrent product public key matches bundle inventory'
+    Assert-True ($concurrentProduct.androidSignerSha256 -eq $successfulInventory.androidSignerSha256) 'concurrent product signer matches bundle inventory'
+    Assert-True (-not (Test-Path (Join-Path $concurrentRoot 'chimera-signing-transaction.json'))) 'concurrent bootstrap leaves no transaction record'
 
     Write-Output 'PASS: bootstrap signing identities'
 }
