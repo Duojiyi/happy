@@ -24,12 +24,40 @@ describe("account auth HTTP routes", () => {
     });
 
     it("returns generic 401 for expired, malformed, and wrong-origin signatures", async () => {
-        const { app } = testApp(new Date("2026-07-19T10:00:00.000Z"));
+        const { app, rows, tokens } = testApp(new Date("2026-07-19T10:00:00.000Z"));
         const pair = nacl.sign.keyPair(); const publicKey = Buffer.from(pair.publicKey).toString("base64");
         const issued = (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })).json();
         for (const signature of ["bad", Buffer.from(nacl.sign.detached(createAuthPayload({ ...issued, origin: "https://bad.example" }), pair.secretKey)).toString("base64")]) {
             expect((await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: issued.challengeId, signature } })).statusCode).toBe(401);
         }
+        const expired = (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })).json();
+        rows.find((row) => expired.challengeId.startsWith(`${row.id}.`)).expiresAt = new Date("2026-07-19T09:59:59.999Z");
+        const valid = Buffer.from(nacl.sign.detached(createAuthPayload(expired), pair.secretKey)).toString("base64");
+        expect((await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: expired.challengeId, signature: valid } })).statusCode).toBe(401);
+        expect(tokens).toHaveLength(0);
+        await app.close();
+    });
+
+    it("allows only one concurrent completion and rejects a foreign signing key without mutation", async () => {
+        const { app, tokens, rows } = testApp();
+        const pair = nacl.sign.keyPair(); const publicKey = Buffer.from(pair.publicKey).toString("base64");
+        const challenge = (await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey } })).json();
+        const signature = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), pair.secretKey)).toString("base64");
+        const [a, b] = await Promise.all([app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature } }), app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature } })]);
+        expect([a.statusCode, b.statusCode].sort()).toEqual([200, 401]); expect(tokens).toHaveLength(1);
+        const before = tokens.length;
+        const foreign = Buffer.from(nacl.sign.detached(createAuthPayload(challenge), nacl.sign.keyPair().secretKey)).toString("base64");
+        expect((await app.inject({ method: "POST", url: "/v1/auth", payload: { challengeId: challenge.challengeId, signature: foreign } })).statusCode).toBe(401);
+        expect(tokens).toHaveLength(before); expect(rows).toHaveLength(1);
+        await app.close();
+    });
+
+    it("returns the same 429 envelope for every exhausted issuance cap", async () => {
+        const { app } = testApp();
+        const keys = Array.from({ length: 4 }, () => Buffer.from(nacl.sign.keyPair().publicKey).toString("base64"));
+        for (const key of keys.slice(0, 3)) expect((await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey: key } })).statusCode).toBe(200);
+        const limited = await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: { publicKey: keys[3] } });
+        expect(limited.statusCode).toBe(429); expect(limited.json()).toEqual({ error: "Too many requests" });
         await app.close();
     });
 
