@@ -99,6 +99,7 @@ describe("Chimera Prisma security state", () => {
                 data: {
                     accountId: account.id,
                     bytes: 1024n,
+                    objectKey: "sessions/s1/attachments/a.enc",
                     expiresAt: new Date("2026-07-20T00:00:00.000Z"),
                 },
             });

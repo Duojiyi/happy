@@ -110,6 +110,7 @@ model ChimeraAttachmentReservation {
     id        String   @id @default(cuid())
     accountId String
     bytes     BigInt
+    objectKey String
     expiresAt DateTime
     createdAt DateTime @default(now())
     account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)

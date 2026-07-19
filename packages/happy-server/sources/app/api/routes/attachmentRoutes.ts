@@ -14,7 +14,8 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { Fastify } from '../types';
 import { db } from '@/storage/db';
-import { s3client, s3bucket, isLocalStorage, getLocalFilesDir, putLocalFile } from '@/storage/files';
+import { s3client, s3bucket, isLocalStorage, getLocalFilesDir, putLocalFileAtomic } from '@/storage/files';
+import { createAttachmentQuotaService, type AttachmentQuotaService } from '@/app/chimera/attachmentQuota';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const PRESIGNED_TTL_SECONDS = 15 * 60; // 15 minutes (design spec)
@@ -68,7 +69,8 @@ function checkUploadRate(userId: string): boolean {
     return true;
 }
 
-export function attachmentRoutes(app: Fastify) {
+export function attachmentRoutes(app: Fastify, dependencies: { quota?: AttachmentQuotaService } = {}) {
+    const quota = dependencies.quota ?? createAttachmentQuotaService();
 
     /**
      * Request an upload URL for an attachment.
@@ -93,6 +95,7 @@ export function attachmentRoutes(app: Fastify) {
                 404: z.object({ error: z.string() }),
                 413: z.object({ error: z.string() }),
                 429: z.object({ error: z.string() }),
+                507: z.object({ error: z.string() }),
             },
         },
         preHandler: app.authenticate,
@@ -126,8 +129,11 @@ export function attachmentRoutes(app: Fastify) {
             // Local mode: client uploads to our own PUT endpoint (the server
             // enforces the size limit by inspecting the request body before
             // it hits disk, so PUT is fine here).
+            let reservation;
+            try { reservation = await quota.reserve(userId, size, ref); }
+            catch { return reply.code(507).send({ error: 'Attachment upload unavailable' }); }
             const baseUrl = resolveBaseUrl(request);
-            const uploadUrl = `${baseUrl}/v1/sessions/${sessionId}/attachments/${attachmentFile}`;
+            const uploadUrl = `${baseUrl}/v1/sessions/${sessionId}/attachments/${attachmentFile}?reservation=${encodeURIComponent(reservation.id)}`;
             return reply.send({ ref, uploadUrl, method: 'PUT' });
         } else {
             // S3 mode: presigned POST policy with content-length-range so S3
@@ -159,10 +165,12 @@ export function attachmentRoutes(app: Fastify) {
                 sessionId: z.string(),
                 attachmentFile: z.string(),
             }),
+            querystring: z.object({ reservation: z.string().min(1).max(200) }).strict(),
             response: {
                 200: z.object({ ok: z.boolean() }),
                 404: z.object({ error: z.string() }),
                 413: z.object({ error: z.string() }),
+                507: z.object({ error: z.string() }),
             },
         },
         preHandler: app.authenticate,
@@ -172,6 +180,7 @@ export function attachmentRoutes(app: Fastify) {
         }
 
         const { sessionId, attachmentFile } = request.params;
+        const { reservation } = request.query;
         const userId = request.userId;
 
         // Verify session ownership
@@ -193,7 +202,14 @@ export function attachmentRoutes(app: Fastify) {
         }
 
         const ref = `sessions/${sessionId}/attachments/${attachmentFile}`;
-        await putLocalFile(ref, body);
+        let claim;
+        try { claim = await quota.claim(reservation, userId, ref, body.length); }
+        catch { return reply.code(507).send({ error: 'Attachment upload unavailable' }); }
+        try { await putLocalFileAtomic(ref, body); }
+        catch {
+            await quota.rollback(claim).catch(() => undefined);
+            return reply.code(507).send({ error: 'Attachment upload unavailable' });
+        }
 
         return reply.send({ ok: true });
     });

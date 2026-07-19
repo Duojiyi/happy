@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Client } from 'minio';
+import * as crypto from 'crypto';
 
 const useLocalStorage = !process.env.S3_HOST;
 const dataDir = process.env.DATA_DIR || './data';
@@ -34,6 +35,8 @@ export { s3client, s3bucket, s3host };
 export async function loadFiles() {
     if (useLocalStorage) {
         fs.mkdirSync(localFilesDir, { recursive: true });
+        const { reconcileAttachmentStorage } = await import('@/app/chimera/attachmentQuota');
+        await reconcileAttachmentStorage(localFilesDir);
         return;
     }
     await s3client.bucketExists(s3bucket);
@@ -59,6 +62,27 @@ export async function putLocalFile(filePath: string, data: Buffer) {
     const fullPath = path.join(localFilesDir, filePath);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, data);
+}
+
+export async function putLocalFileAtomic(filePath: string, data: Buffer, root = localFilesDir) {
+    const fullPath = path.resolve(root, filePath);
+    const rootPath = path.resolve(root) + path.sep;
+    if (!fullPath.startsWith(rootPath)) throw new Error('Invalid local file path');
+    const partialPath = `${fullPath}.${crypto.randomUUID()}.partial`;
+    await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+    let handle: fs.promises.FileHandle | undefined;
+    try {
+        handle = await fs.promises.open(partialPath, 'wx', 0o600);
+        await handle.writeFile(data);
+        await handle.sync();
+        await handle.close();
+        handle = undefined;
+        await fs.promises.rename(partialPath, fullPath);
+    } catch (error) {
+        await handle?.close().catch(() => undefined);
+        await fs.promises.unlink(partialPath).catch(() => undefined);
+        throw error;
+    }
 }
 
 /**
