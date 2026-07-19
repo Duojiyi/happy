@@ -88,9 +88,12 @@ jobs:
 
       - name: Assemble unsigned release APK
         working-directory: packages/happy-app/android
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dkotlin.daemon.jvm.options=-Xmx2g
+          JAVA_TOOL_OPTIONS: -Xmx4g
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --max-workers=2 --stacktrace
 
       - name: Verify candidate is unsigned and has Chimera identity
         working-directory: packages/happy-app

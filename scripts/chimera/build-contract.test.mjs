@@ -71,6 +71,12 @@ export function validateBuildWorkflow(workflow) {
     /release-input\.json/,
   ], 'chimera-web-unsigned');
 
+  const androidAssemble = allSteps(jobs.android).find((step) => step.name === 'Assemble unsigned release APK');
+  assert.ok(androidAssemble, 'android assemble step is required');
+  assert.equal(androidAssemble.env?.GRADLE_OPTS, '-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dkotlin.daemon.jvm.options=-Xmx2g', 'android Gradle heap must be bounded at 4 GB');
+  assert.equal(androidAssemble.env?.JAVA_TOOL_OPTIONS, '-Xmx4g', 'android Java heap must be bounded at 4 GB');
+  assert.match(androidAssemble.run ?? '', /--max-workers=2/, 'android Gradle concurrency must be bounded');
+
   const provenance = jobs.provenance;
   assert.ok(provenance, 'provenance job is required');
   assert.deepEqual(provenance.permissions, {
