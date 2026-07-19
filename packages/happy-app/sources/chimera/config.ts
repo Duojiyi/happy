@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { RELAY_ORIGIN } from './product.generated';
 
 const controlCharacter = /[\u0000-\u0009\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
 
@@ -29,7 +30,7 @@ export async function fetchChimeraConfig(): Promise<ChimeraConfig | null> {
     const timeout = setTimeout(() => controller.abort(), 1500);
 
     try {
-        const response = await fetch('/v1/chimera/config', { signal: controller.signal });
+        const response = await fetch(`${RELAY_ORIGIN}/v1/chimera/config`, { signal: controller.signal });
         if (!response.ok) {
             return null;
         }

@@ -9,6 +9,7 @@ export type StartupAnnouncementState = {
 };
 
 type Announcement = ChimeraConfig['announcement'];
+type AnnouncementButton = { text: string; onPress: () => void | Promise<void> };
 
 type StartupAnnouncementDependencies = {
     fetchConfig: () => Promise<ChimeraConfig | null>;
@@ -48,22 +49,36 @@ export function createStartupAnnouncementOrchestrator({
     };
 }
 
+export function createAnnouncementButtons(
+    announcement: Announcement,
+    onDismiss: () => void,
+    openExternalUrl: (url: string) => Promise<void>,
+): AnnouncementButton[] {
+    const buttons: AnnouncementButton[] = [];
+    if (announcement.linkButtonLabel && announcement.linkUrl) {
+        buttons.push({
+            text: announcement.linkButtonLabel,
+            onPress: async () => {
+                try {
+                    await openExternalUrl(announcement.linkUrl!);
+                } catch {
+                    // Opening an optional external link must not keep startup blocked.
+                } finally {
+                    onDismiss();
+                }
+            },
+        });
+    }
+    buttons.push({ text: announcement.primaryButtonLabel, onPress: onDismiss });
+    return buttons;
+}
+
 async function showAnnouncement(announcement: Announcement, onDismiss: () => void): Promise<void> {
     const [{ Modal }, { openExternalUrl }] = await Promise.all([
         import('@/modal'),
         import('@/utils/openExternalUrl'),
     ]);
-    const buttons = [];
-    if (announcement.linkButtonLabel && announcement.linkUrl) {
-        buttons.push({
-            text: announcement.linkButtonLabel,
-            onPress: () => {
-                void openExternalUrl(announcement.linkUrl!);
-            },
-        });
-    }
-    buttons.push({ text: announcement.primaryButtonLabel, onPress: onDismiss });
-    Modal.alert(announcement.title, announcement.body, buttons);
+    Modal.alert(announcement.title, announcement.body, createAnnouncementButtons(announcement, onDismiss, openExternalUrl));
 }
 
 export function useStartupAnnouncement(): StartupAnnouncementState {

@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import type { ChimeraConfig } from './config';
-import { createStartupAnnouncementOrchestrator } from './useStartupAnnouncement';
+import { createAnnouncementButtons, createStartupAnnouncementOrchestrator } from './useStartupAnnouncement';
 
 const enabledConfig: ChimeraConfig = {
     announcement: {
@@ -50,5 +50,19 @@ describe('startup announcement orchestration', () => {
         await unavailableAnnouncement.start();
         expect(unavailableAnnouncement.getState()).toEqual({ settled: true, dismissed: false });
         expect(show).not.toHaveBeenCalled();
+    });
+
+    test('settles when either the primary or optional link button is pressed', async () => {
+        const onDismiss = vi.fn();
+        const announcement = { ...enabledConfig.announcement, linkButtonLabel: 'Learn more', linkUrl: 'https://chimera.example' };
+        const primaryButtons = createAnnouncementButtons(announcement, onDismiss, vi.fn());
+        primaryButtons.at(-1)?.onPress?.();
+        expect(onDismiss).toHaveBeenCalledOnce();
+
+        const openExternalUrl = vi.fn().mockRejectedValue(new Error('browser unavailable'));
+        const linkButtons = createAnnouncementButtons(announcement, onDismiss, openExternalUrl);
+        await linkButtons[0]?.onPress?.();
+        expect(openExternalUrl).toHaveBeenCalledWith('https://chimera.example');
+        expect(onDismiss).toHaveBeenCalledTimes(2);
     });
 });

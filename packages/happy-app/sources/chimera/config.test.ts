@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { ChimeraConfigSchema, fetchChimeraConfig } from './config';
+import { RELAY_ORIGIN } from './product.generated';
 
 const validConfig = {
     announcement: {
@@ -66,12 +67,12 @@ describe('ChimeraConfigSchema', () => {
 });
 
 describe('fetchChimeraConfig', () => {
-    test('fetches only the same-origin fixed relay endpoint', async () => {
+    test('fetches only the fixed absolute relay endpoint', async () => {
         const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(validConfig), { status: 200 }));
         vi.stubGlobal('fetch', fetchMock);
 
         await expect(fetchChimeraConfig()).resolves.toEqual(validConfig);
-        expect(fetchMock).toHaveBeenCalledWith('/v1/chimera/config', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+        expect(fetchMock).toHaveBeenCalledWith(`${RELAY_ORIGIN}/v1/chimera/config`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     });
 
     test('returns null for unsuccessful responses, invalid JSON, and invalid schemas', async () => {
