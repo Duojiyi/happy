@@ -121,3 +121,10 @@ test('fails when a minified production bundle initializes analytics', async () =
   });
   assert(result.some((finding) => finding.rule === 'telemetry-or-purchases'), JSON.stringify(result));
 });
+
+test('fails when a forbidden physical route is restored without a route string', async () => {
+  const result = await policyResult({
+    'packages/happy-app/sources/app/(app)/dev/purchases.tsx': 'export default function Screen() { return null; }\n',
+  });
+  assert(result.some((finding) => finding.rule === 'forbidden-route-file'), JSON.stringify(result));
+});

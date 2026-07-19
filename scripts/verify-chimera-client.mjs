@@ -36,6 +36,10 @@ const DORMANT_SOURCE_FILES = new Set([
   'sources/utils/microphonePermissions.ts',
   'sources/voiceConfig.ts',
 ]);
+const FORBIDDEN_ROUTE_FILES = new Set([
+  'sources/app/(app)/dev/purchases.tsx',
+  'sources/app/(app)/settings/connect/claude.tsx',
+]);
 
 function isExcluded(relativePath) {
   return /(?:^|\/)(?:__fixtures__|__tests__)(?:\/|$)|\.(?:test|spec)\.[^/]+$/i.test(relativePath)
@@ -139,7 +143,11 @@ export async function verifyChimeraClient({ root = fileURLToPath(new URL('../', 
   const appRoot = join(repositoryRoot, APP_ROOT);
   const sourcePaths = (await Promise.all(SOURCE_ROOTS.map((sourceRoot) => filesUnder(join(appRoot, sourceRoot))))).flat()
     .filter((path) => TEXT_FILE.test(path));
-  for (const path of sourcePaths) scanSource(findings, repositoryRoot, path, await readFile(path, 'utf8'));
+  for (const path of sourcePaths) {
+    const appRelative = relative(appRoot, path).replaceAll('\\', '/');
+    if (FORBIDDEN_ROUTE_FILES.has(appRelative)) addFinding(findings, repositoryRoot, path, 'forbidden-route-file');
+    scanSource(findings, repositoryRoot, path, await readFile(path, 'utf8'));
+  }
 
   const webRoot = join(appRoot, WEB_EXPORT_ROOT);
   if (!await exists(webRoot)) {
