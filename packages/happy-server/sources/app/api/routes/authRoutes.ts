@@ -30,8 +30,11 @@ export async function verifyAuthChallengeSignature(input: { origin: string; purp
     } catch { return false; }
 }
 
-export function authRoutes(app: Fastify) {
-    const challengeService = createAuthChallengeService({ config: loadChimeraServerConfig(process.env), db });
+export function authRoutes(app: Fastify, dependencies: { db?: any; config?: any; issueToken?: (id: string) => Promise<string>; inTransaction?: <T>(fn: (tx: any) => Promise<T>) => Promise<T> } = {}) {
+    const routeDb = dependencies.db ?? db;
+    const challengeService = createAuthChallengeService({ config: dependencies.config ?? loadChimeraServerConfig(process.env), db: routeDb });
+    const transaction = dependencies.inTransaction ?? inTx;
+    const issueToken = dependencies.issueToken ?? ((id: string) => auth.createToken(id));
 
     app.post('/v1/auth/challenge', {
         schema: { body: z.object({ publicKey: signingPublicKey }).strict() }
@@ -54,19 +57,19 @@ export function authRoutes(app: Fastify) {
         schema: {
             body: z.object({
                 challengeId: z.string().min(1).max(256),
-                signature: z.string().min(1).max(256).regex(BASE64),
+                signature: z.string().min(1).max(256),
                 invitation: z.string().min(1).max(256).optional(),
             }).strict()
         }
     }, async (request, reply) => {
-        const result = await inTx(async (tx) => {
+        const result = await transaction(async (tx) => {
             const challenge = await challengeService.consume(request.body.challengeId, tx);
             if (!challenge) return null;
             if (!await verifyAuthChallengeSignature({ ...challenge, signature: request.body.signature })) return null;
             return tx.account.findUnique({ where: { publicKey: privacyKit.encodeHex(privacyKit.decodeBase64(challenge.publicKey)) } });
         });
         if (!result) return reply.code(401).send({ error: 'Unauthorized' });
-        return reply.send({ token: await auth.createToken(result.id) });
+        return reply.send({ token: await issueToken(result.id) });
     });
 
     app.post('/v1/auth/request', {
