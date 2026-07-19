@@ -42,7 +42,7 @@ function Invoke-ChimeraWebActivation {
     Assert-ChimeraWebArchiveEntries $rawEntries $RepresentativeAsset
 
     if (-not $UploadOperation) {
-        $UploadOperation = { param($Local, $Remote) & scp -- $Local "$HostName`:$Remote"; if ($LASTEXITCODE -ne 0) { throw "Upload failed: $Remote" } }.GetNewClosure()
+        $UploadOperation = { param($Local, $Remote) & scp -O -- $Local "$HostName`:$Remote"; if ($LASTEXITCODE -ne 0) { throw "Upload failed: $Remote" } }.GetNewClosure()
     }
     if (-not $RemoteOperation) {
         $RemoteOperation = { param($Verb, $Id) & ssh -- $HostName $Verb $Id; if ($LASTEXITCODE -ne 0) { throw "$Verb failed" } }.GetNewClosure()

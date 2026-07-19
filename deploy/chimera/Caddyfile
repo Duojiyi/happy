@@ -7,7 +7,13 @@ https://39.98.68.173 {
         protocols tls1.2 tls1.3
     }
     encode zstd gzip
-    reverse_proxy 127.0.0.1:3000
+    handle_path /downloads/* {
+        root * /srv/chimera-downloads
+        file_server
+    }
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
 }
 
 http://39.98.68.173 {

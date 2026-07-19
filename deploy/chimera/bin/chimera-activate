@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=/opt/chimera
+STAGING=/var/lib/chimera-deploy/.chimera-staging
+EXPECTED_PACKAGE=org.chimerahub.chimera
+EXPECTED_SIGNER=58AA84B6C0D84963E841EED5EF953FC35D4B17D612C923D19A2264F96E4C8A93
+
+die() {
+  printf 'Chimera activation rejected\n' >&2
+  exit 1
+}
+
+sync_path() {
+  sync -f "$1"
+  sync -f "$(dirname "$1")"
+}
+
+activate_web() {
+  local commit="$1"
+  [[ "$commit" =~ ^[a-f0-9]{40}$ ]] || die
+  local source="$STAGING/web/$commit.tar.gz.partial"
+  local releases="$ROOT/web/releases"
+  local incoming="$releases/.incoming-$commit"
+  local target="$releases/$commit"
+  [[ -f "$source" && ! -L "$source" ]] || die
+
+  python3 - "$source" <<'PY'
+import pathlib, sys, tarfile
+archive = pathlib.Path(sys.argv[1])
+with tarfile.open(archive, "r:gz") as bundle:
+    names = []
+    for member in bundle.getmembers():
+        path = pathlib.PurePosixPath(member.name.replace("\\", "/"))
+        if path.is_absolute() or ".." in path.parts or member.issym() or member.islnk() or member.isdev():
+            raise SystemExit(1)
+        names.append(str(path).removeprefix("./"))
+    if "index.html" not in names:
+        raise SystemExit(1)
+PY
+
+  [[ ! -e "$target" ]] || die
+  install -d -m 0755 "$incoming"
+  trap 'rm -rf -- "$incoming"' RETURN
+  tar --extract --gzip --file "$source" --directory "$incoming" --no-same-owner --no-same-permissions
+  [[ -f "$incoming/index.html" ]] || die
+  find "$incoming" -type f -exec chmod 0644 {} +
+  find "$incoming" -type d -exec chmod 0755 {} +
+  find "$incoming" -type f -exec sync -f {} +
+  sync -f "$incoming"
+  mv -- "$incoming" "$target"
+  sync -f "$releases"
+
+  local previous=""
+  if [[ -L "$ROOT/web/current" ]]; then previous="$(readlink -f "$ROOT/web/current")"; fi
+  ln -s "$target" "$ROOT/web/.current-$commit"
+  mv -Tf "$ROOT/web/.current-$commit" "$ROOT/web/current"
+  sync -f "$ROOT/web"
+  if ! curl --fail --silent --show-error --insecure --header 'Host: 39.98.68.173' https://127.0.0.1/ >/dev/null; then
+    if [[ -n "$previous" && -d "$previous" ]]; then
+      ln -s "$previous" "$ROOT/web/.rollback-$commit"
+      mv -Tf "$ROOT/web/.rollback-$commit" "$ROOT/web/current"
+      sync -f "$ROOT/web"
+    fi
+    die
+  fi
+  rm -f -- "$source"
+}
+
+activate_android() {
+  local id="$1"
+  [[ "$id" =~ ^([a-f0-9]{40})-v([1-9][0-9]*)$ ]] || die
+  local commit="${BASH_REMATCH[1]}"
+  local version="${BASH_REMATCH[2]}"
+  local apk="$STAGING/android/$id.apk.partial"
+  local manifest="$STAGING/android/$id.manifest.partial"
+  local downloads="$ROOT/downloads"
+  local release="$downloads/releases/$id"
+  [[ -f "$apk" && ! -L "$apk" && -f "$manifest" && ! -L "$manifest" ]] || die
+  [[ ! -e "$release" ]] || die
+
+  local metadata
+  metadata="$(python3 - "$manifest" "$apk" "$commit" "$version" "$EXPECTED_PACKAGE" "$EXPECTED_SIGNER" <<'PY'
+import hashlib, json, pathlib, re, sys
+manifest_path, apk_path, commit, version, package, signer = sys.argv[1:]
+envelope = json.loads(pathlib.Path(manifest_path).read_text("utf-8"))
+if set(envelope) != {"payload", "signature"} or not isinstance(envelope["signature"], str): raise SystemExit(1)
+p = envelope["payload"]
+required = {"schemaVersion","packageName","versionName","versionCode","apkPath","size","sha256","signerSha256","commitSha","publishedAt"}
+if not isinstance(p, dict) or set(p) != required: raise SystemExit(1)
+if p["schemaVersion"] != 1 or p["packageName"] != package or p["signerSha256"] != signer: raise SystemExit(1)
+if p["commitSha"] != commit or p["versionCode"] != int(version): raise SystemExit(1)
+if not isinstance(p["apkPath"], str) or not re.fullmatch(r"/downloads/chimera-[A-Za-z0-9._-]+\.apk", p["apkPath"]): raise SystemExit(1)
+apk = pathlib.Path(apk_path)
+if apk.stat().st_size != p["size"] or hashlib.sha256(apk.read_bytes()).hexdigest() != p["sha256"]: raise SystemExit(1)
+print(pathlib.PurePosixPath(p["apkPath"]).name)
+PY
+)" || die
+  [[ "$metadata" =~ ^chimera-[A-Za-z0-9._-]+\.apk$ ]] || die
+
+  if [[ -f "$downloads/chimera-update.json" ]]; then
+    local current_version
+    current_version="$(python3 - "$downloads/chimera-update.json" <<'PY'
+import json, pathlib, sys
+print(json.loads(pathlib.Path(sys.argv[1]).read_text("utf-8"))["payload"]["versionCode"])
+PY
+)" || die
+    (( version > current_version )) || die
+  fi
+
+  install -d -m 0755 "$release"
+  install -m 0644 "$apk" "$release/$metadata"
+  install -m 0644 "$manifest" "$release/chimera-update.json"
+  sync_path "$release/$metadata"
+  sync_path "$release/chimera-update.json"
+  ln "$release/$metadata" "$downloads/.$metadata.next"
+  mv -f -- "$downloads/.$metadata.next" "$downloads/$metadata"
+  sync_path "$downloads/$metadata"
+  install -m 0644 "$release/chimera-update.json" "$downloads/.chimera-update.json.next"
+  sync_path "$downloads/.chimera-update.json.next"
+  mv -f -- "$downloads/.chimera-update.json.next" "$downloads/chimera-update.json"
+  sync_path "$downloads/chimera-update.json"
+  rm -f -- "$apk" "$manifest"
+}
+
+command="${SSH_ORIGINAL_COMMAND:-}"
+if [[ "$command" =~ ^scp\ -t\ (\.chimera-staging/(web/[a-f0-9]{40}\.tar\.gz\.partial|android/[a-f0-9]{40}-v[1-9][0-9]*\.(apk|manifest)\.partial))$ ]]; then
+  exec /usr/bin/scp -t -- "${BASH_REMATCH[1]}"
+fi
+case "$command" in
+  activate-web\ *) activate_web "${command#activate-web }" ;;
+  activate-android\ *) activate_android "${command#activate-android }" ;;
+  *) die ;;
+esac

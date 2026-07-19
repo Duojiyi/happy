@@ -38,6 +38,7 @@ services:
         condition: service_healthy
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./downloads:/srv/chimera-downloads:ro
       - caddy-data:/data
       - caddy-config:/config
 
