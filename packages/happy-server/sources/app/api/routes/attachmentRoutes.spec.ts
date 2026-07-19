@@ -50,6 +50,10 @@ const {
 
     const filesMock = {
         s3client: {
+            putObject: vi.fn(async (_bucket: string, key: string, data: Buffer) => {
+                if (state.writeFailure) throw new Error("s3 write failed");
+                state.uploads.set(key, data);
+            }),
             newPostPolicy: () => {
                 const policy = {
                     bucket: "",
@@ -173,7 +177,7 @@ describe("attachmentRoutes — request-upload", () => {
         expect(state.reservations).toEqual([{ accountId: "u1", bytes: 1024, objectKey: body.ref, id: "r1" }]);
     });
 
-    it("returns 200 with method=POST + formFields and a content-length-range policy in S3 mode", async () => {
+    it("uses the authenticated server PUT lifecycle in S3 mode", async () => {
         seedSession("s1", "u1");
         state.useLocalStorage = false;
         app = await createApp();
@@ -187,10 +191,9 @@ describe("attachmentRoutes — request-upload", () => {
 
         expect(res.statusCode).toBe(200);
         const body = res.json();
-        expect(body.method).toBe("POST");
-        expect(body.uploadUrl).toBe("https://s3.test/post-url");
-        expect(body.formFields).toBeDefined();
-        expect(state.s3PolicyMaxLength).toBe(10 * 1024 * 1024);
+        expect(body.method).toBe("PUT");
+        expect(body.formFields).toBeUndefined();
+        expect(state.reservations).toHaveLength(1);
     });
 
     it("returns 404 when the requesting user is not the session owner", async () => {
@@ -284,7 +287,7 @@ describe("attachmentRoutes — PUT (local-mode upload)", () => {
         expect(res.statusCode).toBe(404);
     });
 
-    it("returns 404 for PUT in S3 mode (direct upload not available)", async () => {
+    it("writes S3 only through the authenticated PUT endpoint", async () => {
         seedSession("s1", "u1");
         state.useLocalStorage = false;
         app = await createApp();
@@ -295,7 +298,8 @@ describe("attachmentRoutes — PUT (local-mode upload)", () => {
             headers: { "x-user-id": "u1", "content-type": "application/octet-stream" },
             payload: Buffer.from("x"),
         });
-        expect(res.statusCode).toBe(404);
+        expect(res.statusCode).toBe(200);
+        expect(filesMock.s3client.putObject).toHaveBeenCalledOnce();
     });
 
     it("rolls back claimed usage when the atomic disk write fails", async () => {

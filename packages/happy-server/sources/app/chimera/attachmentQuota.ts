@@ -57,12 +57,17 @@ export function createAttachmentQuotaService(dependencies: {
         async reserve(accountId: string, bytes: number, objectKey: string) {
             if (!Number.isSafeInteger(bytes) || bytes < 0 || !objectKey || objectKey.length > 500) throw new AttachmentQuotaError();
             await cleanupExpired();
-            const disk = await inspectDisk();
-            if (disk.totalBytes <= 0n || disk.freeBytes < minFreeBytes
-                || (disk.totalBytes - disk.freeBytes) * 100n >= disk.totalBytes * 80n) throw new AttachmentQuotaError();
             return runTransaction(async (tx) => {
+                const disk = await inspectDisk();
                 const account = await tx.account.findUnique({ where: { id: accountId }, select: { disabledAt: true, attachmentQuotaBytes: true, attachmentUsedBytes: true, attachmentReservedBytes: true } });
                 const requested = BigInt(bytes);
+                const reservations = tx.chimeraAttachmentReservation.aggregate
+                    ? await tx.chimeraAttachmentReservation.aggregate({ where: { expiresAt: { gt: now() } }, _sum: { bytes: true } })
+                    : { _sum: { bytes: 0n } };
+                const liveReserved = reservations._sum.bytes ?? 0n;
+                const projectedFree = disk.freeBytes - liveReserved - requested;
+                const projectedUsed = disk.totalBytes - disk.freeBytes + liveReserved + requested;
+                if (disk.totalBytes <= 0n || projectedFree < minFreeBytes || projectedUsed * 100n >= disk.totalBytes * 80n) throw new AttachmentQuotaError();
                 if (!account || account.disabledAt || account.attachmentUsedBytes + account.attachmentReservedBytes + requested > account.attachmentQuotaBytes) throw new AttachmentQuotaError();
                 await tx.account.update({ where: { id: accountId }, data: { attachmentReservedBytes: { increment: requested } } });
                 return tx.chimeraAttachmentReservation.create({ data: { accountId, bytes: requested, objectKey, expiresAt: new Date(now().getTime() + reservationTtlMs) } });
