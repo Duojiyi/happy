@@ -20,9 +20,11 @@ class ChimeraUpdaterModule : Module() {
       val apk = requireCachedApk(fileUri)
       val packageInfo = readPackageInfo(apk)
         ?: throw CodedException("E_APK_INVALID", "The selected file is not a readable APK.", null)
+      val versionName = packageInfo.versionName?.takeIf { it.isNotBlank() }
+        ?: throw CodedException("E_APK_INVALID", "APK must declare a version name.", null)
       mapOf(
         "packageName" to packageInfo.packageName,
-        "versionName" to packageInfo.versionName,
+        "versionName" to versionName,
         "versionCode" to versionCode(packageInfo),
         "signerSha256" to signerDigest(packageInfo)
       )

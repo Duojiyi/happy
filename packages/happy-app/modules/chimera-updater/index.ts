@@ -2,7 +2,7 @@ import { requireNativeModule } from 'expo-modules-core';
 
 export type InspectedApk = {
   packageName: string;
-  versionName: string | null;
+  versionName: string;
   versionCode: number;
   signerSha256: string;
 };

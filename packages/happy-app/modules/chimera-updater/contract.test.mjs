@@ -9,7 +9,7 @@ const source = (relativePath) => fs.readFileSync(path.join(moduleRoot, relativeP
 
 test('TypeScript exposes the asynchronous inspected APK contract', () => {
   const types = source('index.ts');
-  assert.match(types, /export type InspectedApk = \{[\s\S]*versionCode: number;[\s\S]*signerSha256: string;/);
+  assert.match(types, /export type InspectedApk = \{[\s\S]*versionName: string;[\s\S]*versionCode: number;[\s\S]*signerSha256: string;/);
   assert.match(types, /canRequestPackageInstalls\(\): Promise<boolean>;/);
   assert.match(types, /openInstallPermissionSettings\(\): Promise<void>;/);
   assert.match(types, /launchInstaller\(uri: string\): Promise<void>;/);
@@ -24,6 +24,8 @@ test('Kotlin exposes asynchronous API methods and rejects ambiguous APK signers'
   assert.match(kotlin, /signatures\.size != 1/);
   assert.match(kotlin, /"signerSha256" to signerDigest\(packageInfo\)/);
   assert.match(kotlin, /"versionCode" to versionCode\(packageInfo\)/);
+  assert.match(kotlin, /val versionName = packageInfo\.versionName\?\.takeIf \{ it\.isNotBlank\(\) \}/);
+  assert.match(kotlin, /"versionName" to versionName/);
 });
 
 test('autolinking discovers the local module and its Gradle project supplies FileProvider', () => {
