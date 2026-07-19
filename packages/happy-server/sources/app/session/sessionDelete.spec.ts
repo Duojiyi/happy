@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { sessionDelete } from "./sessionDelete";
 
-function statefulTransaction() {
+function statefulTransaction(options: { failCommit?: boolean } = {}) {
     const state = { sessions: new Set(["s1"]), cleanups: [] as Array<{ id: string; sessionId: string }>, callbacks: [] as Array<() => void> };
     const inTx = async (fn: any) => {
         const sessions = new Set(state.sessions);
@@ -16,6 +16,7 @@ function statefulTransaction() {
             callbacks,
         };
         const result = await fn(tx);
+        if (options.failCommit) throw new Error("commit failed");
         state.sessions = sessions; state.cleanups = cleanups; state.callbacks = callbacks;
         return result;
     };
@@ -24,9 +25,8 @@ function statefulTransaction() {
 
 describe("sessionDelete cleanup ledger transaction boundary", () => {
     it("does not persist a ledger or delete the session when its transaction rolls back", async () => {
-        const fixture = statefulTransaction();
-        const rollback = async (_fn: any) => { throw new Error("rollback"); };
-        await expect((sessionDelete as any)({ uid: "u1" }, "s1", { inTx: rollback })).rejects.toThrow("rollback");
+        const fixture = statefulTransaction({ failCommit: true });
+        await expect((sessionDelete as any)({ uid: "u1" }, "s1", { inTx: fixture.inTx, afterTx: (tx: any, cb: any) => tx.callbacks.push(cb) })).rejects.toThrow("commit failed");
         expect(fixture.state.sessions.has("s1")).toBe(true);
         expect(fixture.state.cleanups).toEqual([]);
     });
