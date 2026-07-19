@@ -43,6 +43,7 @@ describe("Chimera Prisma security state", () => {
                 data: {
                     nonceDigest: "challenge-digest",
                     publicKey: account.publicKey,
+                    clientIp: "127.0.0.1",
                     origin: "https://39.98.68.173",
                     purpose: "register",
                     expiresAt: new Date("2026-07-20T00:00:00.000Z"),
@@ -52,6 +53,7 @@ describe("Chimera Prisma security state", () => {
                 data: {
                     nonceDigest: "challenge-digest",
                     publicKey: account.publicKey,
+                    clientIp: "127.0.0.1",
                     origin: "https://39.98.68.173",
                     purpose: "register",
                     expiresAt: new Date("2026-07-20T00:00:00.000Z"),

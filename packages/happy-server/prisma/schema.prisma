@@ -65,6 +65,7 @@ model ChimeraAuthChallenge {
     id          String    @id @default(cuid())
     nonceDigest String    @unique
     publicKey   String
+    clientIp    String
     origin      String
     purpose     String
     expiresAt   DateTime
@@ -72,6 +73,7 @@ model ChimeraAuthChallenge {
     createdAt   DateTime  @default(now())
 
     @@index([expiresAt])
+    @@index([clientIp, expiresAt])
 }
 
 model ChimeraInvitation {

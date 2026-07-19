@@ -4,38 +4,54 @@ import * as privacyKit from "privacy-kit";
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
 import { log } from "@/utils/log";
+import { inTx } from "@/storage/inTx";
+import { loadChimeraServerConfig } from "@/app/chimera/config";
+import { createAuthChallengeService, createAuthPayload, AuthChallengeError } from "@/app/chimera/authChallenge";
+
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const signingPublicKey = z.string().min(1).max(128).regex(BASE64);
 
 export function authRoutes(app: Fastify) {
+    const challengeService = createAuthChallengeService({ config: loadChimeraServerConfig(process.env), db });
+
+    app.post('/v1/auth/challenge', {
+        schema: { body: z.object({ publicKey: signingPublicKey }).strict() }
+    }, async (request, reply) => {
+        const tweetnacl = (await import("tweetnacl")).default;
+        let publicKey: Uint8Array;
+        try { publicKey = privacyKit.decodeBase64(request.body.publicKey); } catch { return reply.code(401).send({ error: 'Unauthorized' }); }
+        if (publicKey.length !== tweetnacl.sign.publicKeyLength) return reply.code(401).send({ error: 'Unauthorized' });
+        try {
+            return reply.send(await challengeService.issue({ publicKey: request.body.publicKey, clientIp: request.ip }));
+        } catch (error) {
+            if (error instanceof AuthChallengeError && error.code === "RATE_LIMITED") return reply.code(429).send({ error: 'Too many requests' });
+            throw error;
+        }
+    });
+
     app.post('/v1/auth', {
         schema: {
             body: z.object({
-                publicKey: z.string(),
-                challenge: z.string(),
-                signature: z.string()
-            })
+                challengeId: z.string().min(1).max(256),
+                signature: z.string().min(1).max(256).regex(BASE64),
+                invitation: z.string().min(1).max(256).optional(),
+            }).strict()
         }
     }, async (request, reply) => {
         const tweetnacl = (await import("tweetnacl")).default;
-        const publicKey = privacyKit.decodeBase64(request.body.publicKey);
-        const challenge = privacyKit.decodeBase64(request.body.challenge);
-        const signature = privacyKit.decodeBase64(request.body.signature);
-        const isValid = tweetnacl.sign.detached.verify(challenge, signature, publicKey);
-        if (!isValid) {
-            return reply.code(401).send({ error: 'Invalid signature' });
-        }
-
-        // Create or update user in database
-        const publicKeyHex = privacyKit.encodeHex(publicKey);
-        const user = await db.account.upsert({
-            where: { publicKey: publicKeyHex },
-            update: { updatedAt: new Date() },
-            create: { publicKey: publicKeyHex }
+        const result = await inTx(async (tx) => {
+            const challenge = await challengeService.consume(request.body.challengeId, tx);
+            if (!challenge) return null;
+            try {
+                const publicKey = privacyKit.decodeBase64(challenge.publicKey);
+                const signature = privacyKit.decodeBase64(request.body.signature);
+                if (publicKey.length !== tweetnacl.sign.publicKeyLength || signature.length !== tweetnacl.sign.signatureLength
+                    || !tweetnacl.sign.detached.verify(createAuthPayload({ origin: challenge.origin, purpose: "chimera-account-auth", challengeId: challenge.challengeId, nonce: challenge.nonce, publicKey: challenge.publicKey, expiresAt: challenge.expiresAt.toISOString() }), signature, publicKey)) return null;
+            } catch { return null; }
+            return tx.account.findUnique({ where: { publicKey: privacyKit.encodeHex(privacyKit.decodeBase64(challenge.publicKey)) } });
         });
-
-        return reply.send({
-            success: true,
-            token: await auth.createToken(user.id)
-        });
+        if (!result) return reply.code(401).send({ error: 'Unauthorized' });
+        return reply.send({ token: await auth.createToken(result.id) });
     });
 
     app.post('/v1/auth/request', {
