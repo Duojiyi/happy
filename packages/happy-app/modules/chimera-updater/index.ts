@@ -8,6 +8,7 @@ export type InspectedApk = {
 };
 
 type ChimeraUpdaterModule = {
+  hashFile(uri: string): Promise<string>;
   inspectApk(uri: string): Promise<InspectedApk>;
   canRequestPackageInstalls(): Promise<boolean>;
   openInstallPermissionSettings(): Promise<void>;

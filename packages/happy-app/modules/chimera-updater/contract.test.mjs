@@ -13,13 +13,17 @@ test('TypeScript exposes the asynchronous inspected APK contract', () => {
   assert.match(types, /canRequestPackageInstalls\(\): Promise<boolean>;/);
   assert.match(types, /openInstallPermissionSettings\(\): Promise<void>;/);
   assert.match(types, /launchInstaller\(uri: string\): Promise<void>;/);
+  assert.match(types, /hashFile\(uri: string\): Promise<string>;/);
 });
 
 test('Kotlin exposes asynchronous API methods and rejects ambiguous APK signers', () => {
   const kotlin = source('android/src/main/java/org/chimerahub/chimera/updater/ChimeraUpdaterModule.kt');
-  for (const method of ['inspectApk', 'canRequestPackageInstalls', 'openInstallPermissionSettings', 'launchInstaller']) {
+  for (const method of ['hashFile', 'inspectApk', 'canRequestPackageInstalls', 'openInstallPermissionSettings', 'launchInstaller']) {
     assert.match(kotlin, new RegExp(`AsyncFunction\\(\"${method}\"`));
   }
+  assert.match(kotlin, /FileInputStream\(file\)\.use/);
+  assert.match(kotlin, /digest\.update\(buffer, 0, count\)/);
+  assert.doesNotMatch(kotlin, /readBytes\(\)/);
   assert.match(kotlin, /PackageManager\.GET_SIGNING_CERTIFICATES/);
   assert.match(kotlin, /signatures\.size != 1/);
   assert.match(kotlin, /"signerSha256" to signerDigest\(packageInfo\)/);

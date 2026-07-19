@@ -22,7 +22,8 @@ function deps(overrides: Partial<AndroidUpdaterDependencies> = {}): AndroidUpdat
         currentVersionCode: 1,
         fetchManifest: vi.fn(async () => ({ payload, signature: 'signature' })),
         verifyManifest: vi.fn(async () => payload),
-        download: vi.fn(async () => ({ bytes: payload.size, sha256: payload.sha256 })),
+        download: vi.fn(async () => ({ bytes: payload.size })),
+        hashFile: vi.fn(async () => payload.sha256),
         move: vi.fn(async () => {}),
         remove: vi.fn(async () => {}),
         inspectApk: vi.fn(async () => ({ packageName: payload.packageName, versionName: payload.versionName, versionCode: payload.versionCode, signerSha256: payload.signerSha256 })),
@@ -88,7 +89,7 @@ describe('Android update state machine', () => {
     });
 
     test('rejects byte/sha mismatches and removes both partial and final files', async () => {
-        const d = deps({ download: vi.fn(async () => ({ bytes: 3, sha256: 'c'.repeat(64) })) });
+        const d = deps({ download: vi.fn(async () => ({ bytes: 3 })), hashFile: vi.fn(async () => 'c'.repeat(64)) });
         const updater = createAndroidUpdater(d);
         await updater.start({ announcementDismissed: true });
         expect(updater.getState()).toEqual({ phase: 'failed', retryOnNextStart: true });
@@ -126,27 +127,87 @@ describe('Android update state machine', () => {
 
     test('serializes concurrent starts to one download', async () => {
         const d = deps();
-        let resolveDownload!: (value: { bytes: number; sha256: string }) => void;
-        d.download = vi.fn((): Promise<{ bytes: number; sha256: string }> => new Promise((resolve) => { resolveDownload = resolve; }));
+        let resolveDownload!: (value: { bytes: number }) => void;
+        d.download = vi.fn((): Promise<{ bytes: number }> => new Promise((resolve) => { resolveDownload = resolve; }));
         const updater = createAndroidUpdater(d);
         const first = updater.start({ announcementDismissed: true });
         const second = updater.start({ announcementDismissed: true });
         await vi.waitFor(() => expect(d.download).toHaveBeenCalledTimes(1));
-        resolveDownload({ bytes: payload.size, sha256: payload.sha256 });
+        resolveDownload({ bytes: payload.size });
         await Promise.all([first, second]);
         expect(d.launchInstaller).toHaveBeenCalledTimes(1);
     });
 
     test('observes announcement dismissal that happens during an active download', async () => {
         const d = deps();
-        let resolveDownload!: (value: { bytes: number; sha256: string }) => void;
-        d.download = vi.fn((): Promise<{ bytes: number; sha256: string }> => new Promise((resolve) => { resolveDownload = resolve; }));
+        let resolveDownload!: (value: { bytes: number }) => void;
+        d.download = vi.fn((): Promise<{ bytes: number }> => new Promise((resolve) => { resolveDownload = resolve; }));
         const updater = createAndroidUpdater(d);
         const download = updater.start({ announcementDismissed: false });
         await vi.waitFor(() => expect(d.download).toHaveBeenCalledTimes(1));
         const dismissed = updater.start({ announcementDismissed: true });
-        resolveDownload({ bytes: payload.size, sha256: payload.sha256 });
+        resolveDownload({ bytes: payload.size });
         await Promise.all([download, dismissed]);
         expect(d.launchInstaller).toHaveBeenCalledTimes(1);
+    });
+
+    test('times out native hash, APK inspection, and installer launch phases', async () => {
+        for (const override of [
+            { hashFile: vi.fn(() => new Promise<string>(() => {})) },
+            { inspectApk: vi.fn(() => new Promise<never>(() => {})) },
+            { launchInstaller: vi.fn(() => new Promise<void>(() => {})) },
+        ]) {
+            const d = deps(override);
+            const updater = createAndroidUpdater(d, { downloadTimeoutMs: 5 });
+            await updater.start({ announcementDismissed: true });
+            expect(updater.getState()).toEqual({ phase: 'failed', retryOnNextStart: true });
+            expect(d.remove).toHaveBeenCalledWith(expect.stringMatching(/\.apk$|\.partial$/));
+        }
+    });
+
+    test('waits for an aborted download to pause before deleting its partial file', async () => {
+        const events: string[] = [];
+        let finishPause!: () => void;
+        const paused = new Promise<void>((resolve) => { finishPause = resolve; });
+        const d = deps({
+            download: vi.fn((_url, _partial, signal) => new Promise<never>((_, reject) => {
+                signal.addEventListener('abort', () => {
+                    void paused.then(() => {
+                        events.push('paused');
+                        reject(new Error('aborted'));
+                    });
+                }, { once: true });
+            })),
+            remove: vi.fn(async () => { events.push('removed'); }),
+        });
+        const updater = createAndroidUpdater(d, { downloadTimeoutMs: 5 });
+        const run = updater.start({ announcementDismissed: true });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(events).toEqual([]);
+        finishPause();
+        await run;
+        expect(events.slice(0, 2)).toEqual(['paused', 'removed']);
+    });
+
+    test('can cancel an active run and retry installer after the system UI returns', async () => {
+        const d = deps();
+        const updater = createAndroidUpdater(d);
+        await updater.start({ announcementDismissed: true });
+        expect(updater.getState()).toEqual({ phase: 'waiting-for-permission', fileUri: expect.stringMatching(/\.apk$/) });
+        await updater.start({ announcementDismissed: true });
+        expect(d.launchInstaller).toHaveBeenCalledTimes(2);
+        await updater.cancel();
+        expect(d.remove).toHaveBeenCalledWith(expect.stringMatching(/\.apk$/));
+        expect(updater.getState()).toEqual({ phase: 'idle' });
+
+        d.download = vi.fn((_url, _partial, signal) => new Promise<never>((_, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+        }));
+        const retrying = createAndroidUpdater(d);
+        const active = retrying.start({ announcementDismissed: true });
+        await vi.waitFor(() => expect(d.download).toHaveBeenCalled());
+        await retrying.cancel();
+        await active;
+        expect(retrying.getState()).toEqual({ phase: 'idle' });
     });
 });

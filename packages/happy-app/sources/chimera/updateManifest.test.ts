@@ -35,7 +35,7 @@ describe('update manifest', () => {
 
         await expect(verifyUpdateManifest({ payload, signature }, { publicKey, origin: 'https://updates.example.test', commitSha: payload.commitSha })).resolves.toEqual(payload);
         await expect(verifyUpdateManifest({ payload: { ...payload, size: 1235 }, signature }, { publicKey, origin: 'https://updates.example.test', commitSha: payload.commitSha })).rejects.toThrow(/signature/i);
-        const changedSignature = `${signature.slice(0, -1)}${signature.endsWith('A') ? 'B' : 'A'}`;
+        const changedSignature = `${signature.startsWith('A') ? 'B' : 'A'}${signature.slice(1)}`;
         await expect(verifyUpdateManifest({ payload, signature: changedSignature }, { publicKey, origin: 'https://updates.example.test', commitSha: payload.commitSha })).rejects.toThrow(/signature/i);
     });
 

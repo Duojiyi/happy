@@ -11,11 +11,26 @@ import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.io.File
+import java.io.FileInputStream
 import java.security.MessageDigest
 
 class ChimeraUpdaterModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("ChimeraUpdater")
+
+    AsyncFunction("hashFile") { fileUri: String ->
+      val file = requireCachedUpdateFile(fileUri, allowPartial = true)
+      val digest = MessageDigest.getInstance("SHA-256")
+      FileInputStream(file).use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+          val count = input.read(buffer)
+          if (count < 0) break
+          digest.update(buffer, 0, count)
+        }
+      }
+      digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+    }
 
     AsyncFunction("inspectApk") { fileUri: String ->
       val apk = requireCachedApk(fileUri)
@@ -60,6 +75,10 @@ class ChimeraUpdaterModule : Module() {
     ?: throw CodedException("E_CONTEXT_UNAVAILABLE", "Android context is unavailable.", null)
 
   private fun requireCachedApk(value: String): File {
+    return requireCachedUpdateFile(value, allowPartial = false)
+  }
+
+  private fun requireCachedUpdateFile(value: String, allowPartial: Boolean): File {
     val context = requireContext()
     try {
       val uri = Uri.parse(value)
@@ -67,7 +86,8 @@ class ChimeraUpdaterModule : Module() {
       if (uri.scheme != "file" || rawPath.isNullOrEmpty()) throw IllegalArgumentException()
       val file = File(rawPath).canonicalFile
       val cacheDirectory = File(context.cacheDir, "chimera-updates").canonicalFile
-      if (file.parentFile != cacheDirectory || !file.isFile || !file.name.endsWith(".apk", ignoreCase = true)) {
+      val allowedSuffix = file.name.endsWith(".apk", ignoreCase = true) || (allowPartial && file.name.endsWith(".partial", ignoreCase = true))
+      if (file.parentFile != cacheDirectory || !file.isFile || !allowedSuffix) {
         throw IllegalArgumentException()
       }
       return file
