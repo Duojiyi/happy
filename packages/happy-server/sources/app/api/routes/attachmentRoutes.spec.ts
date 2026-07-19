@@ -241,8 +241,8 @@ describe("attachmentRoutes — request-upload", () => {
             headers: { "x-user-id": "u1" },
             payload: { filename: "huge.bin", size: 10 * 1024 * 1024 + 1 },
         });
-        // Zod schema rejects size > 10MB at validation stage with 400.
-        expect([400, 413]).toContain(res.statusCode);
+        expect(res.statusCode).toBe(413);
+        expect(state.reservations).toHaveLength(0);
     });
 });
 
@@ -310,6 +310,34 @@ describe("attachmentRoutes — PUT (local-mode upload)", () => {
         });
         expect(res.statusCode).toBe(200);
         expect(filesMock.s3client.putObject).toHaveBeenCalledOnce();
+    });
+
+    it("rejects 10MiB + 1 before buffering into claim or storage", async () => {
+        seedSession("s1", "u1");
+        app = await createApp();
+        const res = await app.inject({
+            method: "PUT",
+            url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1",
+            headers: { "x-user-id": "u1", "content-type": "application/octet-stream" },
+            payload: Buffer.alloc(10 * 1024 * 1024 + 1),
+        });
+        expect(res.statusCode).toBe(413);
+        expect(state.claims).toHaveLength(0);
+        expect(state.uploads.size).toBe(0);
+    });
+
+    it("accepts an attachment exactly at the 10MiB body limit", async () => {
+        seedSession("s1", "u1");
+        app = await createApp();
+        const res = await app.inject({
+            method: "PUT",
+            url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1",
+            headers: { "x-user-id": "u1", "content-type": "application/octet-stream" },
+            payload: Buffer.alloc(10 * 1024 * 1024),
+        });
+        expect(res.statusCode).toBe(200);
+        expect(state.claims).toHaveLength(1);
+        expect(state.claims[0].bytes).toBe(10 * 1024 * 1024);
     });
 
     it("rolls back claimed usage when the atomic disk write fails", async () => {

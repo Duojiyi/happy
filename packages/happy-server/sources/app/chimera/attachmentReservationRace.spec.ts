@@ -109,4 +109,14 @@ describe.sequential("attachment claim/delete transaction race", () => {
         expect(await database.chimeraAttachmentCleanup.findUnique({ where: { sessionId: session.id } })).not.toBeNull();
         expect(await database.account.findUnique({ where: { id: account.id }, select: { attachmentReservedBytes: true, attachmentUsedBytes: true } })).toEqual({ attachmentReservedBytes: 0n, attachmentUsedBytes: 0n });
     });
+
+    it("keeps deletion busy past TTL until a paused write finalizes", async () => {
+        const { account, session, objectKey, reservation } = await fixture();
+        const claim = await quota.claim(session.id, reservation.id, account.id, objectKey, 80);
+        await database.chimeraAttachmentReservation.update({ where: { id: reservation.id }, data: { expiresAt: new Date(0) } });
+        expect(await quota.cleanupExpired()).toBe(0);
+        await expect(sessionDelete({ uid: account.id } as any, session.id, deletionDependencies() as any)).rejects.toBeInstanceOf(SessionAttachmentBusyError);
+        await quota.finalize(claim);
+        await expect(sessionDelete({ uid: account.id } as any, session.id, deletionDependencies() as any)).resolves.toBe(true);
+    });
 });

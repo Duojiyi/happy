@@ -83,7 +83,7 @@ export function attachmentRoutes(app: Fastify, dependencies: { quota?: Attachmen
             }),
             body: z.object({
                 filename: z.string(),
-                size: z.number().max(MAX_FILE_SIZE),
+                size: z.number().nonnegative(),
             }),
             response: {
                 200: z.object({
@@ -138,6 +138,7 @@ export function attachmentRoutes(app: Fastify, dependencies: { quota?: Attachmen
      * Only active when S3 is not configured.
      */
     app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', {
+        bodyLimit: MAX_FILE_SIZE,
         schema: {
             params: z.object({
                 sessionId: z.string(),

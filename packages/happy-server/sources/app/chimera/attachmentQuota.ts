@@ -38,12 +38,12 @@ export function createAttachmentQuotaService(dependencies: {
 
     const cleanupExpired = async () => {
         const expired = await database.chimeraAttachmentReservation.findMany({
-            where: { expiresAt: { lt: now() } }, orderBy: { expiresAt: "asc" }, take: EXPIRED_CLEANUP_BATCH,
+            where: { expiresAt: { lt: now() }, claimedAt: null }, orderBy: { expiresAt: "asc" }, take: EXPIRED_CLEANUP_BATCH,
         });
         let released = 0;
         for (const reservation of expired) {
             const didRelease = await runTransaction(async (tx) => {
-                const deleted = await tx.chimeraAttachmentReservation.deleteMany({ where: { id: reservation.id } });
+                const deleted = await tx.chimeraAttachmentReservation.deleteMany({ where: { id: reservation.id, claimedAt: null } });
                 if (deleted.count !== 1) return false;
                 await tx.account.update({ where: { id: reservation.accountId }, data: { attachmentReservedBytes: { decrement: reservation.bytes } } });
                 return true;
@@ -55,6 +55,9 @@ export function createAttachmentQuotaService(dependencies: {
 
     return {
         cleanupExpired,
+        async recoverStaleClaims() {
+            return database.chimeraAttachmentReservation.deleteMany({ where: { claimedAt: { not: null } } });
+        },
         async reserve(accountId: string, bytes: number, objectKey: string) {
             if (!Number.isSafeInteger(bytes) || bytes < 0 || !objectKey || objectKey.length > 500) throw new AttachmentQuotaError();
             await cleanupExpired();

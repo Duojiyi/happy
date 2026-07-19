@@ -50,8 +50,7 @@ export async function sessionDelete(ctx: Context, sessionId: string, dependencie
         const reservations = await tx.chimeraAttachmentReservation.findMany({
             where: { accountId: ctx.uid, objectKey: { startsWith: `sessions/${sessionId}/attachments/` } },
         });
-        const currentTime = new Date();
-        if (reservations.some((reservation: any) => reservation.claimedAt && reservation.expiresAt > currentTime)) {
+        if (reservations.some((reservation: any) => reservation.claimedAt)) {
             throw new SessionAttachmentBusyError();
         }
         for (const reservation of reservations) {

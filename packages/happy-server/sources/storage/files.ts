@@ -37,6 +37,8 @@ export { s3client, s3bucket, s3host };
 export async function loadFiles() {
     const { attachmentCleanupService, startAttachmentCleanupRetry, stopAttachmentCleanupRetry } = await import("@/app/chimera/attachmentCleanup");
     await attachmentCleanupService.drainPending();
+    const { createAttachmentQuotaService } = await import("@/app/chimera/attachmentQuota");
+    await createAttachmentQuotaService().recoverStaleClaims();
     if (useLocalStorage) {
         fs.mkdirSync(localFilesDir, { recursive: true });
         const { reconcileAttachmentStorage } = await import('@/app/chimera/attachmentQuota');
