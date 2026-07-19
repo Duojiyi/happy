@@ -19,8 +19,18 @@ export const AuthChallengeResponseSchema = z.object({
 
 export type AuthChallengeResponse = z.infer<typeof AuthChallengeResponseSchema>;
 
+export const AuthCompletionResponseSchema = z.object({
+    token: z.string().min(1),
+}).strict();
+
+export type AuthCompletionResponse = z.infer<typeof AuthCompletionResponseSchema>;
+
 export function parseAuthChallengeResponse(value: unknown): AuthChallengeResponse {
     return AuthChallengeResponseSchema.parse(value);
+}
+
+export function parseAuthCompletionResponse(value: unknown): AuthCompletionResponse {
+    return AuthCompletionResponseSchema.parse(value);
 }
 
 export function createAuthPayload(input: AuthChallengeResponse): string {

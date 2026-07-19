@@ -3,7 +3,7 @@ import { encodeBase64 } from "../encryption/base64";
 import { getServerUrl } from "@/sync/serverConfig";
 import { getHappyClientId } from "@/sync/apiSocket";
 import sodium from '@/encryption/libsodium.lib';
-import { createAuthPayload, parseAuthChallengeResponse } from './authChallengeV2';
+import { createAuthPayload, parseAuthChallengeResponse, parseAuthCompletionResponse } from './authChallengeV2';
 
 export async function authGetToken(secret: Uint8Array, inviteCode?: string) {
     const API_ENDPOINT = getServerUrl();
@@ -31,6 +31,5 @@ export async function authGetToken(secret: Uint8Array, inviteCode?: string) {
             'X-Happy-Client': getHappyClientId(),
         }
     });
-    const data = response.data;
-    return data.token;
+    return parseAuthCompletionResponse(response.data).token;
 }

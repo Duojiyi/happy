@@ -63,4 +63,25 @@ describe('authGetToken', () => {
         await expect(authGetToken(new Uint8Array(32))).rejects.toThrow('public key');
         expect(post).toHaveBeenCalledTimes(1);
     });
+
+    it.each([
+        ['a missing token', {}],
+        ['an empty token', { token: '' }],
+        ['a non-string token', { token: 123 }],
+        ['an unexpected field', { token: 'token', extra: true }],
+    ])('rejects a completion response with %s', async (_name, completion) => {
+        post
+            .mockResolvedValueOnce({ data: {
+                version: 2,
+                origin: 'https://39.98.68.173',
+                purpose: 'chimera-account-auth',
+                challengeId: 'challenge-id',
+                nonce: 'YWJjZA',
+                publicKey: 'AQID',
+                expiresAt: '2026-07-19T10:00:00.000Z',
+            } })
+            .mockResolvedValueOnce({ data: completion });
+
+        await expect(authGetToken(new Uint8Array(32))).rejects.toThrow();
+    });
 });
