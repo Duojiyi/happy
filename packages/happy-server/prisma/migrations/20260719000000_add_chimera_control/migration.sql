@@ -62,7 +62,6 @@ CREATE TABLE "ChimeraAttachmentReservation" (
     "id" TEXT NOT NULL,
     "accountId" TEXT NOT NULL,
     "bytes" BIGINT NOT NULL,
-    "objectKey" TEXT NOT NULL,
     "expiresAt" TIMESTAMP(3) NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 

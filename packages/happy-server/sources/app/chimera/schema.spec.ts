@@ -16,6 +16,31 @@ afterEach(async () => {
 });
 
 describe("Chimera Prisma security state", () => {
+    it("upgrades pre-object-key reservations without carrying unsafe quota state", async () => {
+        const pgliteDir = fs.mkdtempSync(path.join(os.tmpdir(), "happy-chimera-upgrade-"));
+        const oldMigrations = fs.mkdtempSync(path.join(os.tmpdir(), "happy-chimera-old-migrations-"));
+        tempDirs.push(pgliteDir, oldMigrations);
+        const source = path.resolve(process.cwd(), "prisma/migrations");
+        for (const name of fs.readdirSync(source).filter((name) => name <= "20260719000000_add_chimera_control")) {
+            fs.cpSync(path.join(source, name), path.join(oldMigrations, name), { recursive: true });
+        }
+        await runMigrations({ pgliteDir, migrationsDir: oldMigrations });
+        const before = new PGlite(pgliteDir);
+        await before.exec(`INSERT INTO "Account" ("id", "publicKey", "updatedAt", "attachmentReservedBytes") VALUES ('a1', 'upgrade-account', CURRENT_TIMESTAMP, 99)`);
+        await before.exec(`INSERT INTO "ChimeraAttachmentReservation" ("id", "accountId", "bytes", "expiresAt", "createdAt") VALUES ('r1', 'a1', 99, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
+        await before.close();
+
+        await runMigrations({ pgliteDir, migrationsDir: source });
+        const after = new PGlite(pgliteDir);
+        const prisma = new PrismaClient({ adapter: new PrismaPGlite(after) } as any) as any;
+        try {
+            expect(await prisma.chimeraAttachmentReservation.count()).toBe(0);
+            expect((await prisma.account.findUnique({ where: { id: "a1" } })).attachmentReservedBytes).toBe(0n);
+            const reservation = await prisma.chimeraAttachmentReservation.create({ data: { accountId: "a1", bytes: 1n, objectKey: "sessions/s1/attachments/a.enc", expiresAt: new Date("2026-07-21T00:00:00Z") } });
+            expect(reservation).toMatchObject({ objectKey: "sessions/s1/attachments/a.enc", claimedAt: null });
+        } finally { await prisma.$disconnect(); await after.close(); }
+    }, 20_000);
+
     it("persists defaults and rejects duplicate digests", async () => {
         const pgliteDir = fs.mkdtempSync(path.join(os.tmpdir(), "happy-chimera-schema-"));
         tempDirs.push(pgliteDir);
