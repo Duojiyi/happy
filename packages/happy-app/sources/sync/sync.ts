@@ -1,4 +1,4 @@
-import { apiSocket, getCurrentAppState, getHappyClientId } from '@/sync/apiSocket';
+import { apiSocket, getHappyClientId } from '@/sync/apiSocket';
 import { notifyUnreadMessage } from '@/sync/webTabTitle';
 import { AuthCredentials } from '@/auth/tokenStorage';
 import { Encryption } from '@/sync/encryption/encryption';

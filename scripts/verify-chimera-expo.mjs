@@ -8,7 +8,8 @@ assert.equal(config.android.package, 'org.chimerahub.chimera'); assert.deepEqual
 assert.equal(config.updates?.enabled, false); assert.equal(config.android.googleServicesFile, undefined);
 assert(!config.plugins.some(p => (Array.isArray(p) ? p[0] : p) === 'expo-notifications'));
 const permissions = config.android.permissions ?? [];
-assert(!permissions.includes('android.permission.RECORD_AUDIO')); assert(!permissions.includes('android.permission.POST_NOTIFICATIONS'));
+assert(permissions.includes('android.permission.CAMERA')); assert(!permissions.includes('android.permission.RECORD_AUDIO')); assert(!permissions.includes('android.permission.POST_NOTIFICATIONS'));
+assert(config.plugins.some(p => (Array.isArray(p) ? p[0] : p) === 'expo-camera'));
 const sourceRoot = new URL('../packages/happy-app/sources/', import.meta.url);
 for (const relative of ['sync/pushRegistration.ts', 'track/index.ts', 'track/tracking.ts', 'app/(app)/dev/expo-constants.tsx']) {
   const url = new URL(relative, sourceRoot);
@@ -20,6 +21,7 @@ for (const relative of ['sync/pushRegistration.ts', 'track/index.ts', 'track/tra
     assert(!/\bUpdates\./.test(source), `${relative} still calls Updates`);
   }
 }
+await assert.rejects(readFile(new URL('sync/apiPush.ts', sourceRoot)), 'sync/apiPush.ts still exists');
 const account = await readFile(new URL('app/(app)/settings/account.tsx', sourceRoot), 'utf8');
 assert(!/PushPermission|Registered Tokens|push notification/i.test(account), 'account still exposes push UI');
 const repositoryRoot = new URL('../', import.meta.url);
