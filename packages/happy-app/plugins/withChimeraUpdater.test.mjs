@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import withChimeraUpdater from './withChimeraUpdater.js';
+
+const pluginSource = fs.readFileSync(fileURLToPath(new URL('./withChimeraUpdater.js', import.meta.url)), 'utf8');
 
 const androidManifestFixture = () => ({
   manifest: {
@@ -63,4 +67,8 @@ test('repairs unsafe duplicate update providers without changing unrelated provi
   assert.equal(updates[0]['meta-data'].length, 1);
   assert.equal(updates[0]['meta-data'][0].$['android:resource'], '@xml/chimera_update_paths');
   assert.equal(providers.some((provider) => provider.$['android:authorities'] === '${applicationId}.other'), true);
+});
+
+test('does not copy native sources into the generated Android app', () => {
+  assert.doesNotMatch(pluginSource, /withDangerousMod|copyFileSync|ChimeraUpdaterModule\.kt/);
 });

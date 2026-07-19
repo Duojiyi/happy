@@ -33,7 +33,6 @@ test('autolinking discovers the local module and its Gradle project supplies Fil
   assert.equal(packageJson.name, 'chimera-updater');
   assert.deepEqual(config.android.modules, ['org.chimerahub.chimera.updater.ChimeraUpdaterModule']);
   assert.match(gradle, /androidx\.core:core:/);
-  assert.match(gradle, /java\.srcDirs = \[\]/);
-  assert.match(gradle, /res\.srcDirs = \[\]/);
+  assert.doesNotMatch(gradle, /sourceSets/);
   assert.match(source('../../app.config.js'), /autolinking: \{ nativeModulesDir: '\.\/modules' \}/);
 });

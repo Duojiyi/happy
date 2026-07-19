@@ -1,6 +1,4 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
+const { withAndroidManifest } = require('@expo/config-plugins');
 
 const INSTALL_PERMISSION = 'android.permission.REQUEST_INSTALL_PACKAGES';
 const PROVIDER_AUTHORITY = '${applicationId}.chimera.updates';
@@ -39,23 +37,5 @@ function withChimeraUpdaterManifest(config) {
   });
 }
 
-function copyNativeSource(config) {
-  return withDangerousMod(config, ['android', async (modConfig) => {
-    const moduleRoot = path.join(modConfig.modRequest.projectRoot, 'modules', 'chimera-updater', 'android', 'src', 'main');
-    const destinationRoot = path.join(modConfig.modRequest.platformProjectRoot, 'app', 'src', 'main');
-    const files = [
-      ['java', 'org', 'chimerahub', 'chimera', 'updater', 'ChimeraUpdaterModule.kt'],
-      ['res', 'xml', 'chimera_update_paths.xml'],
-    ];
-    for (const parts of files) {
-      const source = path.join(moduleRoot, ...parts);
-      const destination = path.join(destinationRoot, ...parts);
-      fs.mkdirSync(path.dirname(destination), { recursive: true });
-      fs.copyFileSync(source, destination);
-    }
-    return modConfig;
-  }]);
-}
-
-module.exports = (config) => copyNativeSource(withChimeraUpdaterManifest(config));
+module.exports = withChimeraUpdaterManifest;
 module.exports.applyToManifest = applyToManifest;
