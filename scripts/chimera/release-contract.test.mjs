@@ -59,7 +59,7 @@ export function validateClientReleaseWorkflow(workflow) {
   const signing = workflow.jobs?.signing;
   assert.ok(signing, 'signing job is required');
   assert.equal(signing.environment, 'android-signing', 'signing must use protected android-signing Environment');
-  assert.deepEqual(signing.permissions, { actions: 'read', attestations: 'read', contents: 'read' }, 'signing permissions must be minimal');
+  assert.deepEqual(signing.permissions, { actions: 'read', attestations: 'read', checks: 'read', contents: 'read' }, 'signing permissions must be minimal and allow check-run verification');
   assertNoCheckout(signing, 'signing');
   const sign = runs(signing);
   assertContains(sign, [
@@ -225,6 +225,7 @@ export function validateServerReleaseWorkflow(workflow) {
   const deploy = workflow.jobs?.deploy;
   assert.ok(deploy, 'server deployment job is required');
   assert.equal(deploy.environment, 'server-release', 'server deployment must be protected');
+  assert.deepEqual(deploy.permissions, { actions: 'read', attestations: 'read', checks: 'read', contents: 'read', packages: 'read' }, 'server deployment permissions must allow check-run and attestation verification only');
   assertNoCheckout(deploy, 'server deployment');
   const deployRun = runs(deploy);
   assertContains(deployRun, [/gh attestation verify/, /SECURITY_AUDIT_RUN_ID/, /MAINTAINABILITY_AUDIT_RUN_ID/, /check-runs/, /chimera-audit-security\.yml/, /chimera-audit-maintainability\.yml/, /chimera-security-audit-report/, /chimera-maintainability-audit-report/, /diffSha256/, /ssh/, /sha256:/, /running.*digest|deployed.*digest/i], 'server deployment');
@@ -382,5 +383,17 @@ if (releaseSource && serverSource) {
     const security = parse(securityAuditSource);
     security.jobs.audit.steps.push({ run: 'echo chimera-audit-maintainability.yml' });
     assert.throws(() => validateAuditWorkflows(security, parse(maintainabilityAuditSource)), /must not depend/);
+  });
+
+  test('rejects signing without check-run read permission', () => {
+    const workflow = parse(releaseSource);
+    delete workflow.jobs.signing.permissions.checks;
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /check-run verification/);
+  });
+
+  test('rejects server deployment without check-run read permission', () => {
+    const workflow = parse(serverSource);
+    delete workflow.jobs.deploy.permissions.checks;
+    assert.throws(() => validateServerReleaseWorkflow(workflow), /check-run and attestation/);
   });
 }

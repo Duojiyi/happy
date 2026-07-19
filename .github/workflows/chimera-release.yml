@@ -104,6 +104,7 @@ jobs:
     permissions:
       actions: read
       attestations: read
+      checks: read
       contents: read
     outputs:
       no-op: ${{ steps.preflight.outputs.no-op }}
