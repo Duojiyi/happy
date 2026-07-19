@@ -1,0 +1,47 @@
+services:
+  relay:
+    image: ${CHIMERA_IMAGE:-chimera-relay:local}
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - path: ./config/production.env
+        format: raw
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DB_PROVIDER: pglite
+      PGLITE_DIR: /var/lib/chimera/pglite
+      DATA_DIR: /var/lib/chimera
+      HAPPY_STATIC_DIR: /srv/chimera-web
+      METRICS_ENABLED: "false"
+      PUBLIC_URL: https://39.98.68.173
+    command:
+      - /bin/sh
+      - -ec
+      - pnpm --filter happy-server exec tsx ./sources/standalone.ts migrate && exec pnpm --filter happy-server start
+    volumes:
+      - chimera-data:/var/lib/chimera
+      - ./web/current:/srv/chimera-web:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  proxy:
+    image: caddy:2.10.2
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      relay:
+        condition: service_healthy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  chimera-data:
+  caddy-data:
+  caddy-config:

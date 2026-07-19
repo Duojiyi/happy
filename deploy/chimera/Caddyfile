@@ -1,0 +1,15 @@
+{
+    email admin@chimerahub.org
+}
+
+https://39.98.68.173 {
+    tls {
+        protocols tls1.2 tls1.3
+    }
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3000
+}
+
+http://39.98.68.173 {
+    redir https://39.98.68.173{uri} permanent
+}
