@@ -182,12 +182,15 @@ export function validateServerReleaseWorkflow(workflow) {
     /imageDigest|image-digest|sha256:/,
   ], 'server build');
   assert.ok(steps(build).some((step) => /build-push-action/.test(step.uses ?? '') && step.with?.file === 'Dockerfile.server' && /type=oci/.test(step.with?.outputs ?? '')), 'server build must build Dockerfile.server as OCI');
-  const scanner = steps(build).find((step) => /trivy-action/.test(step.uses ?? ''));
-  assert.ok(scanner, 'server build must use a pinned image scanner');
-  assert.equal(String(scanner.with?.['exit-code']), '1', 'scanner must fail the build at its threshold');
-  assert.match(String(scanner.with?.severity), /HIGH/);
-  assert.match(String(scanner.with?.severity), /CRITICAL/);
-  assert.equal(scanner.with?.['token-setup-trivy'], '', 'candidate scanner must not receive a GitHub token');
+  const scannerInstall = steps(build).find((step) => step.name === 'Install verified Trivy scanner');
+  assert.ok(scannerInstall, 'server build must install a verified image scanner');
+  assert.match(String(scannerInstall.env?.TRIVY_VERSION), /^\d+\.\d+\.\d+$/);
+  assert.match(String(scannerInstall.env?.TRIVY_ARCHIVE_SHA256), /^[0-9a-f]{64}$/);
+  assertContains(String(scannerInstall.run), [/github\.com\/aquasecurity\/trivy\/releases\/download/, /sha256sum --check --strict/], 'scanner install');
+  assert.doesNotMatch(serialized(scannerInstall), /github-token|github-pat|token-setup-trivy/i, 'candidate scanner must not receive a GitHub token');
+  const scanner = steps(build).find((step) => step.name === 'Scan image at checked-in fail threshold');
+  assert.ok(scanner, 'server build must scan the reviewed OCI archive');
+  assertContains(String(scanner.run), [/trivy image/, /--input dist\/server-image\.tar/, /--exit-code 1/, /--severity HIGH,CRITICAL/], 'scanner threshold');
   assert.ok(steps(build).some((step) => /sbom-action/.test(step.uses ?? '') && /spdx/i.test(stringify(step.with))), 'server build must emit SPDX SBOM');
   for (const [name, job] of Object.entries(workflow.jobs)) {
     if (name !== 'deploy') assert.doesNotMatch(serialized(job), /\$\{\{\s*secrets\./, `${name} must not receive deployment secrets`);
@@ -334,11 +337,11 @@ if (releaseSource && serverSource) {
     assert.throws(() => validateServerReleaseWorkflow(workflow), /mutable tags/);
   });
 
-  test('rejects unpinned scanner actions', () => {
+  test('rejects an unverified scanner archive', () => {
     const workflow = parse(serverSource);
-    const scanner = workflow.jobs.build.steps.find((step) => /trivy-action/.test(step.uses ?? ''));
-    scanner.uses = 'aquasecurity/trivy-action@master';
-    assert.throws(() => validateServerReleaseWorkflow(workflow), /full commit SHA/);
+    const scannerInstall = workflow.jobs.build.steps.find((step) => step.name === 'Install verified Trivy scanner');
+    scannerInstall.run = scannerInstall.run.replace('sha256sum --check --strict', 'true');
+    assert.throws(() => validateServerReleaseWorkflow(workflow), /scanner install/);
   });
 
   test('rejects a broader server archive attestation glob', () => {

@@ -143,17 +143,31 @@ jobs:
           outputs: type=oci,dest=dist/server-image.tar
           tags: chimera-server:candidate
 
+      - name: Install verified Trivy scanner
+        env:
+          TRIVY_VERSION: '0.69.3'
+          TRIVY_ARCHIVE_SHA256: 1816b632dfe529869c740c0913e36bd1629cb7688bd5634f4a858c1d57c88b75
+        run: |
+          set -euo pipefail
+          ARCHIVE=/tmp/trivy.tar.gz
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$ARCHIVE" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "$TRIVY_ARCHIVE_SHA256  $ARCHIVE" | sha256sum --check --strict
+          tar -xzf "$ARCHIVE" -C /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
       - name: Scan image at checked-in fail threshold
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
-        with:
-          scan-type: image
-          input: dist/server-image.tar
-          format: table
-          exit-code: '1'
-          ignore-unfixed: false
-          severity: HIGH,CRITICAL
-          cache: false
-          token-setup-trivy: ''
+        run: |
+          set -euo pipefail
+          trivy image \
+            --input dist/server-image.tar \
+            --format table \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --scanners vuln \
+            --timeout 15m
 
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@f8bdd1d8ac5e901a77a92f111440fdb1b593736b
