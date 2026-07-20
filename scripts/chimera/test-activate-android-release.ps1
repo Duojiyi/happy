@@ -61,7 +61,7 @@ writeFileSync(signature, sign(null, readFileSync(payload), keys.privateKey));
     Assert-True ($events[0] -eq "upload:.chimera-staging/android/$releaseId.apk.partial") 'APK must upload to its isolated partial name first'
     Assert-True ($events[1] -eq "upload:.chimera-staging/android/$releaseId.manifest.partial") 'manifest must upload only after the APK partial'
     Assert-True ($events[2] -eq "remote:activate-android:$releaseId") 'remote command must contain only the allowlisted verb and safe ID'
-    Assert-True (($events -join "`n") -match 'health:https://39\.98\.68\.173/downloads/chimera-update\.json:False') 'must health-check the active manifest'
+    Assert-True (($events -join "`n") -match 'health:https://103\.250\.173\.136/downloads/chimera-update\.json:False') 'must health-check the active manifest'
     Assert-True (($events -join "`n") -match [regex]::Escape("health:https://103.250.173.136$($payload.apkPath):True")) 'must range-check the active APK'
 
     $events.Clear()

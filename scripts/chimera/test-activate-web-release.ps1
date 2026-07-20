@@ -32,7 +32,7 @@ try {
     Assert-True ($events[0] -eq "upload:.chimera-staging/web/$commit.tar.gz.partial") 'web archive must use an isolated partial staging name'
     Assert-True ($events[1] -eq "remote:activate-web:$commit") 'web helper invocation must contain only verb and commit'
     Assert-True ($events.Contains('health:https://103.250.173.136/')) 'web root must pass after activation'
-    Assert-True (($events -join "`n") -match 'health:https://39\.98\.68\.173/assets/app-deadbeef\.js') 'representative hashed asset must pass after activation'
+    Assert-True (($events -join "`n") -match 'health:https://103\.250\.173\.136/assets/app-deadbeef\.js') 'representative hashed asset must pass after activation'
 
     $events.Clear()
     $badHealth = { param($Url) $events.Add("health:$Url"); $false }

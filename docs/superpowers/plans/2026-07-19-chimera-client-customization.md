@@ -51,7 +51,7 @@ const second = generateProductModule(product);
 assert.equal(first, second);
 assert.match(first, /PRODUCT_NAME = 'Chimera'/);
 assert.match(first, /ANDROID_APPLICATION_ID = 'org\.chimerahub\.chimera'/);
-assert.match(first, /RELAY_ORIGIN = 'https:\/\/39\.98\.68\.173'/);
+assert.match(first, /RELAY_ORIGIN = 'https:\/\/103\.250\.173\.136'/);
 assert.match(first, /UPDATE_PUBLIC_KEY = '[A-Za-z0-9_-]{43}'/);
 assert.match(first, /ANDROID_SIGNER_SHA256 = '[A-F0-9]{64}'/);
 assert.deepEqual(product.deepLinkSchemes, ['chimera', 'happy']);

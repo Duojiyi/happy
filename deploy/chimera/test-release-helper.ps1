@@ -57,7 +57,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-Match $inspector "signer_lines\[@\].*eq 1|#signer_lines\[@\].*eq 1" 'APK must contain exactly one signer'
 
     $web = $Sources.web
-    foreach ($pattern in @('chimera-validate-web-archive', 'representative=', 'https://39\.98\.68\.173/\$representative', 'web/previous', 'rollback-', 'kept <= 5')) {
+    foreach ($pattern in @('chimera-validate-web-archive', 'representative=', 'https://103\.250\.173\.136/\$representative', 'web/previous', 'rollback-', 'kept <= 5')) {
         Assert-Match $web $pattern "Web activation missing: $pattern"
     }
     Assert-Match $web 'install -m 0600 "\$source" "\$frozen"[\s\S]*chimera-validate-web-archive "\$frozen"' 'Web must validate root-frozen bytes, not mutable staging'
@@ -81,7 +81,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
         Assert-Match $Sources.caddy $pattern "Caddy automatic trusted IP certificate configuration missing: $pattern"
     }
     Assert-NoMatch $Sources.caddy 'tls\s+[^\r\n]*ip-(?:cert|key)\.pem|tls\s+internal' 'Caddy must not depend on a static or self-signed IP certificate'
-    foreach ($pattern in @('-checkip 39\.98\.68\.173', 'verify_args=\(-purpose sslserver -CAfile', 'openssl verify "\$\{verify_args\[@\]\}"', '-checkend 172800', 'Certificate/private key mismatch')) {
+    foreach ($pattern in @('-checkip 103\.250\.173\.136', 'verify_args=\(-purpose sslserver -CAfile', 'openssl verify "\$\{verify_args\[@\]\}"', '-checkend 172800', 'Certificate/private key mismatch')) {
         Assert-Match $Sources.tls $pattern "TLS provisioning missing: $pattern"
     }
     Assert-Match $Sources.update_key 'expected=ze6ngKGbk7dgWN5d6rXGO0YRE5y54hbLMULFoW5YTHc' 'update verifier key is not pinned'
@@ -93,7 +93,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     foreach ($pattern in @('\^\[a-f0-9\]\{40\}\$', 'path\.is_absolute\(\)', 'member\.issym\(\)', 'current-image\.next', 'curl.*127\.0\.0\.1:3000/health')) {
         Assert-Match $Sources.bootstrap $pattern "bootstrap deployment missing: $pattern"
     }
-    Assert-Match $Sources.bootstrap 'tls_healthy=0[\s\S]*for attempt in \{1\.\.90\}[\s\S]*curl.*--proto ''=https''[\s\S]*https://39\.98\.68\.173/health[\s\S]*\[\[ "\$tls_healthy" -eq 1 \]\]' 'bootstrap must wait with a bounded retry for initial ACME certificate readiness'
+    Assert-Match $Sources.bootstrap 'tls_healthy=0[\s\S]*for attempt in \{1\.\.90\}[\s\S]*curl.*--proto ''=https''[\s\S]*https://103\.250\.173\.136/health[\s\S]*\[\[ "\$tls_healthy" -eq 1 \]\]' 'bootstrap must wait with a bounded retry for initial ACME certificate readiness'
     Assert-NoMatch $Sources.bootstrap 'ip-(?:cert|key)\.pem' 'bootstrap must let Caddy provision and renew the IP certificate automatically'
     return $true
 }
