@@ -40,7 +40,7 @@ COPY packages/happy-server ./packages/happy-server
 RUN pnpm --filter @slopus/happy-wire build
 RUN pnpm --filter happy-server-self-host build
 RUN rm -rf node_modules packages/*/node_modules
-RUN pnpm install --prod --frozen-lockfile --filter happy-server-self-host... --filter @slopus/happy-wire...
+RUN pnpm install --prod --ignore-scripts --frozen-lockfile --filter happy-server-self-host... --filter @slopus/happy-wire...
 
 # Stage 3: runtime
 FROM node:20-bookworm-slim AS runner
