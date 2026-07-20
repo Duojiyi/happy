@@ -13,6 +13,10 @@ on:
       - 'pnpm-workspace.yaml'
       - 'package.json'
       - '.github/workflows/chimera-build.yml'
+      - '.github/workflows/chimera-audit-maintainability.yml'
+      - '.github/workflows/chimera-server-release.yml'
+      - 'Dockerfile'
+      - 'Dockerfile.server'
   push:
     branches: [main]
     paths:
@@ -26,6 +30,10 @@ on:
       - 'pnpm-workspace.yaml'
       - 'package.json'
       - '.github/workflows/chimera-build.yml'
+      - '.github/workflows/chimera-audit-maintainability.yml'
+      - '.github/workflows/chimera-server-release.yml'
+      - 'Dockerfile'
+      - 'Dockerfile.server'
   workflow_dispatch:
 
 concurrency:
