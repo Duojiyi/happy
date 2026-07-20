@@ -8,6 +8,7 @@ const {
     dbMock,
     filesMock,
     fsMock,
+    quotaMock,
     resetState,
     seedSession
 } = vi.hoisted(() => {
@@ -18,6 +19,13 @@ const {
         s3PostUrl: "https://s3.test/post-url",
         s3GetUrl: "https://s3.test/get-url",
         s3PolicyMaxLength: 0,
+        reservations: [] as Array<{ accountId: string; bytes: number; objectKey: string; id: string }>,
+        claims: [] as Array<{ reservationId: string; accountId: string; objectKey: string; bytes: number }>,
+        claimedReservationIds: new Set<string>(),
+        rollbacks: [] as Array<{ accountId: string; bytes: bigint }>,
+        writeFailure: false,
+        finalizeFailure: false,
+        deleteFailure: false,
     };
 
     const resetState = () => {
@@ -25,6 +33,13 @@ const {
         state.uploads = new Map();
         state.useLocalStorage = true;
         state.s3PolicyMaxLength = 0;
+        state.reservations = [];
+        state.claims = [];
+        state.claimedReservationIds = new Set();
+        state.rollbacks = [];
+        state.writeFailure = false;
+        state.finalizeFailure = false;
+        state.deleteFailure = false;
     };
 
     const seedSession = (id: string, accountId: string) => {
@@ -41,6 +56,10 @@ const {
 
     const filesMock = {
         s3client: {
+            putObject: vi.fn(async (_bucket: string, key: string, data: Buffer) => {
+                if (state.writeFailure) throw new Error("s3 write failed");
+                state.uploads.set(key, data);
+            }),
             newPostPolicy: () => {
                 const policy = {
                     bucket: "",
@@ -68,23 +87,41 @@ const {
         s3bucket: "test-bucket",
         isLocalStorage: vi.fn(() => state.useLocalStorage),
         getLocalFilesDir: vi.fn(() => "/tmp/test-files"),
-        putLocalFile: vi.fn(async (filePath: string, data: Buffer) => {
+        putLocalFileAtomic: vi.fn(async (filePath: string, data: Buffer) => {
+            if (state.writeFailure) throw new Error("disk write failed");
             state.uploads.set(filePath, data);
         }),
+        deleteAttachmentObject: vi.fn(async (filePath: string) => { if (state.deleteFailure) throw new Error("delete failed"); state.uploads.delete(filePath); }),
+    };
+
+    const quotaMock = {
+        reserve: vi.fn(async (accountId: string, bytes: number, objectKey: string) => {
+            const reservation = { accountId, bytes, objectKey, id: `r${state.reservations.length + 1}` };
+            state.reservations.push(reservation);
+            return reservation;
+        }),
+        claim: vi.fn(async (_sessionId: string, reservationId: string, accountId: string, objectKey: string, bytes: number) => {
+            if (state.claimedReservationIds.has(reservationId)) throw new Error("claimed");
+            state.claimedReservationIds.add(reservationId);
+            state.claims.push({ reservationId, accountId, objectKey, bytes });
+            return { id: reservationId, accountId, bytes: BigInt(bytes) };
+        }),
+        finalize: vi.fn(async () => { if (state.finalizeFailure) throw new Error("finalize failed"); }),
+        rollback: vi.fn(async (claim: { accountId: string; bytes: bigint }) => { state.rollbacks.push(claim); }),
     };
 
     const fsMock = {
         existsSync: vi.fn((p: string) => {
-            const rel = p.replace(/^\/tmp\/test-files\//, "");
+            const rel = p.replace(/\\/g, "/").replace(/^\/tmp\/test-files\//, "");
             return state.uploads.has(rel);
         }),
         readFileSync: vi.fn((p: string) => {
-            const rel = p.replace(/^\/tmp\/test-files\//, "");
+            const rel = p.replace(/\\/g, "/").replace(/^\/tmp\/test-files\//, "");
             return state.uploads.get(rel) ?? Buffer.alloc(0);
         }),
     };
 
-    return { state, dbMock, filesMock, fsMock, resetState, seedSession };
+    return { state, dbMock, filesMock, fsMock, quotaMock, resetState, seedSession };
 });
 
 vi.mock("@/storage/db", () => ({ db: dbMock }));
@@ -118,7 +155,7 @@ async function createApp() {
         (_req, body, done) => done(null, body),
     );
 
-    attachmentRoutes(typed);
+    attachmentRoutes(typed, { quota: quotaMock as any });
     await typed.ready();
     return typed;
 }
@@ -145,10 +182,12 @@ describe("attachmentRoutes — request-upload", () => {
         expect(body.method).toBe("PUT");
         expect(body.ref).toMatch(/^sessions\/s1\/attachments\/[A-Fa-f0-9-]+\.enc$/);
         expect(body.uploadUrl).toContain("/v1/sessions/s1/attachments/");
-        expect(body.uploadUrl).toMatch(/\.enc$/);
+        expect(body.uploadUrl).toMatch(/\.enc\?reservation=r1$/);
+        expect(body.uploadUrl).toContain("?reservation=r1");
+        expect(state.reservations).toEqual([{ accountId: "u1", bytes: 1024, objectKey: body.ref, id: "r1" }]);
     });
 
-    it("returns 200 with method=POST + formFields and a content-length-range policy in S3 mode", async () => {
+    it("uses the authenticated server PUT lifecycle in S3 mode", async () => {
         seedSession("s1", "u1");
         state.useLocalStorage = false;
         app = await createApp();
@@ -162,10 +201,9 @@ describe("attachmentRoutes — request-upload", () => {
 
         expect(res.statusCode).toBe(200);
         const body = res.json();
-        expect(body.method).toBe("POST");
-        expect(body.uploadUrl).toBe("https://s3.test/post-url");
-        expect(body.formFields).toBeDefined();
-        expect(state.s3PolicyMaxLength).toBe(10 * 1024 * 1024);
+        expect(body.method).toBe("PUT");
+        expect(body.formFields).toBeUndefined();
+        expect(state.reservations).toHaveLength(1);
     });
 
     it("returns 404 when the requesting user is not the session owner", async () => {
@@ -203,8 +241,8 @@ describe("attachmentRoutes — request-upload", () => {
             headers: { "x-user-id": "u1" },
             payload: { filename: "huge.bin", size: 10 * 1024 * 1024 + 1 },
         });
-        // Zod schema rejects size > 10MB at validation stage with 400.
-        expect([400, 413]).toContain(res.statusCode);
+        expect(res.statusCode).toBe(413);
+        expect(state.reservations).toHaveLength(0);
     });
 });
 
@@ -221,13 +259,14 @@ describe("attachmentRoutes — PUT (local-mode upload)", () => {
         const blob = Buffer.from("encrypted-bytes");
         const res = await app.inject({
             method: "PUT",
-            url: "/v1/sessions/s1/attachments/abc.enc",
+            url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1",
             headers: { "x-user-id": "u1", "content-type": "application/octet-stream" },
             payload: blob,
         });
 
         expect(res.statusCode).toBe(200);
         expect(state.uploads.get("sessions/s1/attachments/abc.enc")).toEqual(blob);
+        expect(state.claims).toEqual([{ reservationId: "r1", accountId: "u1", objectKey: "sessions/s1/attachments/abc.enc", bytes: blob.length }]);
     });
 
     it("rejects path traversal in attachment file segment", async () => {
@@ -237,7 +276,7 @@ describe("attachmentRoutes — PUT (local-mode upload)", () => {
 
         const evil = await app.inject({
             method: "PUT",
-            url: "/v1/sessions/s1/attachments/..evil",
+            url: "/v1/sessions/s1/attachments/..evil?reservation=r1",
             headers: { "x-user-id": "u1", "content-type": "application/octet-stream" },
             payload: Buffer.from("x"),
         });
@@ -251,25 +290,97 @@ describe("attachmentRoutes — PUT (local-mode upload)", () => {
 
         const res = await app.inject({
             method: "PUT",
-            url: "/v1/sessions/s1/attachments/abc.enc",
+            url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1",
             headers: { "x-user-id": "u2", "content-type": "application/octet-stream" },
             payload: Buffer.from("x"),
         });
         expect(res.statusCode).toBe(404);
     });
 
-    it("returns 404 for PUT in S3 mode (direct upload not available)", async () => {
+    it("writes S3 only through the authenticated PUT endpoint", async () => {
         seedSession("s1", "u1");
         state.useLocalStorage = false;
         app = await createApp();
 
         const res = await app.inject({
             method: "PUT",
-            url: "/v1/sessions/s1/attachments/abc.enc",
+            url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1",
             headers: { "x-user-id": "u1", "content-type": "application/octet-stream" },
             payload: Buffer.from("x"),
         });
-        expect(res.statusCode).toBe(404);
+        expect(res.statusCode).toBe(200);
+        expect(filesMock.s3client.putObject).toHaveBeenCalledOnce();
+    });
+
+    it("rejects 10MiB + 1 before buffering into claim or storage", async () => {
+        seedSession("s1", "u1");
+        app = await createApp();
+        const res = await app.inject({
+            method: "PUT",
+            url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1",
+            headers: { "x-user-id": "u1", "content-type": "application/octet-stream" },
+            payload: Buffer.alloc(10 * 1024 * 1024 + 1),
+        });
+        expect(res.statusCode).toBe(413);
+        expect(state.claims).toHaveLength(0);
+        expect(state.uploads.size).toBe(0);
+    });
+
+    it("accepts an attachment exactly at the 10MiB body limit", async () => {
+        seedSession("s1", "u1");
+        app = await createApp();
+        const res = await app.inject({
+            method: "PUT",
+            url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1",
+            headers: { "x-user-id": "u1", "content-type": "application/octet-stream" },
+            payload: Buffer.alloc(10 * 1024 * 1024),
+        });
+        expect(res.statusCode).toBe(200);
+        expect(state.claims).toHaveLength(1);
+        expect(state.claims[0].bytes).toBe(10 * 1024 * 1024);
+    });
+
+    it("rolls back claimed usage when the atomic disk write fails", async () => {
+        seedSession("s1", "u1");
+        state.writeFailure = true;
+        app = await createApp();
+        const res = await app.inject({
+            method: "PUT",
+            url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1",
+            headers: { "x-user-id": "u1", "content-type": "application/octet-stream" },
+            payload: Buffer.from("encrypted"),
+        });
+        expect(res.statusCode).toBe(507);
+        expect(state.rollbacks).toEqual([{ id: "r1", accountId: "u1", bytes: 9n }]);
+        expect(state.uploads.size).toBe(0);
+    });
+
+    it.each([true, false])("removes the written %s blob before rolling back a finalize failure", async (local) => {
+        seedSession("s1", "u1"); state.useLocalStorage = local; state.finalizeFailure = true; app = await createApp();
+        const res = await app.inject({ method: "PUT", url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1", headers: { "x-user-id": "u1", "content-type": "application/octet-stream" }, payload: Buffer.from("encrypted") });
+        expect(res.statusCode).toBe(507);
+        expect(state.uploads.size).toBe(0);
+        expect(state.rollbacks).toHaveLength(1);
+    });
+
+    it("does not release a reservation when finalize cleanup cannot delete the blob", async () => {
+        seedSession("s1", "u1"); state.finalizeFailure = true; state.deleteFailure = true; app = await createApp();
+        const res = await app.inject({ method: "PUT", url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1", headers: { "x-user-id": "u1", "content-type": "application/octet-stream" }, payload: Buffer.from("encrypted") });
+        expect(res.statusCode).toBe(507);
+        expect(state.uploads.size).toBe(1);
+        expect(state.rollbacks).toHaveLength(0);
+    });
+
+    it("allows only one concurrent PUT to claim and write a reservation", async () => {
+        seedSession("s1", "u1"); app = await createApp();
+        const payload = Buffer.from("encrypted");
+        const [first, second] = await Promise.all([
+            app.inject({ method: "PUT", url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1", headers: { "x-user-id": "u1", "content-type": "application/octet-stream" }, payload }),
+            app.inject({ method: "PUT", url: "/v1/sessions/s1/attachments/abc.enc?reservation=r1", headers: { "x-user-id": "u1", "content-type": "application/octet-stream" }, payload: Buffer.from("other") }),
+        ]);
+        expect([first.statusCode, second.statusCode].sort()).toEqual([200, 507]);
+        expect(state.claims).toHaveLength(1);
+        expect(state.uploads.get("sessions/s1/attachments/abc.enc")!.length).toBe(state.claims[0].bytes);
     });
 });
 

@@ -1,0 +1,496 @@
+name: Chimera Attested Server Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit_sha:
+        description: Reviewed 40-character server commit SHA on protected main
+        required: true
+        type: string
+      trusted_workflow_sha:
+        description: Trusted full SHA that supplied this workflow definition
+        required: true
+        type: string
+      security_audit_run_id:
+        description: Trusted security audit check run ID
+        required: true
+        type: string
+      maintainability_audit_run_id:
+        description: Trusted maintainability audit check run ID
+        required: true
+        type: string
+
+concurrency:
+  group: chimera-production-release
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  classify:
+    name: Classify reviewed server diff
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      server-required: ${{ steps.classify.outputs.server-required }}
+      base-sha: ${{ steps.classify.outputs.base-sha }}
+      diff-sha256: ${{ steps.classify.outputs.diff-sha256 }}
+    steps:
+      - name: Derive server requirement from accepted history
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          REPO='${{ github.repository }}'
+          BASE_TAG=$(gh api "repos/$REPO/releases?per_page=100" --jq '[.[] | select(.draft == false and .prerelease == false and (.tag_name | startswith("app-v")) and (.tag_name | contains("-chimera.")))][0].tag_name // empty')
+          BASE_SHA=''
+          if test -n "$BASE_TAG"; then BASE_SHA=$(gh api "repos/$REPO/git/ref/tags/$BASE_TAG" --jq '.object.sha'); fi
+          if test -z "$BASE_SHA"; then
+            BASE_SHA='4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+            SERVER_REQUIRED=true
+            gh api "repos/$REPO/git/trees/$REVIEWED_SHA?recursive=1" --jq '.tree[] | select(.type == "blob" or .type == "commit") | .path' | sort -u > /tmp/changed-paths
+            DIFF_SHA=$(sha256sum /tmp/changed-paths | cut -d ' ' -f 1)
+          else
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            COMPARE_STATUS=$(gh api "repos/$REPO/compare/$BASE_SHA...$REVIEWED_SHA" --jq '.status')
+            test "$COMPARE_STATUS" = 'ahead' -o "$COMPARE_STATUS" = 'identical'
+            gh api --paginate "repos/$REPO/compare/$BASE_SHA...$REVIEWED_SHA?per_page=100" --jq '.files[].filename' | sort -u > /tmp/changed-paths
+            DIFF_SHA=$(sha256sum /tmp/changed-paths | cut -d ' ' -f 1)
+            SERVER_REQUIRED=false
+            if grep -Eq '^(packages/happy-server/|packages/happy-wire/|Dockerfile\.server$|scripts/verify-chimera-server\.|scripts/chimera-standalone-blackbox\.|deploy/chimera/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.npmrc$|patches/)' /tmp/changed-paths; then SERVER_REQUIRED=true; fi
+          fi
+          echo "server-required=$SERVER_REQUIRED" >> "$GITHUB_OUTPUT"
+          echo "base-sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "diff-sha256=$DIFF_SHA" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build scan and test server image
+    needs: classify
+    if: ${{ github.ref == 'refs/heads/main' && needs.classify.outputs.server-required == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      image-digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - name: Validate reviewed workflow execution
+        env:
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test '${{ github.sha }}' = "$REVIEWED_SHA"
+          test '${{ github.sha }}' = "$TRUSTED_WORKFLOW_SHA"
+          test '${{ github.repository }}' = 'Duojiyi/happy'
+
+      - name: Checkout only the reviewed SHA
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.reviewed_commit_sha }}
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: 10.11.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run migration server protocol and policy tests
+        run: |
+          pnpm chimera:server:check
+          pnpm --filter @slopus/happy-wire test
+          pnpm chimera:server:policy
+          node --test scripts/chimera-standalone-blackbox.test.mjs
+          # The standalone blackbox performs a real temporary-database migrate before serving.
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+
+      - name: Create isolated image output directory
+        run: mkdir -p dist
+
+      - name: Build reviewed server OCI archive
+        id: image
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: .
+          file: Dockerfile.server
+          push: false
+          provenance: false
+          sbom: false
+          outputs: type=oci,dest=dist/server-image.tar
+          tags: chimera-server:candidate
+
+      - name: Scan image at checked-in fail threshold
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
+        with:
+          scan-type: image
+          input: dist/server-image.tar
+          format: table
+          exit-code: '1'
+          ignore-unfixed: false
+          severity: HIGH,CRITICAL
+          cache: false
+          token-setup-trivy: ''
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@f8bdd1d8ac5e901a77a92f111440fdb1b593736b
+        with:
+          image: oci-archive:dist/server-image.tar
+          format: spdx-json
+          output-file: dist/server.spdx.json
+          artifact-name: ''
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+          github-token: ''
+
+      - name: Bind image archive SBOM digest and reviewed source
+        env:
+          IMAGE_DIGEST_INPUT: ${{ steps.image.outputs.digest }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+        run: |
+          set -euo pipefail
+          IMAGE_DIGEST="$IMAGE_DIGEST_INPUT"
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          IMAGE_ARCHIVE_SHA=$(sha256sum dist/server-image.tar | cut -d ' ' -f 1)
+          SBOM_SHA=$(sha256sum dist/server.spdx.json | cut -d ' ' -f 1)
+          jq -e '.spdxVersion | startswith("SPDX-")' dist/server.spdx.json
+          jq -n \
+            --arg repository '${{ github.repository }}' \
+            --arg commitSha "$REVIEWED_SHA" \
+            --arg trustedWorkflowSha "$TRUSTED_WORKFLOW_SHA" \
+            --arg buildRunId '${{ github.run_id }}' \
+            --arg imageDigest "$IMAGE_DIGEST" \
+            --arg imageArchiveSha256 "$IMAGE_ARCHIVE_SHA" \
+            --arg sbomSha256 "$SBOM_SHA" \
+            '{schemaVersion: 1, repository: $repository, commitSha: $commitSha, trustedWorkflowSha: $trustedWorkflowSha, buildRunId: $buildRunId, imageDigest: $imageDigest, imageArchiveSha256: $imageArchiveSha256, sbomSha256: $sbomSha256}' \
+            > dist/server-release-input.json
+
+      - name: Upload exact server release inputs
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: chimera-server-release-input
+          path: |
+            dist/server-image.tar
+            dist/server.spdx.json
+            dist/server-release-input.json
+          if-no-files-found: error
+          retention-days: 3
+
+  provenance:
+    name: Attest server OCI digest and SBOM
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download server inputs by immutable artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
+          path: attest
+
+      - name: Verify exact server files and recorded digests
+        env:
+          EXPECTED_IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$(find attest -type f | wc -l)" -eq 3
+          test -f attest/server-image.tar
+          test -f attest/server.spdx.json
+          test -f attest/server-release-input.json
+          IMAGE_ARCHIVE_SHA=$(sha256sum attest/server-image.tar | cut -d ' ' -f 1)
+          SBOM_SHA=$(sha256sum attest/server.spdx.json | cut -d ' ' -f 1)
+          INDEX_DIGEST=$(tar -xOf attest/server-image.tar index.json | jq -er 'if (.manifests | length) == 1 then .manifests[0].digest else error("exactly one OCI manifest required") end')
+          test "$INDEX_DIGEST" = "$EXPECTED_IMAGE_DIGEST"
+          jq -e --arg repository '${{ github.repository }}' --arg commit "$REVIEWED_SHA" --arg workflow "$TRUSTED_WORKFLOW_SHA" --arg run '${{ github.run_id }}' --arg digest "$EXPECTED_IMAGE_DIGEST" --arg archive "$IMAGE_ARCHIVE_SHA" --arg sbom "$SBOM_SHA" '
+            .repository == $repository and .commitSha == $commit and .trustedWorkflowSha == $workflow and
+            .buildRunId == $run and .imageDigest == $digest and .imageArchiveSha256 == $archive and .sbomSha256 == $sbom
+          ' attest/server-release-input.json
+
+      - name: Attest the exact OCI archive handoff
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: attest/server-image.tar
+
+      - name: Attest immutable OCI image digest
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-name: ghcr.io/duojiyi/chimera-happy-server
+          subject-digest: ${{ needs.build.outputs.image-digest }}
+
+      - name: Attest SPDX SBOM to immutable OCI digest
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34
+        with:
+          subject-name: ghcr.io/duojiyi/chimera-happy-server
+          subject-digest: ${{ needs.build.outputs.image-digest }}
+          sbom-path: attest/server.spdx.json
+
+  publication:
+    name: Publish immutable server digest
+    needs: [build, provenance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: server-release
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+      packages: write
+    outputs:
+      image-digest: ${{ needs.build.outputs.image-digest }}
+    steps:
+      - name: Download attested server input by artifact ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
+          path: publish
+
+      - name: Verify repository head workflow run subject digest and signer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+        run: |
+          set -euo pipefail
+          test "$(find publish -type f | wc -l)" -eq 3
+          IMAGE_DIGEST="$EXPECTED_IMAGE_DIGEST"
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          DIGEST_HEX=${IMAGE_DIGEST#sha256:}
+          IMAGE_ARCHIVE_SHA=$(sha256sum publish/server-image.tar | cut -d ' ' -f 1)
+          SBOM_SHA=$(sha256sum publish/server.spdx.json | cut -d ' ' -f 1)
+          INDEX_DIGEST=$(tar -xOf publish/server-image.tar index.json | jq -er 'if (.manifests | length) == 1 then .manifests[0].digest else error("exactly one OCI manifest required") end')
+          test "$INDEX_DIGEST" = "$IMAGE_DIGEST"
+          jq -e --arg repository '${{ github.repository }}' --arg commit "$REVIEWED_SHA" --arg trustedWorkflowSha "$TRUSTED_WORKFLOW_SHA" --arg run '${{ github.run_id }}' --arg imageDigest "$IMAGE_DIGEST" --arg archive "$IMAGE_ARCHIVE_SHA" --arg sbom "$SBOM_SHA" '
+            .repository == $repository and .commitSha == $commit and .trustedWorkflowSha == $trustedWorkflowSha and
+            .buildRunId == $run and .imageDigest == $imageDigest and .imageArchiveSha256 == $archive and .sbomSha256 == $sbom
+          ' publish/server-release-input.json
+          gh attestation verify publish/server-image.tar --repo '${{ github.repository }}' \
+            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
+            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --signer-repo '${{ github.repository }}' \
+            --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
+            --signer-digest "$TRUSTED_WORKFLOW_SHA" \
+            --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
+            --deny-self-hosted-runners --format json > /tmp/archive-attestation.json
+          jq -e --arg digest "$IMAGE_ARCHIVE_SHA" '
+            length >= 1 and any(.[].verificationResult.statement.subject[]?; .digest.sha256 == $digest)
+          ' /tmp/archive-attestation.json
+          gh api "repos/${{ github.repository }}/attestations/sha256:$DIGEST_HEX" > /tmp/oci-attestations.json
+          jq -ce '.attestations[].bundle' /tmp/oci-attestations.json > /tmp/oci-attestations.jsonl
+          test "$(wc -l < /tmp/oci-attestations.jsonl)" -ge 2
+          tar -xOf publish/server-image.tar "blobs/sha256/$DIGEST_HEX" > /tmp/oci-manifest.json
+          test "$(sha256sum /tmp/oci-manifest.json | cut -d ' ' -f 1)" = "$DIGEST_HEX"
+          test "$(jq -r '.spdxVersion' publish/server.spdx.json)" = 'SPDX-2.3'
+          for PREDICATE in 'https://slsa.dev/provenance/v1' 'https://spdx.dev/Document/v2.3'; do
+            gh attestation verify /tmp/oci-manifest.json --repo '${{ github.repository }}' \
+              --bundle /tmp/oci-attestations.jsonl --predicate-type "$PREDICATE" \
+              --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
+              --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              --signer-repo '${{ github.repository }}' \
+              --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
+              --signer-digest "$TRUSTED_WORKFLOW_SHA" \
+              --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
+              --deny-self-hosted-runners
+          done
+
+      - name: Authenticate only to GHCR
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Publish and verify exact immutable OCI digest
+        env:
+          EXPECTED_IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}
+        run: |
+          set -euo pipefail
+          IMAGE_DIGEST="$EXPECTED_IMAGE_DIGEST"
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          IMAGE_REF="ghcr.io/duojiyi/chimera-happy-server@$IMAGE_DIGEST"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends skopeo
+          skopeo copy --all --preserve-digests oci-archive:publish/server-image.tar "docker://$IMAGE_REF"
+          PUBLISHED_DIGEST=$(skopeo inspect "docker://$IMAGE_REF" --format '{{.Digest}}')
+          test "$PUBLISHED_DIGEST" = "$IMAGE_DIGEST"
+
+  deploy:
+    name: Deploy attested server digest
+    needs: [classify, build, publication]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: server-release
+    permissions:
+      actions: read
+      attestations: read
+      checks: read
+      contents: read
+      packages: read
+    steps:
+      - name: Authenticate read-only to GHCR for OCI verification
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Download exact attested OCI deployment inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
+          path: deploy-input
+
+      - name: Reverify OCI attestation and independent audit checks online
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_IMAGE_DIGEST: ${{ needs.publication.outputs.image-digest }}
+          TRUSTED_WORKFLOW_SHA: ${{ inputs.trusted_workflow_sha }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+          SECURITY_AUDIT_RUN_ID_INPUT: ${{ inputs.security_audit_run_id }}
+          MAINTAINABILITY_AUDIT_RUN_ID_INPUT: ${{ inputs.maintainability_audit_run_id }}
+          EXPECTED_BASE_SHA: ${{ needs.classify.outputs.base-sha }}
+          EXPECTED_DIFF_SHA256: ${{ needs.classify.outputs.diff-sha256 }}
+        run: |
+          set -euo pipefail
+          IMAGE_DIGEST="$EXPECTED_IMAGE_DIGEST"
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_DIFF_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          IMAGE_REF="oci://ghcr.io/duojiyi/chimera-happy-server@$IMAGE_DIGEST"
+          test "$(find deploy-input -type f | wc -l)" -eq 3
+          test -f deploy-input/server-image.tar
+          test -f deploy-input/server-release-input.json
+          IMAGE_ARCHIVE_SHA=$(sha256sum deploy-input/server-image.tar | cut -d ' ' -f 1)
+          INDEX_DIGEST=$(tar -xOf deploy-input/server-image.tar index.json | jq -er 'if (.manifests | length) == 1 then .manifests[0].digest else error("exactly one OCI manifest required") end')
+          test "$INDEX_DIGEST" = "$IMAGE_DIGEST"
+          jq -e --arg repository '${{ github.repository }}' --arg commit "$REVIEWED_SHA" --arg workflow "$TRUSTED_WORKFLOW_SHA" --arg digest "$IMAGE_DIGEST" --arg archive "$IMAGE_ARCHIVE_SHA" '
+            .schemaVersion == 1 and .repository == $repository and .commitSha == $commit and
+            .trustedWorkflowSha == $workflow and .imageDigest == $digest and .imageArchiveSha256 == $archive
+          ' deploy-input/server-release-input.json
+          gh attestation verify deploy-input/server-image.tar --repo '${{ github.repository }}' \
+            --predicate-type 'https://slsa.dev/provenance/v1' \
+            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
+            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --signer-repo '${{ github.repository }}' \
+            --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
+            --signer-digest "$TRUSTED_WORKFLOW_SHA" \
+            --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
+            --deny-self-hosted-runners
+          gh api "repos/${{ github.repository }}/attestations/sha256:$IMAGE_ARCHIVE_SHA" \
+            --jq '.attestations[].bundle' > deploy-input/server-archive-attestation.jsonl
+          test "$(wc -l < deploy-input/server-archive-attestation.jsonl)" -ge 1
+          gh attestation verify deploy-input/server-image.tar --repo '${{ github.repository }}' \
+            --bundle deploy-input/server-archive-attestation.jsonl \
+            --predicate-type 'https://slsa.dev/provenance/v1' \
+            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
+            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            --signer-repo '${{ github.repository }}' \
+            --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
+            --signer-digest "$TRUSTED_WORKFLOW_SHA" \
+            --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
+            --deny-self-hosted-runners
+          for PREDICATE in 'https://slsa.dev/provenance/v1' 'https://spdx.dev/Document/v2.3'; do
+            gh attestation verify "$IMAGE_REF" --repo '${{ github.repository }}' --predicate-type "$PREDICATE" \
+              --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
+              --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              --signer-repo '${{ github.repository }}' \
+              --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
+              --signer-digest "$TRUSTED_WORKFLOW_SHA" \
+              --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
+              --deny-self-hosted-runners
+          done
+          SECURITY_AUDIT_RUN_ID="$SECURITY_AUDIT_RUN_ID_INPUT"
+          MAINTAINABILITY_AUDIT_RUN_ID="$MAINTAINABILITY_AUDIT_RUN_ID_INPUT"
+          test "$SECURITY_AUDIT_RUN_ID" != "$MAINTAINABILITY_AUDIT_RUN_ID"
+          for SPEC in "$SECURITY_AUDIT_RUN_ID:Chimera Security Audit" "$MAINTAINABILITY_AUDIT_RUN_ID:Chimera Maintainability Audit"; do
+            ID=${SPEC%%:*}; NAME=${SPEC#*:}
+            [[ "$ID" =~ ^[1-9][0-9]*$ ]]
+            gh api "repos/${{ github.repository }}/check-runs/$ID" > "/tmp/check-$ID.json"
+            jq -e --arg sha "$REVIEWED_SHA" --arg name "$NAME" '.head_sha == $sha and .name == $name and .conclusion == "success" and .app.slug == "github-actions"' "/tmp/check-$ID.json"
+            ACTION_RUN=$(jq -er '.details_url | capture("/actions/runs/(?<id>[0-9]+)").id' "/tmp/check-$ID.json")
+            EXPECTED_PATH='.github/workflows/chimera-audit-security.yml'
+            test "$NAME" = 'Chimera Security Audit' || EXPECTED_PATH='.github/workflows/chimera-audit-maintainability.yml'
+            gh api "repos/${{ github.repository }}/actions/runs/$ACTION_RUN" > "/tmp/audit-run-$ID.json"
+            jq -e --arg sha "$REVIEWED_SHA" --arg path "$EXPECTED_PATH" '.head_sha == $sha and .path == $path and .conclusion == "success"' "/tmp/audit-run-$ID.json"
+            ARTIFACT_NAME='chimera-security-audit-report'
+            REPORT_NAME='security-report.json'
+            AUDITOR_ID='chimera-security-v1'
+            test "$NAME" = 'Chimera Security Audit' || { ARTIFACT_NAME='chimera-maintainability-audit-report'; REPORT_NAME='maintainability-report.json'; AUDITOR_ID='chimera-maintainability-v1'; }
+            REPORT_DIR="/tmp/audit-report-$ID"
+            gh api "repos/${{ github.repository }}/actions/runs/$ACTION_RUN/artifacts" > "$REPORT_DIR-artifacts.json"
+            ARTIFACT_ID=$(jq -er --arg name "$ARTIFACT_NAME" '[.artifacts[] | select(.name == $name and .expired == false)] | if length == 1 then .[0].id else error("exactly one audit artifact required") end' "$REPORT_DIR-artifacts.json")
+            [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+            mkdir -p "$REPORT_DIR"
+            gh api "repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" > "$REPORT_DIR/report.zip"
+            unzip -q "$REPORT_DIR/report.zip" -d "$REPORT_DIR/content"
+            test "$(find "$REPORT_DIR/content" -type f | wc -l)" -eq 1
+            REPORT="$REPORT_DIR/content/$REPORT_NAME"
+            jq -e --arg sha "$REVIEWED_SHA" --arg base "$EXPECTED_BASE_SHA" --arg diff "$EXPECTED_DIFF_SHA256" --arg check "$NAME" --arg auditor "$AUDITOR_ID" '.reviewedSha == $sha and .baseSha == $base and .diffSha256 == $diff and .checkName == $check and .auditorId == $auditor and .resolution == "PASS" and .findings == []' "$REPORT"
+            gh attestation verify "$REPORT" --repo '${{ github.repository }}' \
+              --cert-identity "https://github.com/${{ github.repository }}/$EXPECTED_PATH@refs/heads/main" \
+              --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+              --signer-repo '${{ github.repository }}' --signer-workflow "${{ github.repository }}/$EXPECTED_PATH" \
+              --signer-digest "$REVIEWED_SHA" --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
+              --deny-self-hosted-runners
+          done
+
+      - name: Transfer exact attested OCI bytes to restricted server identity and confirm running digest
+        env:
+          CHIMERA_SERVER_DEPLOY_SSH_KEY: ${{ secrets.CHIMERA_SERVER_DEPLOY_SSH_KEY }}
+          CHIMERA_SERVER_DEPLOY_HOST_KEY: ${{ secrets.CHIMERA_SERVER_DEPLOY_HOST_KEY }}
+          EXPECTED_IMAGE_DIGEST: ${{ needs.publication.outputs.image-digest }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+        run: |
+          set -euo pipefail
+          IMAGE_DIGEST="$EXPECTED_IMAGE_DIGEST"
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          KEY="$RUNNER_TEMP/chimera-server-deploy"
+          KNOWN="$RUNNER_TEMP/chimera-server-known-hosts"
+          cleanup() { shred -u "$KEY" "$KNOWN" 2>/dev/null || true; }
+          trap cleanup EXIT
+          printf '%s\n' "$CHIMERA_SERVER_DEPLOY_SSH_KEY" > "$KEY"
+          printf '%s\n' "$CHIMERA_SERVER_DEPLOY_HOST_KEY" > "$KNOWN"
+          chmod 600 "$KEY" "$KNOWN"
+          SSH_ARGS=(-i "$KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN")
+          scp -O "${SSH_ARGS[@]}" deploy-input/server-image.tar "chimera-server-deploy@103.250.173.136:.chimera-staging/server/$REVIEWED_SHA.oci.partial"
+          scp -O "${SSH_ARGS[@]}" deploy-input/server-release-input.json "chimera-server-deploy@103.250.173.136:.chimera-staging/server/$REVIEWED_SHA.json.partial"
+          scp -O "${SSH_ARGS[@]}" deploy-input/server-archive-attestation.jsonl "chimera-server-deploy@103.250.173.136:.chimera-staging/server/$REVIEWED_SHA.attestation.partial"
+          RESULT=$(ssh "${SSH_ARGS[@]}" chimera-server-deploy@103.250.173.136 "deploy-server $REVIEWED_SHA $IMAGE_DIGEST")
+          printf '%s\n' "$RESULT"
+          DEPLOYED_DIGEST=$(printf '%s\n' "$RESULT" | sed -n 's/^deployed digest=//p')
+          RUNNING_DIGEST=$(printf '%s\n' "$RESULT" | sed -n 's/^running digest=//p')
+          test "$DEPLOYED_DIGEST" = "$IMAGE_DIGEST"
+          test "$RUNNING_DIGEST" = "$IMAGE_DIGEST"

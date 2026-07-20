@@ -6,7 +6,7 @@ import { Prisma } from "@prisma/client";
 import { log } from "@/utils/log";
 import { randomKeyNaked } from "@/utils/randomKeyNaked";
 import { allocateUserSeq } from "@/storage/seq";
-import { sessionDelete } from "@/app/session/sessionDelete";
+import { sessionDelete, SessionAttachmentBusyError } from "@/app/session/sessionDelete";
 
 export function sessionRoutes(app: Fastify) {
 
@@ -398,7 +398,12 @@ export function sessionRoutes(app: Fastify) {
         const userId = request.userId;
         const { sessionId } = request.params;
 
-        const deleted = await sessionDelete({ uid: userId }, sessionId);
+        let deleted: boolean;
+        try { deleted = await sessionDelete({ uid: userId }, sessionId); }
+        catch (error) {
+            if (error instanceof SessionAttachmentBusyError) return reply.code(409).send({ error: "Session attachment upload is in progress. Retry shortly." });
+            throw error;
+        }
 
         if (!deleted) {
             return reply.code(404).send({ error: 'Session not found or not owned by user' });

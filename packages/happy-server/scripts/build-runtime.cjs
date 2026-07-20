@@ -42,4 +42,13 @@ if (result.error) {
   throw result.error;
 }
 
+if (result.status === 0) {
+  const controlSource = path.join(root, 'sources', 'app', 'chimera', 'control');
+  const controlDist = path.join(dist, 'control');
+  fs.mkdirSync(controlDist, { recursive: true });
+  for (const asset of ['index.html', 'control.css', 'control.js']) {
+    fs.copyFileSync(path.join(controlSource, asset), path.join(controlDist, asset));
+  }
+}
+
 process.exit(result.status ?? 1);

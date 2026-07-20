@@ -58,4 +58,11 @@ EXPOSE 3005
 
 WORKDIR /repo/packages/happy-server
 
+FROM runner AS chimera-runtime-smoke
+
+WORKDIR /repo
+COPY --from=builder /repo/scripts/chimera/test-argon2-container.mjs /repo/scripts/chimera/test-argon2-container.mjs
+RUN node /repo/scripts/chimera/test-argon2-container.mjs
+
+WORKDIR /repo/packages/happy-server
 CMD ["sh", "-c", "../../node_modules/.bin/tsx sources/standalone.ts migrate && exec ../../node_modules/.bin/tsx sources/standalone.ts serve"]

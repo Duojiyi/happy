@@ -19,6 +19,7 @@ crypto.subtle.importKey = function (format: any, keyData: any, algorithm: any, e
 
 import * as fs from "fs";
 import * as path from "path";
+import { loadChimeraServerConfig } from "./app/chimera/config";
 import { createPGlite } from "./storage/pgliteLoader";
 
 const dataDir = process.env.DATA_DIR || "./data";
@@ -108,7 +109,9 @@ export async function runMigrations(opts: { pgliteDir: string; migrationsDir?: s
     await pg.close();
 }
 
-async function serve() {
+export async function serve(env: NodeJS.ProcessEnv = process.env) {
+    loadChimeraServerConfig(env);
+
     // Ensure DB_PROVIDER is set for db.ts
     process.env.DB_PROVIDER = process.env.DB_PROVIDER || "pglite";
     process.env.PGLITE_DIR = process.env.PGLITE_DIR || pgliteDir;
@@ -119,7 +122,8 @@ async function serve() {
     }
 
     const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3005;
-    const host = process.env.HOST || "0.0.0.0";
+    // The standalone listener is reachable only through the local reverse proxy.
+    const host = "127.0.0.1";
     const staticDir = findStaticDir();
     let injectHtmlConfig: Record<string, unknown> | undefined;
     if (process.env.HAPPY_INJECT_HTML_CONFIG) {

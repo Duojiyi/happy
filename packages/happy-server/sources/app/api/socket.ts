@@ -14,14 +14,40 @@ import { sessionUpdateHandler } from "./socket/sessionUpdateHandler";
 import { machineUpdateHandler } from "./socket/machineUpdateHandler";
 import { artifactUpdateHandler } from "./socket/artifactUpdateHandler";
 import { accessKeyHandler } from "./socket/accessKeyHandler";
+import { db } from "@/storage/db";
+
+const ACCOUNT_ROOM_PREFIX = "chimera-account:";
+let socketServer: Server | null = null;
+
+export async function assertSocketAccountActive(socket: any): Promise<boolean> {
+    const accountId = socket.data.accountId as string | undefined;
+    const tokenEpoch = socket.data.tokenEpoch as number | undefined;
+    const account = accountId && typeof tokenEpoch === "number"
+        ? await db.account.findUnique({ where: { id: accountId }, select: { disabledAt: true, tokenEpoch: true } })
+        : null;
+    if (account && !account.disabledAt && account.tokenEpoch === tokenEpoch) return true;
+    socket.disconnect(true);
+    return false;
+}
+
+export function disconnectAccountSockets(accountId: string, server: Pick<Server, "in"> | null = socketServer) {
+    server?.in(`${ACCOUNT_ROOM_PREFIX}${accountId}`).disconnectSockets(true);
+}
+
+export async function stopSocket() {
+    const server = socketServer;
+    socketServer = null;
+    if (!server) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+}
 
 export function startSocket(app: Fastify) {
     const io = new Server(app.server, {
         cors: {
-            origin: "*",
+            origin: "https://103.250.173.136",
             methods: ["GET", "POST", "OPTIONS"],
             credentials: true,
-            allowedHeaders: ["*"]
+            allowedHeaders: ["authorization", "content-type", "x-happy-client"]
         },
         transports: ['websocket', 'polling'],
         pingTimeout: 45000,
@@ -45,6 +71,7 @@ export function startSocket(app: Fastify) {
         //     maxDisconnectionDuration: 2 * 60 * 1000,
         // },
     });
+    socketServer = io;
 
     // Multi-process support: attach Redis streams adapter when REDIS_URL is set
     if (process.env.REDIS_URL) {
@@ -111,6 +138,8 @@ export function startSocket(app: Fastify) {
         }
 
         socket.data.userId = verified.userId;
+        socket.data.accountId = verified.userId;
+        socket.data.tokenEpoch = verified.tokenEpoch;
         socket.data.clientType = clientType;
         socket.data.sessionId = sessionId;
         socket.data.machineId = machineId;
@@ -126,8 +155,14 @@ export function startSocket(app: Fastify) {
         const sessionId = socket.data.sessionId as string | undefined;
         const machineId = socket.data.machineId as string | undefined;
         const labels = getMetricsLabelsFromSocket(socket);
+        socket.join(`${ACCOUNT_ROOM_PREFIX}${socket.data.accountId}`);
+        socket.use((event, next) => {
+            void assertSocketAccountActive(socket).then((active) => next(active ? undefined : new Error("Account is not active"))).catch(() => {
+                socket.disconnect(true); next(new Error("Account is not active"));
+            });
+        });
 
-        log({ module: 'websocket' }, `Token verified: ${userId}, clientType: ${clientType || 'user-scoped'}, client: ${labels.client}, sessionId: ${sessionId || 'none'}, machineId: ${machineId || 'none'}, socketId: ${socket.id}`);
+        log({ module: 'websocket' }, `Authenticated socket connected (${clientType || 'user-scoped'}, client: ${labels.client})`);
 
         // Store connection based on type
         const metadata = { clientType: clientType || 'user-scoped', sessionId, machineId };
@@ -191,7 +226,7 @@ export function startSocket(app: Fastify) {
             eventRouter.removeConnection(userId, connection);
             websocketConnectionsGauge.dec({ type: connection.connectionType, ...labels });
 
-            log({ module: 'websocket' }, `User disconnected: ${userId}`);
+            log({ module: 'websocket' }, 'Authenticated socket disconnected');
 
             // Broadcast daemon offline status
             if (connection.connectionType === 'machine-scoped') {
@@ -214,10 +249,10 @@ export function startSocket(app: Fastify) {
         accessKeyHandler(userId, socket);
 
         // Ready
-        log({ module: 'websocket' }, `User connected: ${userId}`);
+        log({ module: 'websocket' }, 'Authenticated socket ready');
     });
 
     onShutdown('api', async () => {
-        await io.close();
+        await stopSocket();
     });
 }

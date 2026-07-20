@@ -14,7 +14,8 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { Fastify } from '../types';
 import { db } from '@/storage/db';
-import { s3client, s3bucket, isLocalStorage, getLocalFilesDir, putLocalFile } from '@/storage/files';
+import { s3client, s3bucket, isLocalStorage, getLocalFilesDir, putLocalFileAtomic, deleteAttachmentObject } from '@/storage/files';
+import { createAttachmentQuotaService, type AttachmentQuotaService } from '@/app/chimera/attachmentQuota';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const PRESIGNED_TTL_SECONDS = 15 * 60; // 15 minutes (design spec)
@@ -68,7 +69,8 @@ function checkUploadRate(userId: string): boolean {
     return true;
 }
 
-export function attachmentRoutes(app: Fastify) {
+export function attachmentRoutes(app: Fastify, dependencies: { quota?: AttachmentQuotaService } = {}) {
+    const quota = dependencies.quota ?? createAttachmentQuotaService();
 
     /**
      * Request an upload URL for an attachment.
@@ -81,7 +83,7 @@ export function attachmentRoutes(app: Fastify) {
             }),
             body: z.object({
                 filename: z.string(),
-                size: z.number().max(MAX_FILE_SIZE),
+                size: z.number().nonnegative(),
             }),
             response: {
                 200: z.object({
@@ -93,6 +95,7 @@ export function attachmentRoutes(app: Fastify) {
                 404: z.object({ error: z.string() }),
                 413: z.object({ error: z.string() }),
                 429: z.object({ error: z.string() }),
+                507: z.object({ error: z.string() }),
             },
         },
         preHandler: app.authenticate,
@@ -122,31 +125,12 @@ export function attachmentRoutes(app: Fastify) {
         const attachmentFile = `${attachmentId}.enc`;
         const ref = `sessions/${sessionId}/attachments/${attachmentFile}`;
 
-        if (isLocalStorage()) {
-            // Local mode: client uploads to our own PUT endpoint (the server
-            // enforces the size limit by inspecting the request body before
-            // it hits disk, so PUT is fine here).
-            const baseUrl = resolveBaseUrl(request);
-            const uploadUrl = `${baseUrl}/v1/sessions/${sessionId}/attachments/${attachmentFile}`;
-            return reply.send({ ref, uploadUrl, method: 'PUT' });
-        } else {
-            // S3 mode: presigned POST policy with content-length-range so S3
-            // itself rejects oversize uploads — a presigned PUT cannot enforce
-            // size and would let a client honest about size in the auth call
-            // PUT 500MB at the URL afterwards.
-            const policy = s3client.newPostPolicy();
-            policy.setBucket(s3bucket);
-            policy.setKey(ref);
-            policy.setExpires(new Date(Date.now() + PRESIGNED_TTL_SECONDS * 1000));
-            policy.setContentLengthRange(0, MAX_FILE_SIZE);
-            const { postURL, formData } = await s3client.presignedPostPolicy(policy);
-            return reply.send({
-                ref,
-                uploadUrl: postURL,
-                method: 'POST',
-                formFields: formData as Record<string, string>,
-            });
-        }
+        let reservation;
+        try { reservation = await quota.reserve(userId, size, ref); }
+        catch { return reply.code(507).send({ error: 'Attachment upload unavailable' }); }
+        const baseUrl = resolveBaseUrl(request);
+        const uploadUrl = `${baseUrl}/v1/sessions/${sessionId}/attachments/${attachmentFile}?reservation=${encodeURIComponent(reservation.id)}`;
+        return reply.send({ ref, uploadUrl, method: 'PUT' });
     });
 
     /**
@@ -154,24 +138,24 @@ export function attachmentRoutes(app: Fastify) {
      * Only active when S3 is not configured.
      */
     app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', {
+        bodyLimit: MAX_FILE_SIZE,
         schema: {
             params: z.object({
                 sessionId: z.string(),
                 attachmentFile: z.string(),
             }),
+            querystring: z.object({ reservation: z.string().min(1).max(200) }).strict(),
             response: {
                 200: z.object({ ok: z.boolean() }),
                 404: z.object({ error: z.string() }),
                 413: z.object({ error: z.string() }),
+                507: z.object({ error: z.string() }),
             },
         },
         preHandler: app.authenticate,
     }, async (request, reply) => {
-        if (!isLocalStorage()) {
-            return reply.code(404).send({ error: 'Direct upload not available in S3 mode' });
-        }
-
         const { sessionId, attachmentFile } = request.params;
+        const { reservation } = request.query;
         const userId = request.userId;
 
         // Verify session ownership
@@ -193,7 +177,24 @@ export function attachmentRoutes(app: Fastify) {
         }
 
         const ref = `sessions/${sessionId}/attachments/${attachmentFile}`;
-        await putLocalFile(ref, body);
+        let claim;
+        try { claim = await quota.claim(sessionId, reservation, userId, ref, body.length); }
+        catch { return reply.code(507).send({ error: 'Attachment upload unavailable' }); }
+        try {
+            if (isLocalStorage()) await putLocalFileAtomic(ref, body);
+            else await s3client.putObject(s3bucket, ref, body, body.length, { "content-type": "application/octet-stream" });
+        }
+        catch {
+            await quota.rollback(claim).catch(() => undefined);
+            return reply.code(507).send({ error: 'Attachment upload unavailable' });
+        }
+        try { await quota.finalize(claim); }
+        catch {
+            try { await deleteAttachmentObject(ref); }
+            catch { return reply.code(507).send({ error: 'Attachment upload unavailable' }); }
+            await quota.rollback(claim).catch(() => undefined);
+            return reply.code(507).send({ error: 'Attachment upload unavailable' });
+        }
 
         return reply.send({ ok: true });
     });

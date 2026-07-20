@@ -1,5 +1,6 @@
 import * as privacyKit from "privacy-kit";
 import { log } from "@/utils/log";
+import { db } from "@/storage/db";
 
 /** Cache entries expire after 24 hours */
 const TOKEN_CACHE_TTL = 24 * 60 * 60 * 1000;
@@ -21,7 +22,7 @@ interface AuthTokens {
     githubGenerator: Awaited<ReturnType<typeof privacyKit.createEphemeralTokenGenerator>>;
 }
 
-class AuthModule {
+export class AuthModule {
     private tokenCache = new Map<string, TokenCacheEntry>();
     private tokens: AuthTokens | null = null;
     private cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -65,38 +66,42 @@ class AuthModule {
     }
     
     async createToken(userId: string, extras?: any): Promise<string> {
-        if (!this.tokens) {
+        const account = await db.account.findUnique({ where: { id: userId }, select: { disabledAt: true, tokenEpoch: true } });
+        if (!account || account.disabledAt) throw new Error('Account is not active');
+        return this.createTokenForEpoch(userId, account.tokenEpoch, extras);
+    }
+
+    /** Caller must have read this active account epoch inside its current serializable transaction. */
+    async createTokenForEpoch(userId: string, tokenEpoch: number, extras?: any): Promise<string> {
+        if (!this.tokens || !Number.isSafeInteger(tokenEpoch) || tokenEpoch < 0) {
             throw new Error('Auth module not initialized');
         }
-        
-        const payload: any = { user: userId };
-        if (extras) {
-            payload.extras = extras;
-        }
+        const tokenExtras = { ...(extras ?? {}), tokenEpoch };
+        const payload: any = { user: userId, extras: tokenExtras };
         
         const token = await this.tokens.generator.new(payload);
         
         // Cache the token immediately
         this.tokenCache.set(token, {
             userId,
-            extras,
+            extras: tokenExtras,
             cachedAt: Date.now()
         });
         
         return token;
     }
     
-    async verifyToken(token: string): Promise<{ userId: string; extras?: any } | null> {
+    async verifyToken(token: string): Promise<{ userId: string; extras?: any; tokenEpoch: number } | null> {
         // Check cache first (with TTL)
         const cached = this.tokenCache.get(token);
         if (cached) {
             if (Date.now() - cached.cachedAt > TOKEN_CACHE_TTL) {
                 this.tokenCache.delete(token);
             } else {
-                return {
-                    userId: cached.userId,
-                    extras: cached.extras
-                };
+                const epoch = cached.extras?.tokenEpoch;
+                if (typeof epoch !== 'number') return null;
+                const account = await db.account.findUnique({ where: { id: cached.userId }, select: { disabledAt: true, tokenEpoch: true } });
+                return account && !account.disabledAt && account.tokenEpoch === epoch ? { userId: cached.userId, extras: cached.extras, tokenEpoch: epoch } : null;
             }
         }
         
@@ -113,6 +118,10 @@ class AuthModule {
             
             const userId = verified.user as string;
             const extras = verified.extras;
+            const tokenEpoch = extras?.tokenEpoch;
+            if (typeof tokenEpoch !== 'number') return null;
+            const account = await db.account.findUnique({ where: { id: userId }, select: { disabledAt: true, tokenEpoch: true } });
+            if (!account || account.disabledAt || account.tokenEpoch !== tokenEpoch) return null;
             
             // Evict oldest entries if cache is at capacity
             if (this.tokenCache.size >= MAX_CACHE_SIZE) {
@@ -130,7 +139,7 @@ class AuthModule {
                 cachedAt: Date.now()
             });
             
-            return { userId, extras };
+            return { userId, extras, tokenEpoch };
             
         } catch (error) {
             log({ module: 'auth', level: 'error' }, `Token verification failed: ${error}`);
@@ -147,7 +156,7 @@ class AuthModule {
             }
         }
         
-        log({ module: 'auth' }, `Invalidated tokens for user: ${userId}`);
+        log({ module: 'auth' }, 'Invalidated cached account tokens');
     }
     
     invalidateToken(token: string): void {

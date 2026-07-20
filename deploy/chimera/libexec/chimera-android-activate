@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=/opt/chimera
+STAGING=/var/lib/chimera-android-deploy/.chimera-staging/android
+PUBLIC_KEY="$ROOT/config/update-manifest-public.pem"
+APK_INSPECTOR=/usr/local/libexec/chimera-apk-inspect
+EXPECTED_PACKAGE=org.chimerahub.chimera
+EXPECTED_SIGNER=58AA84B6C0D84963E841EED5EF953FC35D4B17D612C923D19A2264F96E4C8A93
+
+die() { printf 'Chimera Android activation rejected\n' >&2; exit 1; }
+sync_path() { sync -f "$1"; sync -f "$(dirname "$1")"; }
+IFS= read -r command || die
+IFS= read -r extra && die
+exec 9>/run/lock/chimera-production.lock
+flock -n 9 || die
+[[ "$command" =~ ^activate-android\ ([a-f0-9]{40})-v([1-9][0-9]*)$ ]] || die
+id="${BASH_REMATCH[1]}-v${BASH_REMATCH[2]}"
+commit="${BASH_REMATCH[1]}"
+version="${BASH_REMATCH[2]}"
+apk="$STAGING/$id.apk.partial"
+manifest="$STAGING/$id.manifest.partial"
+[[ -f "$apk" && ! -L "$apk" && -f "$manifest" && ! -L "$manifest" && -f "$PUBLIC_KEY" && ! -L "$PUBLIC_KEY" && -x "$APK_INSPECTOR" ]] || die
+
+work="$(mktemp -d "$ROOT/.android-verify.XXXXXX")"
+trap 'rm -rf -- "$work"' EXIT
+install -m 0600 "$apk" "$work/candidate.apk"
+install -m 0600 "$manifest" "$work/manifest.json"
+sync -f "$work/candidate.apk"
+sync -f "$work/manifest.json"
+apk_frozen="$work/candidate.apk"
+manifest_frozen="$work/manifest.json"
+python3 /usr/local/libexec/chimera-validate-android-release "$manifest_frozen" "$apk_frozen" "$commit" "$version" "$EXPECTED_PACKAGE" "$EXPECTED_SIGNER" "$work" || die
+openssl pkeyutl -verify -pubin -inkey "$PUBLIC_KEY" -rawin -in "$work/payload.json" -sigfile "$work/signature.bin" >/dev/null 2>&1 || die
+mapfile -t metadata < "$work/metadata"
+[[ "${#metadata[@]}" -eq 2 && "${metadata[0]}" =~ ^chimera-[A-Za-z0-9.-]+-[a-f0-9]{12}\.apk$ ]] || die
+filename="${metadata[0]}"
+version_name="${metadata[1]}"
+
+IFS=$'\t' read -r archive_package archive_version archive_name archive_signer < <("$APK_INSPECTOR" "$apk_frozen") || die
+[[ "$archive_package" == "$EXPECTED_PACKAGE" && "$archive_version" == "$version" && "$archive_name" == "$version_name" && "$archive_signer" == "$EXPECTED_SIGNER" ]] || die
+
+downloads="$ROOT/downloads"
+release="$downloads/releases/$id"
+incoming="$downloads/releases/.incoming-$id"
+[[ ! -e "$release" && ! -e "$incoming" ]] || die
+had_previous=0
+if [[ -f "$downloads/chimera-update.json" ]]; then
+  had_previous=1
+  current_version="$(python3 - "$downloads/chimera-update.json" <<'PY'
+import json, pathlib, sys
+p=json.loads(pathlib.Path(sys.argv[1]).read_text("utf-8"))["payload"]
+print(p["versionCode"] if type(p.get("versionCode")) is int else "invalid")
+PY
+)"
+  [[ "$current_version" =~ ^[1-9][0-9]*$ ]] || die
+  (( version > current_version )) || die
+fi
+
+install -d -m 0755 "$incoming"
+trap 'rm -rf -- "$work" "$incoming"' EXIT
+install -m 0644 "$apk_frozen" "$incoming/$filename"
+install -m 0644 "$manifest_frozen" "$incoming/chimera-update.json"
+sync_path "$incoming/$filename"
+sync_path "$incoming/chimera-update.json"
+mv -- "$incoming" "$release"
+sync -f "$downloads/releases"
+sync_path "$release/$filename"
+sync_path "$release/chimera-update.json"
+if ! ln "$release/$filename" "$downloads/$filename" 2>/dev/null; then
+  [[ -f "$downloads/$filename" && ! -L "$downloads/$filename" ]] || die
+  cmp --silent "$release/$filename" "$downloads/$filename" || die
+fi
+sync_path "$downloads/$filename"
+if [[ -f "$downloads/chimera-update.json" ]]; then
+  install -m 0644 "$downloads/chimera-update.json" "$downloads/.previous-update.json.next"
+  sync_path "$downloads/.previous-update.json.next"
+  mv -f -- "$downloads/.previous-update.json.next" "$downloads/previous-update.json"
+fi
+# The signed manifest is the activation pointer and is always replaced last.
+install -m 0644 "$release/chimera-update.json" "$downloads/.chimera-update.json.next"
+sync_path "$downloads/.chimera-update.json.next"
+mv -f -- "$downloads/.chimera-update.json.next" "$downloads/chimera-update.json"
+sync_path "$downloads/chimera-update.json"
+
+health_failed=0
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 https://103.250.173.136/downloads/chimera-update.json >/dev/null || health_failed=1
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 --range 0-0 "https://103.250.173.136/downloads/$filename" >/dev/null || health_failed=1
+if [[ "$health_failed" -ne 0 ]]; then
+  if [[ "$had_previous" -eq 1 ]]; then
+    install -m 0644 "$downloads/previous-update.json" "$downloads/.chimera-update.json.rollback"
+    sync_path "$downloads/.chimera-update.json.rollback"
+    mv -f -- "$downloads/.chimera-update.json.rollback" "$downloads/chimera-update.json"
+  else
+    rm -f -- "$downloads/chimera-update.json"
+  fi
+  rm -f -- "$downloads/$filename"
+  rm -rf -- "$release"
+  sync -f "$downloads"
+  die
+fi
+
+# GitHub Releases are canonical history. The mirror retains only active and
+# previous APKs/releases after the new signed manifest is healthy.
+previous_filename=""
+previous_id=""
+if [[ "$had_previous" -eq 1 ]]; then
+  mapfile -t previous < <(python3 - "$downloads/previous-update.json" <<'PY'
+import json,pathlib,re,sys
+p=json.loads(pathlib.Path(sys.argv[1]).read_text("utf-8"))["payload"]
+name=pathlib.PurePosixPath(p["apkPath"]).name
+release=f"{p['commitSha']}-v{p['versionCode']}"
+if not re.fullmatch(r"chimera-[A-Za-z0-9.-]+-[a-f0-9]{12}\.apk", name): raise SystemExit(1)
+if not re.fullmatch(r"[a-f0-9]{40}-v[1-9][0-9]*", release): raise SystemExit(1)
+print(name); print(release)
+PY
+) || die
+  [[ "${#previous[@]}" -eq 2 ]] || die
+  previous_filename="${previous[0]}"
+  previous_id="${previous[1]}"
+fi
+while IFS= read -r candidate; do
+  [[ "$candidate" == "$downloads/$filename" || ( -n "$previous_filename" && "$candidate" == "$downloads/$previous_filename" ) ]] || rm -f -- "$candidate"
+done < <(find "$downloads" -mindepth 1 -maxdepth 1 -type f -name 'chimera-*.apk' -print)
+while IFS= read -r candidate; do
+  [[ "$candidate" == "$release" || ( -n "$previous_id" && "$candidate" == "$downloads/releases/$previous_id" ) ]] || rm -rf --one-file-system -- "$candidate"
+done < <(find "$downloads/releases" -mindepth 1 -maxdepth 1 -type d -name '[a-f0-9]*-v*' -print)
+sync -f "$downloads"
+rm -f -- "$apk" "$manifest"
+trap - EXIT
+rm -rf -- "$work"

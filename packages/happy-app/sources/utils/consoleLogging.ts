@@ -11,26 +11,20 @@
  * ├─ consoleOutputEnabled = true? (default for dev/preview, or toggled on)
  * │  ├─ call original console method ✅
  * │  ├─ capture to in-app buffer ✅
- * │  └─ send to remote log server (if configured) ✅
  * │
  * └─ console.error / console.warn (always, regardless of flag)
  *    ├─ call original console method ✅
  *    ├─ capture to in-app buffer ✅
- *    └─ send to remote log server (if configured) ✅
  */
 
 import { log } from '@/log';
 import { MAX_APP_LOG_ENTRIES } from '@/log';
-import { getLogServerUrl } from '@/sync/serverConfig';
 import { loadLocalSettings } from '@/sync/persistence';
-import { loadAppConfig } from '@/sync/appConfig';
-import { Platform } from 'react-native';
 import { serializeForLogs } from '@/utils/truncateForLogs';
 
 let logBuffer: any[] = []
 const MAX_BUFFER_SIZE = MAX_APP_LOG_ENTRIES
 let isConsolePatched = false
-let remoteLogServerUrl: string | null = null
 let consoleOutputEnabled = false
 let originalConsole: {
   log: typeof console.log,
@@ -52,13 +46,10 @@ export function initConsoleLogging() {
     return
   }
 
-  remoteLogServerUrl = getLogServerUrl();
-
-  // Determine initial state: user setting > build variant default > off
+  // Console output is controlled locally and never reads remote configuration.
   try {
     const settings = loadLocalSettings();
-    const config = loadAppConfig();
-    consoleOutputEnabled = settings.consoleLoggingEnabled || config.consoleLoggingDefault || false;
+    consoleOutputEnabled = settings.consoleLoggingEnabled;
   } catch {
     consoleOutputEnabled = false;
   }
@@ -81,24 +72,6 @@ export function initConsoleLogging() {
     }).join(' ')
   }
 
-  function sendLog(level: string, formatted: string) {
-    if (!remoteLogServerUrl) {
-      return
-    }
-
-    void fetch(remoteLogServerUrl + '/logs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level,
-        message: formatted,
-        source: 'mobile',
-        platform: Platform.OS,
-      })
-    }).catch(() => {})
-  }
-
   // Patch console methods
   ;(['log', 'info', 'warn', 'error', 'debug'] as const).forEach(level => {
     const alwaysPassThrough = level === 'error' || level === 'warn'
@@ -113,7 +86,7 @@ export function initConsoleLogging() {
       // clickable stack traces, and multi-arg formatting in dev tools)
       originalConsole![level](...args)
 
-      // Serialize once for buffer + remote (but NOT for native console)
+      // Serialize once for the local buffer (but NOT for native console)
       const formatted = formatArgs(args)
       log.captureFormatted(level, formatted)
 
@@ -126,7 +99,6 @@ export function initConsoleLogging() {
         logBuffer.shift()
       }
 
-      sendLog(level, formatted)
     }
   })
 

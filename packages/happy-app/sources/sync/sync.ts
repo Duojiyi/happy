@@ -1,5 +1,4 @@
-import Constants from 'expo-constants';
-import { apiSocket, getCurrentAppState, getHappyClientId } from '@/sync/apiSocket';
+import { apiSocket, getHappyClientId } from '@/sync/apiSocket';
 import { notifyUnreadMessage } from '@/sync/webTabTitle';
 import { AuthCredentials } from '@/auth/tokenStorage';
 import { Encryption } from '@/sync/encryption/encryption';
@@ -20,34 +19,19 @@ import { Session, Machine } from './storageTypes';
 import { InvalidateSync } from '@/utils/sync';
 import { ActivityUpdateAccumulator } from './reducer/activityUpdateAccumulator';
 import { randomUUID } from 'expo-crypto';
-import * as Notifications from 'expo-notifications';
-import { syncCurrentPushToken } from './pushRegistration';
 import { Platform, AppState, type AppStateStatus } from 'react-native';
 import { isRunningOnMac } from '@/utils/platform';
 import { NormalizedMessage, normalizeRawMessage, RawRecord } from './typesRaw';
 import { applySettings, Settings, settingsDefaults, settingsParse, settingsToSyncPayload, SUPPORTED_SCHEMA_VERSION } from './settings';
 import { Profile, profileParse } from './profile';
 import { loadPendingSettings, savePendingSettings } from './persistence';
-import {
-    initializeTracking,
-    trackGitHubConnected,
-    trackMessageSent,
-    tracking,
-    trackPaywallCancelled,
-    trackPaywallError,
-    trackPaywallPresented,
-    trackPaywallPurchased,
-    trackPaywallRestored,
-} from '@/track';
+import { trackGitHubConnected, trackMessageSent } from '@/track';
 import type { MessageSentSource } from '@/track';
 import { parseToken } from '@/utils/parseToken';
-import { RevenueCat, LogLevel, PaywallResult } from './revenueCat';
 import { getServerUrl } from './serverConfig';
-import { config } from '@/config';
 import { log } from '@/log';
 import { gitStatusSync } from './gitStatusSync';
 import { AsyncLock } from '@/utils/lock';
-import { voiceHooks } from '@/realtime/hooks/voiceHooks';
 import { Message } from './typesMessage';
 import { EncryptionCache } from './encryption/encryptionCache';
 import { systemPrompt } from './prompt/systemPrompt';
@@ -127,10 +111,7 @@ class Sync {
     private artifactDataKeys = new Map<string, Uint8Array>(); // Store artifact data encryption keys internally
     private settingsSync: InvalidateSync;
     private profileSync: InvalidateSync;
-    private purchasesSync: InvalidateSync;
     private machinesSync: InvalidateSync;
-    private pushTokenSync: InvalidateSync;
-    private nativeUpdateSync: InvalidateSync;
     private artifactsSync: InvalidateSync;
     private friendsSync: InvalidateSync;
     private friendRequestsSync: InvalidateSync;
@@ -139,9 +120,7 @@ class Sync {
     private pendingSettings: Partial<Settings> = loadPendingSettings();
     private appState: AppStateStatus = AppState.currentState;
     private backgroundSendTimeout: ReturnType<typeof setTimeout> | null = null;
-    private backgroundSendNotificationId: string | null = null;
     private backgroundSendStartedAt: number | null = null;
-    revenueCatInitialized = false;
 
     // Generic locking mechanism
     private recalculationLockCount = 0;
@@ -151,48 +130,30 @@ class Sync {
         this.sessionsSync = new InvalidateSync(this.fetchSessions);
         this.settingsSync = new InvalidateSync(this.syncSettings);
         this.profileSync = new InvalidateSync(this.fetchProfile);
-        this.purchasesSync = new InvalidateSync(this.syncPurchases);
         this.machinesSync = new InvalidateSync(this.fetchMachines);
-        this.nativeUpdateSync = new InvalidateSync(this.fetchNativeUpdate);
         this.artifactsSync = new InvalidateSync(this.fetchArtifactsList);
         this.friendsSync = new InvalidateSync(this.fetchFriends);
         this.friendRequestsSync = new InvalidateSync(this.fetchFriendRequests);
         this.feedSync = new InvalidateSync(this.fetchFeed);
 
-        const registerPushToken = async () => {
-            await this.registerPushToken();
-        }
-        this.pushTokenSync = new InvalidateSync(registerPushToken);
         this.activityAccumulator = new ActivityUpdateAccumulator(this.flushActivityUpdates.bind(this), 2000);
 
         // Listen for app state changes to refresh purchases
         AppState.addEventListener('change', (nextAppState) => {
             this.appState = nextAppState;
 
-            // Notify server of focus state for push notification routing.
-            // Mobile: AppState.currentState reflects fg/bg directly.
-            // Web/desktop: visibilitychange/focus listeners below drive this same path
-            // by updating this.appState too — re-derive via getCurrentAppState() so
-            // the wire value matches what the server uses for suppression.
-            apiSocket.sendAppState(getCurrentAppState());
-
             if (nextAppState === 'active') {
                 const shouldFailAfterResume = this.backgroundSendStartedAt !== null
                     && this.hasPendingOutboxMessages()
                     && (Date.now() - this.backgroundSendStartedAt) >= Sync.BACKGROUND_SEND_TIMEOUT_MS;
-                void this.cancelBackgroundSendTimeoutNotification();
                 this.clearBackgroundSendWatchdog();
                 if (shouldFailAfterResume) {
-                    void this.notifyMessageSendFailed();
                     this.failPendingOutboxMessages('Message failed to send in background after 30s. Please retry.');
                 }
                 log.log('📱 App became active');
-                this.purchasesSync.invalidate();
                 this.profileSync.invalidate();
                 this.machinesSync.invalidate();
-                this.pushTokenSync.invalidate();
                 this.sessionsSync.invalidate();
-                this.nativeUpdateSync.invalidate();
                 log.log('📱 App became active: Invalidating artifacts sync');
                 this.artifactsSync.invalidate();
                 this.friendsSync.invalidate();
@@ -204,18 +165,6 @@ class Sync {
             }
         });
 
-        // Web/desktop: AppState alone doesn't capture tab focus/visibility.
-        // Notify server when the tab becomes hidden, regains visibility,
-        // or window focus changes — so push routing can suppress only when
-        // the user is actually looking at this client.
-        if (Platform.OS === 'web' && typeof document !== 'undefined') {
-            const broadcast = () => {
-                apiSocket.sendAppState(getCurrentAppState());
-            };
-            document.addEventListener('visibilitychange', broadcast);
-            window.addEventListener('focus', broadcast);
-            window.addEventListener('blur', broadcast);
-        }
     }
 
     async create(credentials: AuthCredentials, encryption: Encryption) {
@@ -231,13 +180,10 @@ class Sync {
         // Await profile sync to have fresh profile
         await this.profileSync.awaitQueue();
 
-        // Await purchases sync to have fresh purchases
-        await this.purchasesSync.awaitQueue();
     }
 
     async restore(credentials: AuthCredentials, encryption: Encryption) {
         // NOTE: No awaiting anything here, we're restoring from a disk (ie app restarted)
-        // Purchases sync is invalidated in #init() and will complete asynchronously
         this.credentials = credentials;
         this.encryption = encryption;
         this.anonID = encryption.anonID;
@@ -247,28 +193,12 @@ class Sync {
 
     async #init() {
 
-        // Subscribe to updates
-        this.subscribeToUpdates();
-
-        // Sync initial PostHog opt-out state with stored settings
-        if (tracking) {
-            const currentSettings = storage.getState().settings;
-            if (currentSettings.analyticsOptOut) {
-                tracking.optOut();
-            } else {
-                tracking.optIn();
-            }
-        }
-
         // Invalidate sync
         log.log('🔄 #init: Invalidating all syncs');
         this.sessionsSync.invalidate();
         this.settingsSync.invalidate();
         this.profileSync.invalidate();
-        this.purchasesSync.invalidate();
         this.machinesSync.invalidate();
-        this.pushTokenSync.invalidate();
-        this.nativeUpdateSync.invalidate();
         this.friendsSync.invalidate();
         this.friendRequestsSync.invalidate();
         this.artifactsSync.invalidate();
@@ -297,7 +227,6 @@ class Sync {
         // Notify voice assistant about session visibility
         const session = storage.getState().sessions[sessionId];
         if (session) {
-            voiceHooks.onSessionFocus(sessionId, session.metadata || undefined);
         }
     }
 
@@ -394,7 +323,6 @@ class Sync {
             this.backgroundSendTimeout = null;
             void this.handleBackgroundSendTimeout();
         }, Sync.BACKGROUND_SEND_TIMEOUT_MS);
-        void this.scheduleBackgroundSendTimeoutNotification();
     }
 
     private clearBackgroundSendWatchdog() {
@@ -403,58 +331,6 @@ class Sync {
             this.backgroundSendTimeout = null;
         }
         this.backgroundSendStartedAt = null;
-    }
-
-    private async scheduleBackgroundSendTimeoutNotification() {
-        if (Platform.OS === 'web' || this.backgroundSendNotificationId) {
-            return;
-        }
-        try {
-            this.backgroundSendNotificationId = await Notifications.scheduleNotificationAsync({
-                content: {
-                    title: 'Message not sent',
-                    body: 'A message is still sending in the background. It will fail in 30 seconds if not delivered.',
-                    sound: true
-                },
-                trigger: {
-                    type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
-                    seconds: Math.ceil(Sync.BACKGROUND_SEND_TIMEOUT_MS / 1000)
-                }
-            });
-        } catch (error) {
-            log.log(`Failed to schedule background send timeout notification: ${error}`);
-        }
-    }
-
-    private async cancelBackgroundSendTimeoutNotification() {
-        if (!this.backgroundSendNotificationId) {
-            return;
-        }
-        try {
-            await Notifications.cancelScheduledNotificationAsync(this.backgroundSendNotificationId);
-        } catch (error) {
-            log.log(`Failed to cancel background send timeout notification: ${error}`);
-        } finally {
-            this.backgroundSendNotificationId = null;
-        }
-    }
-
-    private async notifyMessageSendFailed() {
-        if (Platform.OS === 'web') {
-            return;
-        }
-        try {
-            await Notifications.scheduleNotificationAsync({
-                content: {
-                    title: 'Message failed',
-                    body: 'A message failed to send while the app was in background. Open Happy and retry.',
-                    sound: true
-                },
-                trigger: null
-            });
-        } catch (error) {
-            log.log(`Failed to schedule message failure notification: ${error}`);
-        }
     }
 
     private failPendingOutboxMessages(reasonText: string) {
@@ -491,13 +367,10 @@ class Sync {
 
     private async handleBackgroundSendTimeout() {
         if (!this.hasPendingOutboxMessages()) {
-            await this.cancelBackgroundSendTimeoutNotification();
             this.backgroundSendStartedAt = null;
             return;
         }
 
-        await this.cancelBackgroundSendTimeoutNotification();
-        await this.notifyMessageSendFailed();
         this.failPendingOutboxMessages('Message failed to send in background after 30s. Please retry.');
         this.backgroundSendStartedAt = null;
     }
@@ -754,130 +627,27 @@ class Sync {
         this.pendingSettings = { ...this.pendingSettings, ...delta };
         savePendingSettings(this.pendingSettings);
 
-        // Sync PostHog opt-out state if it was changed
-        if (tracking && 'analyticsOptOut' in delta) {
-            const currentSettings = storage.getState().settings;
-            if (currentSettings.analyticsOptOut) {
-                tracking.optOut();
-            } else {
-                tracking.optIn();
-            }
-        }
-
         // Invalidate settings sync
         this.settingsSync.invalidate();
-    }
-
-    refreshPurchases = () => {
-        this.purchasesSync.invalidate();
     }
 
     refreshProfile = async () => {
         await this.profileSync.invalidateAndAwait();
     }
 
-    purchaseProduct = async (productId: string): Promise<{ success: boolean; error?: string }> => {
-        try {
-            // Check if RevenueCat is initialized
-            if (!this.revenueCatInitialized) {
-                return { success: false, error: 'RevenueCat not initialized' };
-            }
+    refreshPurchases = () => undefined;
 
-            // Fetch the product
-            const products = await RevenueCat.getProducts([productId]);
-            if (products.length === 0) {
-                return { success: false, error: `Product '${productId}' not found` };
-            }
+    purchaseProduct = async (_productId: string): Promise<{ success: boolean; error?: string }> => (
+        { success: false, error: 'Purchases are unavailable in this product' }
+    );
 
-            // Purchase the product
-            const product = products[0];
-            const { customerInfo } = await RevenueCat.purchaseStoreProduct(product);
+    getOfferings = async (): Promise<{ success: boolean; offerings?: any; error?: string }> => (
+        { success: false, error: 'Purchases are unavailable in this product' }
+    );
 
-            // Update local purchases data
-            storage.getState().applyPurchases(customerInfo);
-
-            return { success: true };
-        } catch (error: any) {
-            // Check if user cancelled
-            if (error.userCancelled) {
-                return { success: false, error: 'Purchase cancelled' };
-            }
-
-            // Return the error message
-            return { success: false, error: error.message || 'Purchase failed' };
-        }
-    }
-
-    getOfferings = async (): Promise<{ success: boolean; offerings?: any; error?: string }> => {
-        try {
-            // Check if RevenueCat is initialized
-            if (!this.revenueCatInitialized) {
-                return { success: false, error: 'RevenueCat not initialized' };
-            }
-
-            // Fetch offerings
-            const offerings = await RevenueCat.getOfferings();
-
-            // Return the offerings data
-            return {
-                success: true,
-                offerings: {
-                    current: offerings.current,
-                    all: offerings.all
-                }
-            };
-        } catch (error: any) {
-            return { success: false, error: error.message || 'Failed to fetch offerings' };
-        }
-    }
-
-    presentPaywall = async (flow?: string): Promise<{ success: boolean; purchased?: boolean; error?: string }> => {
-        try {
-            // Check if RevenueCat is initialized
-            if (!this.revenueCatInitialized) {
-                const error = 'RevenueCat not initialized';
-                trackPaywallError(error, flow);
-                return { success: false, error };
-            }
-
-            // Track paywall presentation
-            trackPaywallPresented(flow);
-
-            // Present the paywall (with flow custom variable if specified)
-            const result = await RevenueCat.presentPaywall(
-                flow ? { customVariables: { flow } } : undefined
-            );
-
-            // Handle the result
-            switch (result) {
-                case PaywallResult.PURCHASED:
-                    trackPaywallPurchased(flow);
-                    // Refresh customer info after purchase
-                    await this.syncPurchases();
-                    return { success: true, purchased: true };
-                case PaywallResult.RESTORED:
-                    trackPaywallRestored(flow);
-                    // Refresh customer info after restore
-                    await this.syncPurchases();
-                    return { success: true, purchased: true };
-                case PaywallResult.CANCELLED:
-                    trackPaywallCancelled(flow);
-                    return { success: true, purchased: false };
-                case PaywallResult.NOT_PRESENTED:
-                    trackPaywallError('Paywall not presented', flow);
-                    return { success: false, error: 'Paywall not available on this platform' };
-                case PaywallResult.ERROR:
-                default:
-                    const errorMsg = 'Failed to present paywall';
-                    trackPaywallError(errorMsg, flow);
-                    return { success: false, error: errorMsg };
-            }
-        } catch (error: any) {
-            const errorMessage = error.message || 'Failed to present paywall';
-            trackPaywallError(errorMessage, flow);
-            return { success: false, error: errorMessage };
-        }
-    }
+    presentPaywall = async (_flow?: string): Promise<{ success: boolean; purchased?: boolean; error?: string }> => (
+        { success: false, error: 'Purchases are unavailable in this product' }
+    );
 
     async assumeUsers(userIds: string[]): Promise<void> {
         if (!this.credentials || userIds.length === 0) return;
@@ -1591,10 +1361,6 @@ class Sync {
                     // Update local storage with merged result at server's version
                     this.applyServerSettings(mergedSettings, data.currentVersion);
 
-                    // Sync tracking state with merged settings
-                    if (tracking) {
-                        mergedSettings.analyticsOptOut ? tracking.optOut() : tracking.optIn();
-                    }
 
                     // Log and retry
                     console.log('settings version-mismatch, retrying', {
@@ -1648,14 +1414,6 @@ class Sync {
         // Apply settings to storage, re-layering any pending local changes on top
         this.applyServerSettings(parsedSettings, data.settingsVersion);
 
-        // Sync PostHog opt-out state with settings
-        if (tracking) {
-            if (parsedSettings.analyticsOptOut) {
-                tracking.optOut();
-            } else {
-                tracking.optIn();
-            }
-        }
     }
 
     private fetchProfile = async () => {
@@ -1691,121 +1449,11 @@ class Sync {
         storage.getState().applyProfile(parsedProfile);
     }
 
-    private fetchNativeUpdate = async () => {
-        try {
-            // Skip in development
-            if ((Platform.OS !== 'android' && Platform.OS !== 'ios') || !Constants.expoConfig?.version) {
-                return;
-            }
-            if (Platform.OS === 'ios' && !Constants.expoConfig?.ios?.bundleIdentifier) {
-                return;
-            }
-            if (Platform.OS === 'android' && !Constants.expoConfig?.android?.package) {
-                return;
-            }
-
-            const serverUrl = getServerUrl();
-
-            // Get platform and app identifiers
-            const platform = Platform.OS;
-            const version = Constants.expoConfig?.version!;
-            const appId = (Platform.OS === 'ios' ? Constants.expoConfig?.ios?.bundleIdentifier! : Constants.expoConfig?.android?.package!);
-
-            const response = await fetch(`${serverUrl}/v1/version`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Happy-Client': getHappyClientId(),
-                },
-                body: JSON.stringify({
-                    platform,
-                    version,
-                    app_id: appId,
-                }),
-            });
-
-            if (!response.ok) {
-                console.log(`[fetchNativeUpdate] Request failed: ${response.status}`);
-                return;
-            }
-
-            const data = await response.json();
-            console.log('[fetchNativeUpdate] Data:', data);
-
-            // Apply update status to storage
-            if (data.update_required && data.update_url) {
-                storage.getState().applyNativeUpdateStatus({
-                    available: true,
-                    updateUrl: data.update_url
-                });
-            } else {
-                storage.getState().applyNativeUpdateStatus({
-                    available: false
-                });
-            }
-        } catch (error) {
-            console.log('[fetchNativeUpdate] Error:', error);
-            storage.getState().applyNativeUpdateStatus(null);
-        }
-    }
-
-    private syncPurchases = async () => {
-        try {
-            // Initialize RevenueCat if not already done
-            if (!this.revenueCatInitialized) {
-                // Get the appropriate API key based on platform
-                let apiKey: string | undefined;
-
-                if (Platform.OS === 'ios') {
-                    apiKey = config.revenueCatAppleKey;
-                } else if (Platform.OS === 'android') {
-                    apiKey = config.revenueCatGoogleKey;
-                } else if (Platform.OS === 'web') {
-                    apiKey = config.revenueCatStripeKey;
-                }
-
-                if (!apiKey) {
-                    console.log(`RevenueCat: No API key found for platform ${Platform.OS}`);
-                    return;
-                }
-
-                // Configure RevenueCat
-                if (__DEV__) {
-                    RevenueCat.setLogLevel(LogLevel.DEBUG);
-                }
-
-                // Initialize with the public ID as user ID
-                RevenueCat.configure({
-                    apiKey,
-                    appUserID: this.serverID, // In server this is a CUID, which we can assume is globaly unique even between servers
-                    useAmazon: false,
-                });
-
-                this.revenueCatInitialized = true;
-                console.log('RevenueCat initialized successfully');
-            }
-
-            // Sync purchases
-            await RevenueCat.syncPurchases();
-
-            // Fetch customer info
-            const customerInfo = await RevenueCat.getCustomerInfo();
-
-            // Apply to storage (storage handles the transformation)
-            storage.getState().applyPurchases(customerInfo);
-
-        } catch (error) {
-            console.error('Failed to sync purchases:', error);
-            // Don't throw - purchases are optional
-        }
-    }
-
     private flushOutbox = async (sessionId: string) => {
         const pending = this.pendingOutbox.get(sessionId);
         if (!pending || pending.length === 0) {
             if (!this.hasPendingOutboxMessages()) {
                 this.clearBackgroundSendWatchdog();
-                await this.cancelBackgroundSendTimeoutNotification();
                 this.backgroundSendStartedAt = null;
             }
             return;
@@ -1856,7 +1504,6 @@ class Sync {
         }
         if (!this.hasPendingOutboxMessages()) {
             this.clearBackgroundSendWatchdog();
-            await this.cancelBackgroundSendTimeoutNotification();
             this.backgroundSendStartedAt = null;
         } else if (this.appState !== 'active') {
             this.maybeStartBackgroundSendWatchdog();
@@ -2087,23 +1734,6 @@ class Sync {
         }
     }
 
-    private registerPushToken = async () => {
-        log.log('registerPushToken');
-        try {
-            const result = await syncCurrentPushToken(this.credentials);
-            log.log('Push token sync result: ' + JSON.stringify({
-                registered: result.registered,
-                hasToken: !!result.token,
-                permission: result.permission.status,
-            }));
-            if (!result.permission.granted) {
-                console.log('Failed to get push token for push notification!');
-            }
-        } catch (error) {
-            log.log('Failed to register push token: ' + JSON.stringify(error));
-        }
-    }
-
     private subscribeToUpdates = () => {
         // Subscribe to message updates
         apiSocket.onMessage('update', this.handleUpdate.bind(this));
@@ -2112,11 +1742,6 @@ class Sync {
         // Subscribe to connection state changes
         apiSocket.onReconnected(() => {
             log.log('🔌 Socket reconnected');
-
-            // Send current focus state on reconnect so the server's
-            // suppression rules pick up where we left off (handshake.auth.appState
-            // covers the very first connect; this covers reconnects).
-            apiSocket.sendAppState(getCurrentAppState());
 
             this.sessionsSync.invalidate();
             this.machinesSync.invalidate();
@@ -2312,7 +1937,6 @@ class Sync {
                         const requestIds = Object.keys(agentState.requests);
                         const firstRequest = agentState.requests[requestIds[0]];
                         const toolName = firstRequest?.tool;
-                        voiceHooks.onPermissionRequested(updateData.body.id, requestIds[0], toolName, firstRequest?.arguments);
                     }
 
                     // Re-fetch messages on control handoff so the newly active
@@ -2738,10 +2362,8 @@ class Sync {
             }
         }
         if (m.length > 0) {
-            voiceHooks.onMessages(sessionId, m);
         }
         if (result.hasReadyEvent) {
-            voiceHooks.onReady(sessionId);
         }
         if (result.enteredPlanMode) {
             // The EnterPlanMode auto-switch only wrote the local mirror; push
@@ -2765,12 +2387,10 @@ class Sync {
         let isActive = new Set(newActive.map(s => s.id));
         for (let s of active) {
             if (!isActive.has(s.id)) {
-                voiceHooks.onSessionOffline(s.id, s.metadata ?? undefined);
             }
         }
         for (let s of newActive) {
             if (!wasActive.has(s.id)) {
-                voiceHooks.onSessionOnline(s.id, s.metadata ?? undefined);
             }
         }
     }
@@ -2812,8 +2432,6 @@ async function syncInit(credentials: AuthCredentials, restore: boolean) {
     }
     const encryption = await Encryption.create(secretKey);
 
-    // Initialize tracking
-    initializeTracking(encryption.anonID);
 
     // Initialize socket connection
     const API_ENDPOINT = getServerUrl();

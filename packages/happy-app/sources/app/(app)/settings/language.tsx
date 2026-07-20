@@ -7,7 +7,6 @@ import { useSettingMutable } from '@/sync/storage';
 import { useUnistyles } from 'react-native-unistyles';
 import { t, getLanguageNativeName, SUPPORTED_LANGUAGES, SUPPORTED_LANGUAGE_CODES, type SupportedLanguage } from '@/text';
 import { Modal } from '@/modal';
-import { useUpdates } from '@/hooks/useUpdates';
 import * as Localization from 'expo-localization';
 
 type LanguageOption = 'auto' | SupportedLanguage;
@@ -21,7 +20,6 @@ interface LanguageItem {
 export default function LanguageSettingsScreen() {
     const { theme } = useUnistyles();
     const [preferredLanguage, setPreferredLanguage] = useSettingMutable('preferredLanguage');
-    const { reloadApp } = useUpdates();
 
     // Get device locale for automatic detection
     const deviceLocale = Localization.getLocales()?.[0]?.languageTag ?? 'en-US';
@@ -65,9 +63,6 @@ export default function LanguageSettingsScreen() {
             setPreferredLanguage(newPreference);
 
             // Small delay to ensure setting is saved
-            setTimeout(() => {
-                reloadApp();
-            }, 100);
         }
     };
 

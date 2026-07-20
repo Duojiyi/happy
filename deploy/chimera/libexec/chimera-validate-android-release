@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+import base64
+import hashlib
+import json
+import pathlib
+import re
+import sys
+
+if len(sys.argv) != 8:
+    raise SystemExit(2)
+manifest_path, apk_path, commit, version, package, signer, work_path = sys.argv[1:]
+envelope = json.loads(pathlib.Path(manifest_path).read_text("utf-8"))
+if set(envelope) != {"payload", "signature"} or not isinstance(envelope["signature"], str):
+    raise SystemExit(1)
+p = envelope["payload"]
+required = {"schemaVersion", "packageName", "versionName", "versionCode", "apkPath", "size", "sha256", "signerSha256", "commitSha", "publishedAt"}
+if not isinstance(p, dict) or set(p) != required:
+    raise SystemExit(1)
+if p["schemaVersion"] != 1 or p["packageName"] != package or p["signerSha256"] != signer:
+    raise SystemExit(1)
+if p["commitSha"] != commit or type(p["versionCode"]) is not int or p["versionCode"] != int(version):
+    raise SystemExit(1)
+if not isinstance(p["versionName"], str) or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.-]{0,79}", p["versionName"]):
+    raise SystemExit(1)
+if not isinstance(p["publishedAt"], str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", p["publishedAt"]):
+    raise SystemExit(1)
+if not isinstance(p["sha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", p["sha256"]):
+    raise SystemExit(1)
+expected_name = f"chimera-{p['versionName']}-{p['sha256'][:12]}.apk"
+if p["apkPath"] != f"/downloads/{expected_name}":
+    raise SystemExit(1)
+apk = pathlib.Path(apk_path)
+digest = hashlib.sha256()
+size = 0
+with apk.open("rb") as stream:
+    while chunk := stream.read(1024 * 1024):
+        size += len(chunk)
+        digest.update(chunk)
+if type(p["size"]) is not int or size != p["size"] or digest.hexdigest() != p["sha256"]:
+    raise SystemExit(1)
+signature = envelope["signature"]
+if not re.fullmatch(r"[A-Za-z0-9_-]{86}", signature):
+    raise SystemExit(1)
+padding = "=" * ((4 - len(signature) % 4) % 4)
+work = pathlib.Path(work_path)
+if not work.is_dir() or work.is_symlink():
+    raise SystemExit(1)
+work.joinpath("payload.json").write_text(json.dumps(p, sort_keys=True, separators=(",", ":"), ensure_ascii=False), "utf-8")
+work.joinpath("signature.bin").write_bytes(base64.urlsafe_b64decode(signature + padding))
+work.joinpath("metadata").write_text(f"{expected_name}\n{p['versionName']}\n", "utf-8")

@@ -1,0 +1,28 @@
+{
+    email admin@chimerahub.org
+}
+
+https://103.250.173.136 {
+    import /etc/chimera/config/maintenance.caddy
+    # Let's Encrypt short-lived IP certificates are renewed automatically in
+    # Caddy's persistent data volume. Port 80 must remain publicly reachable.
+    tls {
+        issuer acme {
+            dir https://acme-v02.api.letsencrypt.org/directory
+            profile shortlived
+        }
+        protocols tls1.2 tls1.3
+    }
+    encode zstd gzip
+    handle_path /downloads/* {
+        root * /srv/chimera-downloads
+        file_server
+    }
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}
+
+http://103.250.173.136 {
+    redir https://103.250.173.136{uri} permanent
+}

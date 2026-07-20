@@ -14,7 +14,6 @@ import { StatusDot } from './StatusDot';
 import { StyleSheet } from 'react-native-unistyles';
 import { useIsTablet } from '@/utils/responsive';
 import { requestReview } from '@/utils/requestReview';
-import { UpdateBanner } from './UpdateBanner';
 import { layout } from './layout';
 import { useNavigateToSession } from '@/hooks/useNavigateToSession';
 import { SessionActionsAnchor, SessionActionsPopover } from './SessionActionsPopover';
@@ -309,9 +308,7 @@ export function SessionsList() {
 
 
     const HeaderComponent = React.useCallback(() => {
-        return (
-            <UpdateBanner />
-        );
+        return null;
     }, []);
 
     // Footer removed - all sessions now shown inline

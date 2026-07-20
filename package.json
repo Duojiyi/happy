@@ -22,7 +22,14 @@
         "env:up": "tsx environments/environments.ts up",
         "env:up:authenticated": "pnpm env:up --template authenticated-empty",
         "env:down": "tsx environments/environments.ts down",
-        "env:tailscale": "tsx environments/environments.ts tailscale"
+        "env:tailscale": "tsx environments/environments.ts tailscale",
+        "chimera:brand": "node scripts/generate-chimera-brand.mjs",
+        "chimera:brand:check": "node scripts/generate-chimera-brand.mjs --check",
+        "chimera:client:test": "node scripts/verify-chimera-client.test.mjs",
+        "chimera:client:check": "node scripts/verify-chimera-client.mjs",
+        "chimera:server:test": "node scripts/verify-chimera-server.test.mjs",
+        "chimera:server:policy": "node scripts/verify-chimera-server.mjs",
+        "chimera:server:check": "node scripts/verify-chimera-server.test.mjs && node scripts/verify-chimera-server.mjs && pnpm --filter happy-server-self-host exec vitest run sources/app/chimera --maxWorkers=1 && pnpm --filter happy-server-self-host build && node --test scripts/chimera-standalone-blackbox.test.mjs"
     },
     "workspaces": {
         "packages": [
@@ -47,6 +54,7 @@
             "@prisma/engines",
             "@shopify/react-native-skia",
             "@tailwindcss/oxide",
+            "argon2",
             "better-sqlite3",
             "electron",
             "esbuild",

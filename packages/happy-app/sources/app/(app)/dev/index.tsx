@@ -10,10 +10,9 @@ import * as Application from 'expo-application';
 import { useLocalSettingMutable, useSocketStatus } from '@/sync/storage';
 import { Modal } from '@/modal';
 import { sync } from '@/sync/sync';
-import { getServerUrl, setServerUrl, validateServerUrl, getLogServerUrl, setLogServerUrl } from '@/sync/serverConfig';
+import { getLogServerUrl, setLogServerUrl, validateServerUrl } from '@/sync/serverConfig';
 import { Switch } from '@/components/Switch';
 import { useUnistyles } from 'react-native-unistyles';
-import { setLastViewedTitle } from '@/changelog';
 
 export default function DevScreen() {
     const router = useRouter();
@@ -23,29 +22,6 @@ export default function DevScreen() {
     const socketStatus = useSocketStatus();
     const anonymousId = sync.encryption!.anonID;
     const { theme } = useUnistyles();
-
-    const handleEditServerUrl = async () => {
-        const currentUrl = getServerUrl();
-
-        const newUrl = await Modal.prompt(
-            'Edit API Endpoint',
-            'Enter the server URL:',
-            {
-                defaultValue: currentUrl,
-                confirmText: 'Save'
-            }
-        );
-
-        if (newUrl && newUrl !== currentUrl) {
-            const validation = validateServerUrl(newUrl);
-            if (validation.valid) {
-                setServerUrl(newUrl);
-                Modal.alert('Success', 'Server URL updated. Please restart the app for changes to take effect.');
-            } else {
-                Modal.alert('Invalid URL', validation.error || 'Please enter a valid URL');
-            }
-        }
-    };
 
     const handleEditLogServerUrl = async () => {
         const currentUrl = getLogServerUrl() || '';
@@ -302,12 +278,6 @@ export default function DevScreen() {
             {/* Test Features */}
             <ItemGroup title="Test Features" footer="These actions may affect app stability">
                 <Item
-                    title="Claude OAuth Test"
-                    subtitle="Test Claude authentication flow"
-                    icon={<Ionicons name="key-outline" size={28} color="#007AFF" />}
-                    onPress={() => router.push('/settings/connect/claude')}
-                />
-                <Item
                     title="Test Crash"
                     subtitle="Trigger a test crash"
                     destructive={true}
@@ -330,15 +300,6 @@ export default function DevScreen() {
                     onPress={handleClearCache}
                 />
                 <Item
-                    title="Reset Changelog"
-                    subtitle="Show 'What's New' banner again"
-                    icon={<Ionicons name="sparkles-outline" size={28} color="#007AFF" />}
-                    onPress={() => {
-                        setLastViewedTitle('');
-                        Modal.alert('Done', 'Changelog reset. Restart app to see the banner.');
-                    }}
-                />
-                <Item
                     title="Reset App State"
                     subtitle="Clear all user data and preferences"
                     destructive={true}
@@ -359,12 +320,6 @@ export default function DevScreen() {
             {/* System */}
             <ItemGroup title="System">
                 <Item
-                    title="Purchases"
-                    subtitle="View subscriptions and entitlements"
-                    icon={<Ionicons name="card-outline" size={28} color="#007AFF" />}
-                    onPress={() => router.push('/dev/purchases')}
-                />
-                <Item
                     title="Expo Constants"
                     subtitle="View expoConfig, manifests, and system constants"
                     icon={<Ionicons name="information-circle-outline" size={28} color="#007AFF" />}
@@ -374,12 +329,6 @@ export default function DevScreen() {
 
             {/* Network */}
             <ItemGroup title="Network">
-                <Item
-                    title="API Endpoint"
-                    detail={getServerUrl()}
-                    onPress={handleEditServerUrl}
-                    detailStyle={{ flex: 1, textAlign: 'right', minWidth: '70%' }}
-                />
                 <Item
                     title="Log Server"
                     subtitle="Sends unencrypted console logs over HTTP"

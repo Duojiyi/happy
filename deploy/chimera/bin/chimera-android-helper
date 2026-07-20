@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() { printf 'Chimera Android command rejected\n' >&2; exit 1; }
+command="${SSH_ORIGINAL_COMMAND:-}"
+if [[ "$command" =~ ^scp\ -t\ (\.chimera-staging/android/[a-f0-9]{40}-v[1-9][0-9]*\.(apk|manifest)\.partial)$ ]]; then
+  exec /usr/bin/scp -t -- "${BASH_REMATCH[1]}"
+fi
+if [[ "$command" =~ ^activate-android\ ([a-f0-9]{40}-v[1-9][0-9]*)$ ]]; then
+  printf 'activate-android %s\n' "${BASH_REMATCH[1]}" | exec /usr/bin/sudo -n /usr/local/libexec/chimera-android-activate
+fi
+die

@@ -3,9 +3,7 @@ import '../theme.css';
 import * as React from 'react';
 import * as SplashScreen from 'expo-splash-screen';
 import * as Fonts from 'expo-font';
-import * as Notifications from 'expo-notifications';
 import { FontAwesome } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
 import { AuthCredentials, TokenStorage } from '@/auth/tokenStorage';
 import { AuthProvider } from '@/auth/AuthContext';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
@@ -16,11 +14,8 @@ import { SidebarNavigator } from '@/components/SidebarNavigator';
 import sodium from '@/encryption/libsodium.lib';
 import { View, Platform, AppState } from 'react-native';
 import { ModalProvider } from '@/modal';
-import { PostHogProvider } from 'posthog-react-native';
-import { tracking } from '@/track/tracking';
 import { syncRestore } from '@/sync/sync';
-import { useTrackScreens } from '@/track/useTrackScreens';
-import { RealtimeProvider } from '@/realtime/RealtimeProvider';
+import { initializeProductionRuntime } from '@/chimera/productionRuntime';
 import { FaviconPermissionIndicator } from '@/components/web/FaviconPermissionIndicator';
 import { CommandPaletteProvider } from '@/components/CommandPalette/CommandPaletteProvider';
 import { StatusBarProvider } from '@/components/StatusBarProvider';
@@ -29,42 +24,12 @@ import { initConsoleLogging, setConsoleOutputEnabled } from '@/utils/consoleLogg
 import { useLocalSetting } from '@/sync/storage';
 import { useUnistyles } from 'react-native-unistyles';
 import { AsyncLock } from '@/utils/lock';
-import { getSessionRouteFromNotificationResponse } from '@/utils/notificationRouting';
-import { navigateToSession } from '@/hooks/useNavigateToSession';
-import { applyVoiceUpsellOverride } from '@/realtime/voiceExperiment';
 import { useTauriZoom } from '@/hooks/useTauriZoom';
 import { useTauriDrag } from '@/hooks/useTauriDrag';
 import { BrowserNavigationShortcuts } from '@/hooks/useBrowserNavigationShortcuts';
+import { useStartupAnnouncement } from '@/chimera/useStartupAnnouncement';
+import { useAndroidUpdater } from '@/chimera/useAndroidUpdater';
 
-// Configure notification handler — suppress push display when app is in foreground
-Notifications.setNotificationHandler({
-    handleNotification: async () => {
-        const isForeground = AppState.currentState === 'active';
-        return {
-            shouldShowAlert: !isForeground,
-            shouldPlaySound: !isForeground,
-            shouldSetBadge: true,
-            shouldShowBanner: !isForeground,
-            shouldShowList: true,
-        };
-    },
-});
-
-// Setup Android notification channels (required for Android 8.0+)
-if (Platform.OS === 'android') {
-    Notifications.setNotificationChannelAsync('default', {
-        name: 'Default',
-        importance: Notifications.AndroidImportance.MAX,
-        vibrationPattern: [0, 250, 250, 250],
-        lightColor: '#FF231F7C',
-    });
-    Notifications.setNotificationChannelAsync('messages', {
-        name: 'Messages',
-        importance: Notifications.AndroidImportance.HIGH,
-        vibrationPattern: [0, 250, 250, 250],
-        lightColor: '#FF231F7C',
-    });
-}
 
 export {
     // Catch any errors thrown by the Layout component.
@@ -96,6 +61,12 @@ function HorizontalSafeAreaWrapper({ children }: { children: React.ReactNode }) 
             {children}
         </View>
     );
+}
+
+function StartupAnnouncement() {
+    const announcement = useStartupAnnouncement();
+    useAndroidUpdater(announcement);
+    return null;
 }
 
 let lock = new AsyncLock();
@@ -206,7 +177,6 @@ function getDevWebQueryCredentials(): AuthCredentials | null {
 export default function RootLayout() {
     useTauriZoom();
     useTauriDrag();
-    const router = useRouter();
     const { theme } = useUnistyles();
     const navigationTheme = React.useMemo(() => {
         if (theme.dark) {
@@ -257,7 +227,7 @@ export default function RootLayout() {
                 }
 
                 if (credentials) {
-                    await syncRestore(credentials);
+                    await initializeProductionRuntime(credentials, syncRestore);
                 }
 
                 setInitState({ credentials });
@@ -275,104 +245,13 @@ export default function RootLayout() {
         }
     }, [initState]);
 
-    const handledNotificationIds = React.useRef<Set<string>>(new Set());
-    const handleNotificationResponse = React.useCallback(async (response: Notifications.NotificationResponse | null) => {
-        if (!response) {
-            console.log('[PUSH ROUTING] Notification response is null');
-            return;
-        }
-
-        console.log('[PUSH ROUTING] Full notification response:\n' + stringifyNotificationPayload(response));
-
-        const responseId = response.notification.request.identifier;
-        if (handledNotificationIds.current.has(responseId)) {
-            console.log(`[PUSH ROUTING] Duplicate notification response ignored: ${responseId}`);
-            return;
-        }
-
-        handledNotificationIds.current.add(responseId);
-
-        try {
-            if (response.actionIdentifier !== Notifications.DEFAULT_ACTION_IDENTIFIER) {
-                console.log(`[PUSH ROUTING] Ignoring non-default action: ${response.actionIdentifier}`);
-                return;
-            }
-
-            console.log(
-                '[PUSH ROUTING] notification.request.content.data:\n' +
-                stringifyNotificationPayload(response.notification.request.content.data)
-            );
-            const route = getSessionRouteFromNotificationResponse(response);
-            console.log(`[PUSH ROUTING] Computed route: ${route ?? 'null'}`);
-            if (!route) {
-                console.log('[PUSH ROUTING] No session route found in notification.request.content.data');
-                return;
-            }
-
-            const encodedSessionId = route.replace(/^\/session\//, '');
-            const sessionId = (() => {
-                try {
-                    return decodeURIComponent(encodedSessionId);
-                } catch {
-                    return encodedSessionId;
-                }
-            })();
-            console.log(`[PUSH ROUTING] Navigating to session: ${sessionId}`);
-            navigateToSession(router, sessionId);
-        } finally {
-            try {
-                await Notifications.clearLastNotificationResponseAsync();
-            } catch (error) {
-                console.log('Failed to clear last notification response:', error);
-            }
-        }
-    }, [router]);
-
-    React.useEffect(() => {
-        if (!initState) {
-            return;
-        }
-
-        let active = true;
-        const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
-            void handleNotificationResponse(response);
-        });
-
-        void (async () => {
-            try {
-                const response = await Notifications.getLastNotificationResponseAsync();
-                if (active) {
-                    await handleNotificationResponse(response);
-                }
-            } catch (error) {
-                console.log('Failed to read last notification response:', error);
-            }
-        })();
-
-        return () => {
-            active = false;
-            subscription.remove();
-        };
-    }, [handleNotificationResponse, initState]);
-
-
-    // Track the screens
-    useTrackScreens()
-
     // Sync console output toggle from Dev screen
     const consoleLoggingEnabled = useLocalSetting('consoleLoggingEnabled');
     const devModeEnabled = __DEV__ || useLocalSetting('devModeEnabled');
-    const voiceUpsellOverride = useLocalSetting('voiceUpsellOverride');
     React.useEffect(() => {
         setConsoleOutputEnabled(consoleLoggingEnabled);
     }, [consoleLoggingEnabled]);
 
-    React.useEffect(() => {
-        if (!devModeEnabled || !voiceUpsellOverride) {
-            return;
-        }
-        applyVoiceUpsellOverride(voiceUpsellOverride);
-    }, [devModeEnabled, voiceUpsellOverride]);
 
     //
     // Not inited
@@ -396,11 +275,10 @@ export default function RootLayout() {
                             <ModalProvider>
                                 <BrowserNavigationShortcuts />
                                 <CommandPaletteProvider>
-                                    <RealtimeProvider>
-                                        <HorizontalSafeAreaWrapper>
-                                            <SidebarNavigator />
-                                        </HorizontalSafeAreaWrapper>
-                                    </RealtimeProvider>
+                                    <HorizontalSafeAreaWrapper>
+                                        <SidebarNavigator />
+                                    </HorizontalSafeAreaWrapper>
+                                    <StartupAnnouncement />
                                 </CommandPaletteProvider>
                             </ModalProvider>
                         </ThemeProvider>
@@ -409,14 +287,6 @@ export default function RootLayout() {
             </KeyboardProvider>
         </SafeAreaProvider>
     );
-    if (tracking) {
-        providers = (
-            <PostHogProvider client={tracking}>
-                {providers}
-            </PostHogProvider>
-        );
-    }
-
     return (
         <>
             <FaviconPermissionIndicator />

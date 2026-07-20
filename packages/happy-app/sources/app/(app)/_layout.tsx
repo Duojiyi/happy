@@ -46,6 +46,14 @@ export default function RootLayout() {
                 }}
             />
             <Stack.Screen
+                name="register"
+                options={{
+                    headerShown: true,
+                    headerTitle: 'Create account',
+                    headerBackTitle: t('common.cancel'),
+                }}
+            />
+            <Stack.Screen
                 name="inbox/index"
                 options={{
                     headerShown: false,
@@ -148,14 +156,6 @@ export default function RootLayout() {
                 options={{
                     headerShown: true,
                     headerTitle: t('navigation.restoreWithSecretKey'),
-                    headerBackTitle: t('common.back'),
-                }}
-            />
-            <Stack.Screen
-                name="changelog"
-                options={{
-                    headerShown: true,
-                    headerTitle: t('navigation.whatsNew'),
                     headerBackTitle: t('common.back'),
                 }}
             />
@@ -292,21 +292,6 @@ export default function RootLayout() {
                     headerShown: true,
                     headerTitle: t('sessionHistory.title'),
                     headerBackTitle: t('common.back'),
-                }}
-            />
-            <Stack.Screen
-                name="settings/connect/claude"
-                options={{
-                    headerShown: true,
-                    headerTitle: 'Connect to Claude',
-                    headerBackTitle: t('common.back'),
-                    // headerStyle: {
-                    //     backgroundColor: Platform.OS === 'web' ? theme.colors.header.background : '#1F1E1C',
-                    // },
-                    // headerTintColor: Platform.OS === 'web' ? theme.colors.header.tint : '#FFFFFF',
-                    // headerTitleStyle: {
-                    //     color: Platform.OS === 'web' ? theme.colors.header.tint : '#FFFFFF',
-                    // },
                 }}
             />
             <Stack.Screen

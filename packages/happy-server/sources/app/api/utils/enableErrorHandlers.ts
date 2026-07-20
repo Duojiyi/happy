@@ -7,10 +7,11 @@ export interface EnableErrorHandlersOptions {
 }
 
 export function enableErrorHandlers(app: Fastify, options: EnableErrorHandlersOptions = {}) {
+    const requestPath = (url: string) => url.split('?', 1)[0];
     // Global error handler
     app.setErrorHandler(async (error: FastifyError, request, reply) => {
         const method = request.method;
-        const url = request.url;
+        const url = requestPath(request.url);
         const userAgent = request.headers['user-agent'] || 'unknown';
         const ip = request.ip || 'unknown';
 
@@ -51,7 +52,7 @@ export function enableErrorHandlers(app: Fastify, options: EnableErrorHandlersOp
     // its own (e.g. SPA fallback for self-hosted webapp).
     if (!options.skipNotFoundHandler) {
         app.setNotFoundHandler((request, reply) => {
-            log({ module: '404-handler' }, `404 - Method: ${request.method}, Path: ${request.url}, Headers: ${JSON.stringify(request.headers)}`);
+            log({ module: '404-handler' }, `404 - Method: ${request.method}, Path: ${requestPath(request.url)}`);
             reply.code(404).send({ error: 'Not found', path: request.url, method: request.method });
         });
     }
@@ -59,7 +60,7 @@ export function enableErrorHandlers(app: Fastify, options: EnableErrorHandlersOp
     // Error hook for additional logging
     app.addHook('onError', async (request, reply, error) => {
         const method = request.method;
-        const url = request.url;
+        const url = requestPath(request.url);
         const duration = (Date.now() - (request.startTime || Date.now())) / 1000;
 
         log({
@@ -86,7 +87,7 @@ export function enableErrorHandlers(app: Fastify, options: EnableErrorHandlersOp
                     module: 'fastify-serialization-error',
                     level: 'error',
                     method: request.method,
-                    url: request.url,
+                    url: requestPath(request.url),
                     stack: error.stack
                 }, `Response serialization error: ${error.message}`);
                 throw error;

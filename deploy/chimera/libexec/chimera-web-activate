@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=/opt/chimera
+STAGING=/var/lib/chimera-web-deploy/.chimera-staging/web
+die() { printf 'Chimera Web activation rejected\n' >&2; exit 1; }
+sync_dir() { sync -f "$1"; }
+IFS= read -r command || die
+IFS= read -r extra && die
+exec 9>/run/lock/chimera-production.lock
+flock -n 9 || die
+[[ "$command" =~ ^activate-web\ ([a-f0-9]{40})$ ]] || die
+commit="${BASH_REMATCH[1]}"
+source="$STAGING/$commit.tar.gz.partial"
+releases="$ROOT/web/releases"
+incoming="$releases/.incoming-$commit"
+target="$releases/$commit"
+frozen="$ROOT/web/.incoming-$commit.tar.gz"
+[[ -f "$source" && ! -L "$source" && ! -e "$target" && ! -e "$incoming" && ! -e "$frozen" ]] || die
+trap 'rm -rf -- "$incoming" "$frozen"' EXIT
+install -m 0600 "$source" "$frozen"
+sync -f "$frozen"
+
+python3 /usr/local/libexec/chimera-validate-web-archive "$frozen" || die
+
+install -d -m 0755 "$incoming"
+tar --extract --gzip --file "$frozen" --directory "$incoming" --no-same-owner --no-same-permissions
+[[ -f "$incoming/index.html" && ! -L "$incoming/index.html" && -s "$incoming/index.html" ]] || die
+representative="$(python3 - "$incoming" <<'PY'
+import pathlib,re,sys
+root=pathlib.Path(sys.argv[1])
+html=root.joinpath("index.html").read_text("utf-8")
+for value in re.findall(r'''(?:src|href)=["']/?([^"'?#]+)''', html):
+    if re.search(r"[.-][a-f0-9]{8,}\.[A-Za-z0-9]+$", value):
+        candidate=(root/value).resolve()
+        if candidate.is_file() and root.resolve() in candidate.parents:
+            print(value); break
+else: raise SystemExit(1)
+PY
+)" || die
+[[ "$representative" =~ ^[A-Za-z0-9_][A-Za-z0-9._/-]*[.-][a-f0-9]{8,}\.[A-Za-z0-9]+$ && -s "$incoming/$representative" ]] || die
+find "$incoming" -type f -exec chmod 0644 {} +
+find "$incoming" -type d -exec chmod 0755 {} +
+find "$incoming" -type f -exec sync -f {} +
+sync_dir "$incoming"
+mv -- "$incoming" "$target"
+sync_dir "$releases"
+
+previous=""
+if [[ -L "$ROOT/web/current" ]]; then
+  previous="$(readlink -f "$ROOT/web/current")"
+  [[ "$previous" == "$releases/"* && -d "$previous" ]] || die
+  ln -s "$previous" "$ROOT/web/.previous-$commit"
+  mv -Tf "$ROOT/web/.previous-$commit" "$ROOT/web/previous"
+fi
+ln -s "$target" "$ROOT/web/.current-$commit"
+mv -Tf "$ROOT/web/.current-$commit" "$ROOT/web/current"
+sync_dir "$ROOT/web"
+
+health_failed=0
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 https://103.250.173.136/ >/dev/null || health_failed=1
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 "https://103.250.173.136/$representative" >/dev/null || health_failed=1
+if [[ "$health_failed" -ne 0 ]]; then
+  if [[ -n "$previous" ]]; then
+    ln -s "$previous" "$ROOT/web/.rollback-$commit"
+    mv -Tf "$ROOT/web/.rollback-$commit" "$ROOT/web/current"
+    sync_dir "$ROOT/web"
+  else
+    rm -f -- "$ROOT/web/current"
+    sync_dir "$ROOT/web"
+  fi
+  rm -rf --one-file-system -- "$target"
+  sync_dir "$releases"
+  die
+fi
+rm -f -- "$source" "$frozen"
+
+# Retain five newest inactive releases in addition to active and previous.
+current="$(readlink -f "$ROOT/web/current")"
+rollback="$(readlink -f "$ROOT/web/previous" 2>/dev/null || true)"
+mapfile -t inactive < <(find "$releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | awk '{print $2}')
+kept=0
+for candidate in "${inactive[@]}"; do
+  [[ "$candidate" == "$current" || "$candidate" == "$rollback" ]] && continue
+  kept=$((kept + 1))
+  (( kept <= 5 )) || rm -rf --one-file-system -- "$candidate"
+done
+sync_dir "$releases"
+trap - EXIT
