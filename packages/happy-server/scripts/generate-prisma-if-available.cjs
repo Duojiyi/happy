@@ -15,6 +15,7 @@ if (!prisma) process.exit(0);
 
 const result = spawnSync(prisma, ['generate', '--schema=prisma/schema.prisma'], {
   cwd: resolve(__dirname, '..'),
+  shell: process.platform === 'win32',
   stdio: 'inherit',
 });
 
