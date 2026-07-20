@@ -38,6 +38,14 @@ function assertContains(text, patterns, name) {
   for (const pattern of patterns) assert.match(text, pattern, `${name} missing ${pattern}`);
 }
 
+function assertFlatArtifactDownloads(workflow, name) {
+  for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+    for (const step of steps(job).filter((item) => item.uses?.startsWith('actions/download-artifact@') && item.with?.['artifact-ids'])) {
+      assert.equal(step.with?.['merge-multiple'], true, `${name} ${jobName} immutable artifact downloads must merge into the declared path`);
+    }
+  }
+}
+
 export function validateClientReleaseWorkflow(workflow) {
   assert.ok(workflow?.on?.workflow_dispatch ?? workflow?.true?.workflow_dispatch, 'client release must be workflow_dispatch only');
   const triggers = workflow.on ?? workflow.true;
@@ -45,6 +53,7 @@ export function validateClientReleaseWorkflow(workflow) {
   assert.equal(workflow.concurrency?.group, 'chimera-production-release', 'client release must use repository-wide concurrency');
   assert.equal(workflow.concurrency?.['cancel-in-progress'], false, 'production release must never cancel in progress');
   assertPinned(workflow);
+  assertFlatArtifactDownloads(workflow, 'client release');
   assertNoDirectUntrustedShellExpressions(workflow);
 
   const classify = workflow.jobs?.classify;
@@ -148,6 +157,7 @@ export function validateServerReleaseWorkflow(workflow) {
   assert.equal(workflow.concurrency?.group, 'chimera-production-release', 'server release must share production concurrency');
   assert.equal(workflow.concurrency?.['cancel-in-progress'], false, 'server release must never cancel in progress');
   assertPinned(workflow);
+  assertFlatArtifactDownloads(workflow, 'server release');
   assertNoDirectUntrustedShellExpressions(workflow);
 
   const classify = workflow.jobs?.classify;
@@ -228,7 +238,7 @@ export function validateServerReleaseWorkflow(workflow) {
   assert.deepEqual(deploy.permissions, { actions: 'read', attestations: 'read', checks: 'read', contents: 'read', packages: 'read' }, 'server deployment permissions must allow check-run and attestation verification only');
   assertNoCheckout(deploy, 'server deployment');
   const deployRun = runs(deploy);
-  assertContains(deployRun, [/gh attestation verify/, /SECURITY_AUDIT_RUN_ID/, /MAINTAINABILITY_AUDIT_RUN_ID/, /check-runs/, /chimera-audit-security\.yml/, /chimera-audit-maintainability\.yml/, /chimera-security-audit-report/, /chimera-maintainability-audit-report/, /diffSha256/, /server-image\.tar/, /server-release-input\.json/, /server-archive-attestation\.jsonl/, /attestations\/sha256:/, /--bundle deploy-input\/server-archive-attestation\.jsonl/, /--predicate-type 'https:\/\/slsa\.dev\/provenance\/v1'/, /imageArchiveSha256/, /scp/, /chimera-server-deploy@39\.98\.68\.173/, /deploy-server \$REVIEWED_SHA \$IMAGE_DIGEST/, /sha256:/, /running.*digest|deployed.*digest/i], 'server deployment');
+  assertContains(deployRun, [/gh attestation verify/, /SECURITY_AUDIT_RUN_ID/, /MAINTAINABILITY_AUDIT_RUN_ID/, /check-runs/, /chimera-audit-security\.yml/, /chimera-audit-maintainability\.yml/, /chimera-security-audit-report/, /chimera-maintainability-audit-report/, /diffSha256/, /server-image\.tar/, /server-release-input\.json/, /server-archive-attestation\.jsonl/, /attestations\/sha256:/, /--bundle deploy-input\/server-archive-attestation\.jsonl/, /--predicate-type 'https:\/\/slsa\.dev\/provenance\/v1'/, /imageArchiveSha256/, /scp/, /chimera-server-deploy@103\.250\.173\.136/, /deploy-server \$REVIEWED_SHA \$IMAGE_DIGEST/, /sha256:/, /running.*digest|deployed.*digest/i], 'server deployment');
   assert.ok(steps(deploy).some((step) => step.uses?.startsWith('docker/login-action@')), 'server deployment must authenticate before OCI attestation verification');
   assert.ok(steps(deploy).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids'] === '${{ needs.build.outputs.artifact-id }}'), 'server deployment must download the exact attested OCI artifact by immutable ID');
   assert.equal((deployRun.match(/\bscp -O\b/g) ?? []).length, 3, 'all server transfers must force legacy SCP for the forced scp -t helper');
@@ -245,6 +255,7 @@ export function validateAuditWorkflows(security, maintainability) {
   for (const [workflow, checkName, artifactName, subjectPath] of definitions) {
     assert.deepEqual(Object.keys(workflow.on ?? workflow.true), ['workflow_dispatch'], `${checkName} must be explicitly dispatched`);
     assertPinned(workflow);
+    assertFlatArtifactDownloads(workflow, checkName);
     assertNoDirectUntrustedShellExpressions(workflow);
     assert.doesNotMatch(serialized(workflow), /\$\{\{\s*secrets\.|\bcontents\s*:\s*write|pull-requests\s*:\s*write/i, `${checkName} must be read-only and secretless`);
     const audit = workflow.jobs?.audit;

@@ -105,6 +105,8 @@ test('sync audits are distinct read-only workflows with attestation-only provena
   for (const workflow of [security, maintain]) {
     assert.deepEqual(workflow.jobs.audit.permissions, { contents: 'read' });
     assert.deepEqual(workflow.jobs.provenance.permissions, { contents: 'read', 'id-token': 'write', attestations: 'write' });
+    const download = workflow.jobs.provenance.steps.find((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']);
+    assert.equal(download?.with?.['merge-multiple'], true, 'sync audit provenance must merge immutable artifacts into the declared path');
     assert.doesNotMatch(JSON.stringify(workflow), /secrets\.|contents":"write/);
   }
   assert.notEqual(security.name, maintain.name);

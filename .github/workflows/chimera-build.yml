@@ -229,12 +229,14 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ needs.android.outputs.artifact-id }}
+          merge-multiple: true
           path: provenance/android
 
       - name: Download Web artifact by immutable artifact ID
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ needs.web.outputs.artifact-id }}
+          merge-multiple: true
           path: provenance/web
 
       - name: Verify artifact digests and provenance binding

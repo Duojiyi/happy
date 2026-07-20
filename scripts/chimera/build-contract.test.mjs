@@ -89,6 +89,9 @@ export function validateBuildWorkflow(workflow) {
   assert.equal(allSteps(provenance).some((step) => step.uses?.startsWith('actions/checkout@')), false, 'provenance must not checkout candidate source');
   assert.doesNotMatch(runText(provenance), /pnpm\s+install|npm\s+install|node\s+scripts\//, 'provenance must not execute candidate code');
   assert.ok(allSteps(provenance).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), 'provenance must download immutable build artifacts');
+  for (const step of allSteps(provenance).filter((item) => item.uses?.startsWith('actions/download-artifact@') && item.with?.['artifact-ids'])) {
+    assert.equal(step.with?.['merge-multiple'], true, 'immutable artifact downloads must merge into the declared path');
+  }
   assert.match(runText(provenance), /sha256sum|sha256/i, 'provenance must verify artifact digests');
   assert.match(runText(provenance), /find provenance\/android -type f \| wc -l/, 'provenance must reject extra Android files');
   assert.match(runText(provenance), /find provenance\/web -type f \| wc -l/, 'provenance must reject extra Web files');

@@ -211,6 +211,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
           path: attest
 
       - name: Verify exact server files and recorded digests
@@ -269,6 +270,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
           path: publish
 
       - name: Verify repository head workflow run subject digest and signer
@@ -365,6 +367,7 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          merge-multiple: true
           path: deploy-input
 
       - name: Reverify OCI attestation and independent audit checks online
