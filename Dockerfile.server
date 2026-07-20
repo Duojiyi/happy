@@ -39,6 +39,7 @@ COPY packages/happy-server ./packages/happy-server
 
 RUN pnpm --filter @slopus/happy-wire build
 RUN pnpm --filter happy-server-self-host build
+RUN rm -rf node_modules packages/*/node_modules
 RUN pnpm install --prod --frozen-lockfile --filter happy-server-self-host... --filter @slopus/happy-wire...
 
 # Stage 3: runtime
@@ -46,8 +47,6 @@ FROM node:20-bookworm-slim AS runner
 
 WORKDIR /repo
 
-# Runtime dependencies
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends python3 ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
 
 # Set environment to production
