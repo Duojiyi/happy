@@ -161,8 +161,11 @@ jobs:
       - name: Scan image at checked-in fail threshold
         run: |
           set -euo pipefail
+          OCI_LAYOUT=/tmp/chimera-server-oci
+          mkdir -p "$OCI_LAYOUT"
+          tar -xf dist/server-image.tar -C "$OCI_LAYOUT"
           trivy image \
-            --input dist/server-image.tar \
+            --input "$OCI_LAYOUT" \
             --format table \
             --exit-code 1 \
             --severity HIGH,CRITICAL \

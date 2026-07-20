@@ -190,7 +190,7 @@ export function validateServerReleaseWorkflow(workflow) {
   assert.doesNotMatch(serialized(scannerInstall), /github-token|github-pat|token-setup-trivy/i, 'candidate scanner must not receive a GitHub token');
   const scanner = steps(build).find((step) => step.name === 'Scan image at checked-in fail threshold');
   assert.ok(scanner, 'server build must scan the reviewed OCI archive');
-  assertContains(String(scanner.run), [/trivy image/, /--input dist\/server-image\.tar/, /--exit-code 1/, /--severity HIGH,CRITICAL/], 'scanner threshold');
+  assertContains(String(scanner.run), [/tar -xf dist\/server-image\.tar/, /trivy image/, /--input "\$OCI_LAYOUT"/, /--exit-code 1/, /--severity HIGH,CRITICAL/], 'scanner threshold');
   assert.ok(steps(build).some((step) => /sbom-action/.test(step.uses ?? '') && /spdx/i.test(stringify(step.with))), 'server build must emit SPDX SBOM');
   for (const [name, job] of Object.entries(workflow.jobs)) {
     if (name !== 'deploy') assert.doesNotMatch(serialized(job), /\$\{\{\s*secrets\./, `${name} must not receive deployment secrets`);
