@@ -147,8 +147,11 @@ if (!source) {
     const serverBuild = serverDockerfile.indexOf('RUN pnpm --filter happy-server-self-host build');
     const dependencyCleanup = serverDockerfile.indexOf('RUN rm -rf node_modules packages/*/node_modules');
     const productionInstall = serverDockerfile.indexOf('RUN pnpm install --prod --ignore-scripts --frozen-lockfile');
+    const productionDeploy = serverDockerfile.indexOf('RUN pnpm --filter happy-server-self-host deploy --prod --legacy /tmp/chimera-server');
     assert.ok(serverBuild >= 0 && serverBuild < dependencyCleanup, 'server must build before removing development dependencies');
-    assert.ok(dependencyCleanup < productionInstall, 'server must reinstall production dependencies after cleanup without running repository scripts');
+    assert.ok(dependencyCleanup < productionInstall && productionInstall < productionDeploy, 'server must deploy only pruned production dependencies after cleanup');
+    assert.match(serverDockerfile, /COPY --from=builder \/tmp\/chimera-server\//, 'runtime must copy the pruned pnpm deploy output');
+    assert.match(serverDockerfile, /CMD \["pnpm", "start"\]/, 'runtime must start the deployed server package directly');
   });
 
   test('release toolchain changes trigger client evidence and manual typecheck remains available', () => {
