@@ -32,7 +32,7 @@ describe.sequential("attachment claim/delete transaction race", () => {
         const quotaModule = await import("./attachmentQuota");
         ({ sessionDelete, SessionAttachmentBusyError } = await import("../session/sessionDelete"));
         quota = quotaModule.createAttachmentQuotaService({
-            inspectDisk: async () => ({ totalBytes: 100n * 1024n ** 3n, freeBytes: 50n * 1024n ** 3n }),
+            inspectDisk: async () => ({ totalBytes: 100n * 1024n ** 3n, freeBytes: 50n * 1024n ** 3n, dataBytes: 1n * 1024n ** 3n }),
             minFreeBytes: 0n,
         });
     }, 30_000);

@@ -20,7 +20,7 @@ services:
       - -ec
       - pnpm --filter happy-server-self-host exec tsx ./sources/standalone.ts migrate && exec pnpm --filter happy-server-self-host start
     volumes:
-      - /data:/var/lib/chimera
+      - /srv/chimera-storage/data:/var/lib/chimera
       - ./web/current:/srv/chimera-web:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]

@@ -345,7 +345,7 @@ Secure, HttpOnly, SameSite=Strict, and Path `/chimera-control`. Mutations requir
 
 - [ ] **Step 5: Add dual-layer rate-limit hooks**
 
-Server limits login by trusted client IP and global concurrency. Nginx limits are
+Server limits login by trusted client IP and global concurrency. Edge limits are
 added in the deployment plan. Return the same 401 body and bounded timing for
 unknown session/wrong password.
 
@@ -486,8 +486,9 @@ git commit -m "feat(server): add account revocation controls"
 
 - [ ] **Step 1: Write quota/reservation/reconciliation tests**
 
-Cover default/custom quota, concurrent reservations, disk >=80%, free disk <15
-GiB, temporary write failure, atomic rename, released reservation, expired
+Cover default/custom quota, concurrent reservations, disk >=80%, free disk <5
+GiB, the shared 5 GiB attachment ceiling, the 6 GiB complete-data ceiling and
+future-deploy reserve, temporary write failure, atomic rename, released reservation, expired
 reservation cleanup, crash reconciliation, retained reads, and disabled account.
 
 - [ ] **Step 2: Run and verify failure**

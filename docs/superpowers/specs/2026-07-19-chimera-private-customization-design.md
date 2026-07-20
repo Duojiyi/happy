@@ -103,17 +103,18 @@ policy must not be duplicated across individual screens.
 
 ### Runtime Topology
 
-Backup server A has 2 vCPU, 3.6 GiB RAM, and a 99 GB system disk. It runs:
+The production host has 1 vCPU, 1 GiB RAM plus 2 GiB swap, a 20 GiB system
+disk, and a dedicated 30 GiB Chimera data disk. It runs:
 
-- Nginx on ports 80 and 443.
-- Certbot 5.4 or newer for Let's Encrypt public IP certificates.
+- Caddy on ports 80 and 443 with automatic Let's Encrypt short-lived IP
+  certificates.
 - One standalone Happy Server container.
 - Versioned static web release directories.
 - A persistent data directory for PGlite, encrypted attachment blobs, Chimera
-  configuration, plus a separate `/srv/chimera-snapshots` directory outside the
-  `/data` mount for local rollback snapshots.
+  configuration, plus a separate snapshot directory on the same dedicated data
+  filesystem for transactional local rollback.
 
-Nginx routing:
+Caddy routing:
 
 - `/` serves the current Chimera web release.
 - `/v1/*` and Socket.IO/WebSocket paths proxy to Happy Server.
@@ -269,7 +270,7 @@ names/paths, encryption keys, and encrypted or decrypted content.
   session immediately.
 - Mutations require the session-bound CSRF token and valid same-origin
   `Origin`/`Referer` headers.
-- Nginx and the server both rate-limit login attempts.
+- The server rate-limits login attempts before password verification.
 - Authentication failures use constant-shape responses and do not reveal
   whether a password prefix was correct.
 - Rotating the session secret or running the explicit revoke-all action
@@ -362,7 +363,10 @@ status, encrypted attachment usage, and configured quota. It supports:
 - Per-account and global upload/request limits.
 
 New file writes stop when an account quota is exhausted, disk usage reaches 80%,
-or available disk falls below 15 GiB. Reads and account recovery remain
+or available disk falls below 5 GiB. Aggregate attachment allocations across
+all accounts are capped at 5 GiB. Attachment admission also stops when the
+complete data tree reaches 6 GiB or would consume space reserved for the next
+deploy and rollback. Reads and account recovery remain
 available. Uploads reserve quota in the database before writing to a temporary
 file, atomically rename the completed blob, then finalize the reservation;
 failure releases the reservation. Reconciliation detects and corrects drift
@@ -443,13 +447,13 @@ version code, or commit/version mismatch.
 - A deploy job with no source checkout downloads the validated web artifact and
   uploads it using a dedicated non-root SSH deploy account.
 - Files are extracted into `/srv/chimera-web/releases/<commit-sha>`.
-- Nginx's `current` symlink changes only after file validation.
+- The Web runtime's `current` symlink changes only after file validation.
 - Health checks load the root document and a representative hashed asset.
 - Failure restores the previous symlink. A retention job keeps several recent
   web releases and never removes the active or rollback target.
 
 The deploy account cannot run arbitrary root commands, read relay data, or alter
-Nginx configuration. A root-owned deployment helper exposes only validated
+proxy configuration. A root-owned deployment helper exposes only validated
 release activation and rollback operations.
 
 ## Server Deployment
@@ -465,14 +469,16 @@ Future server deployment is path-sensitive:
   build inputs, or the Chimera server module require a server release gate.
 - A server candidate is built without production secrets and scanned/tested in
   CI.
-- Deployment first places Nginx in maintenance mode, blocks external writes,
+- Deployment first places Caddy in maintenance mode, blocks external writes,
   stops the old container cleanly, and confirms PGlite is closed. It then
   snapshots the entire `/data` tree to
-  `/srv/chimera-snapshots/<deployment-id>` while no database or attachment writes
+  `/srv/chimera-storage/snapshots/<deployment-id>` while no database or attachment writes
   are possible. Snapshot directories are never inside or bind-mounted beneath
   `/data`.
-- Before copying, deployment requires free space greater than 120% of current
-  `/data` usage plus the 15 GiB operational reserve. It retains the two newest
+- Before a deploy, free space must exceed twice current `/data` usage plus the
+  5 GiB operational reserve, covering the new snapshot and a transactional
+  restore candidate at peak. Rollback measures both the current data tree and
+  selected target snapshot. It retains the newest
   verified snapshots, removes incomplete temporary snapshots on failure, and
   never deletes the current rollback target before a replacement is verified.
 - Every snapshot is restored into a temporary directory and opened by the old
@@ -590,8 +596,8 @@ Let's Encrypt IP certificates are generally available and must use the
 validation and `--ip-address 103.250.173.136`. Certificates are valid for 160 hours.
 
 - A systemd timer runs renewal checks every six hours with randomized delay.
-- A deploy hook validates the new certificate, reloads Nginx, and performs a
-  public HTTPS health check.
+- Caddy renews the short-lived certificate automatically and public smoke tests
+  validate its chain, IP SAN, and expiry.
 - A scheduled GitHub workflow independently checks the public certificate and
   endpoint every six hours and opens/updates an Issue before the remaining
   lifetime becomes unsafe. Renewal failure never causes an HTTP downgrade.
@@ -621,7 +627,7 @@ Before application deployment:
   non-world-readable secrets file.
 - Generate independent master, admin-session, invitation-pepper, and password
   hash secrets. Do not reuse SSH or GitHub credentials.
-- Configure Fastify to trust only the loopback Nginx proxy. Nginx overwrites
+- Configure Fastify to trust only the loopback Caddy proxy. Caddy overwrites
   forwarding headers; the application rejects untrusted forwarded identity and
   applies separate limits by client IP, invitation digest, account, and global
   concurrency.

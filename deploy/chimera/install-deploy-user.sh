@@ -6,9 +6,16 @@ server_key_file="$1"
 android_key_file="$2"
 web_key_file="$3"
 [[ "${EUID:-$(id -u)}" == 0 ]] || { printf 'installer must run as root\n' >&2; exit 1; }
-for tool in python3 openssl docker skopeo gh curl flock fuser sync java; do command -v "$tool" >/dev/null 2>&1 || { printf 'missing required host tool: %s\n' "$tool" >&2; exit 1; }; done
+for tool in python3 openssl docker skopeo gh curl flock fuser sync java findmnt mountpoint; do command -v "$tool" >/dev/null 2>&1 || { printf 'missing required host tool: %s\n' "$tool" >&2; exit 1; }; done
 docker compose version >/dev/null 2>&1 || { printf 'Docker Compose plugin is required\n' >&2; exit 1; }
 [[ -x /opt/android-sdk/build-tools/35.0.0/aapt2 && -x /opt/android-sdk/build-tools/35.0.0/apksigner ]] || { printf 'Android Build Tools 35.0.0 must be provisioned first\n' >&2; exit 1; }
+mountpoint -q /srv/chimera-storage || { printf 'dedicated Chimera data filesystem is required\n' >&2; exit 1; }
+[[ -d /srv/chimera-storage && ! -L /srv/chimera-storage && "$(stat -c '%u' /srv/chimera-storage)" == 0 ]] || exit 1
+[[ "$(stat -c '%d' /srv/chimera-storage)" != "$(stat -c '%d' /)" ]] || exit 1
+(( $(df --output=size -B1 /srv/chimera-storage | tail -n 1 | tr -d ' ') >= 29 * 1024 * 1024 * 1024 )) || exit 1
+for path in /srv/chimera-storage/data /srv/chimera-storage/snapshots; do
+  [[ ! -e "$path" && ! -L "$path" ]] || [[ -d "$path" && ! -L "$path" && "$(stat -c '%u' "$path")" == 0 ]] || exit 1
+done
 
 install_role() {
   local role="$1" key_file="$2"
@@ -49,7 +56,11 @@ install_role web "$web_key_file"
 # Runtime targets stay root-owned. Deploy identities can write only their own
 # staging tree; their exact sudo helper performs validated activation.
 install -d -m 0755 /opt/chimera /opt/chimera/downloads /opt/chimera/downloads/releases /opt/chimera/web /opt/chimera/web/releases /opt/chimera/config /opt/chimera/proxy-config
-install -d -m 0750 /data /srv/chimera-snapshots
+install -d -m 0750 /srv/chimera-storage/data /srv/chimera-storage/snapshots
+install -d -m 0755 /etc/systemd/system/docker.service.d
+printf '[Unit]\nRequiresMountsFor=/srv/chimera-storage\n' > /etc/systemd/system/docker.service.d/chimera-storage.conf
+chmod 0644 /etc/systemd/system/docker.service.d/chimera-storage.conf
+systemctl daemon-reload
 if [[ ! -e /opt/chimera/proxy-config/maintenance.caddy ]]; then
   printf '# writes enabled\n' > /opt/chimera/proxy-config/maintenance.caddy
   chmod 0644 /opt/chimera/proxy-config/maintenance.caddy

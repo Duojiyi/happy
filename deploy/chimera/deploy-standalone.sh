@@ -10,8 +10,15 @@ archive="$2"
 exec 9>/run/lock/chimera-production.lock
 flock -n 9 || exit 1
 
+mountpoint -q /srv/chimera-storage || exit 1
+[[ -d /srv/chimera-storage && ! -L /srv/chimera-storage && "$(stat -c '%u' /srv/chimera-storage)" == 0 ]] || exit 1
+[[ "$(stat -c '%d' /srv/chimera-storage)" != "$(stat -c '%d' /)" ]] || exit 1
+(( $(df --output=size -B1 /srv/chimera-storage | tail -n 1 | tr -d ' ') >= 29 * 1024 * 1024 * 1024 )) || exit 1
+for path in /srv/chimera-storage/data /srv/chimera-storage/snapshots; do
+  [[ ! -e "$path" && ! -L "$path" ]] || [[ -d "$path" && ! -L "$path" && "$(stat -c '%u' "$path")" == 0 ]] || exit 1
+done
 install -d -m 0755 "$ROOT/releases" "$ROOT/state" "$ROOT/downloads" "$ROOT/downloads/releases" "$ROOT/web" "$ROOT/web/releases" "$ROOT/config" "$ROOT/proxy-config"
-install -d -m 0750 /data /srv/chimera-snapshots
+install -d -m 0750 /srv/chimera-storage/data /srv/chimera-storage/snapshots
 frozen="$ROOT/releases/.incoming-$id.tar"
 incoming="$ROOT/releases/.incoming-$id"
 release="$ROOT/releases/$id"
@@ -46,9 +53,11 @@ install -m 0644 "$release/deploy/chimera/Caddyfile" "$ROOT/Caddyfile"
 [[ -f "$ROOT/proxy-config/maintenance.caddy" ]] || printf '# writes enabled\n' > "$ROOT/proxy-config/maintenance.caddy"
 chmod 0644 "$ROOT/proxy-config/maintenance.caddy"
 
-docker build --pull --tag "chimera-relay:$id" --file "$release/Dockerfile.server" "$release"
-CHIMERA_IMAGE="chimera-relay:$id" docker compose --file "$ROOT/docker-compose.yml" config >/dev/null
-CHIMERA_IMAGE="chimera-relay:$id" docker compose --file "$ROOT/docker-compose.yml" up -d --remove-orphans
+legacy_id="$(printf 'chimera-bootstrap:%s' "$id" | sha1sum | cut -d ' ' -f 1)"
+[[ "$legacy_id" =~ ^[a-f0-9]{40}$ && "$legacy_id" != "$id" ]] || exit 1
+docker build --pull --tag "chimera-relay:$legacy_id" --file "$release/Dockerfile.server" "$release"
+CHIMERA_IMAGE="chimera-relay:$legacy_id" docker compose --file "$ROOT/docker-compose.yml" config >/dev/null
+CHIMERA_IMAGE="chimera-relay:$legacy_id" docker compose --file "$ROOT/docker-compose.yml" up -d --remove-orphans
 healthy=0
 for attempt in {1..60}; do
   if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:3000/health >/dev/null; then healthy=1; break; fi
@@ -61,8 +70,8 @@ for attempt in {1..90}; do
   sleep 2
 done
 [[ "$tls_healthy" -eq 1 ]] || exit 1
-printf 'chimera-relay:%s\n' "$id" > "$ROOT/state/current-image.next"
-docker image inspect --format '{{.Id}}' "chimera-relay:$id" > "$ROOT/state/current-digest.next"
+printf 'chimera-relay:%s\n' "$legacy_id" > "$ROOT/state/current-image.next"
+docker image inspect --format '{{.Id}}' "chimera-relay:$legacy_id" > "$ROOT/state/current-digest.next"
 sync -f "$ROOT/state/current-image.next"
 sync -f "$ROOT/state/current-digest.next"
 mv -f -- "$ROOT/state/current-image.next" "$ROOT/state/current-image"

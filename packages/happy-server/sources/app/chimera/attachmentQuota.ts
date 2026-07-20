@@ -1,24 +1,37 @@
-import { readdir, stat, statfs, unlink } from "node:fs/promises";
+import { lstat, readdir, stat, statfs, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { inventoryAllSessionAttachments } from "@/storage/files";
 
 const DEFAULT_RESERVATION_TTL_MS = 15 * 60 * 1000;
-const DEFAULT_MIN_FREE_BYTES = 15n * 1024n * 1024n * 1024n;
+const DEFAULT_MIN_FREE_BYTES = 5n * 1024n * 1024n * 1024n;
+const DEFAULT_GLOBAL_ATTACHMENT_BYTES = 5n * 1024n * 1024n * 1024n;
+const DEFAULT_MAX_DATA_TREE_BYTES = 6n * 1024n * 1024n * 1024n;
 const EXPIRED_CLEANUP_BATCH = 100;
 
 export class AttachmentQuotaError extends Error {
     constructor() { super("Attachment upload unavailable"); }
 }
 
-type DiskState = { totalBytes: bigint; freeBytes: bigint };
+type DiskState = { totalBytes: bigint; freeBytes: bigint; dataBytes: bigint };
 type Claim = { id: string; accountId: string; bytes: bigint };
 
 async function inspectLocalDisk(): Promise<DiskState> {
-    const root = join(process.env.DATA_DIR || "./data", "files");
+    const dataRoot = process.env.DATA_DIR || "./data";
+    const root = join(dataRoot, "files");
     const value = await statfs(root, { bigint: true });
-    return { totalBytes: value.blocks * value.bsize, freeBytes: value.bavail * value.bsize };
+    const allocated = async (directory: string): Promise<bigint> => {
+        let total = 0n;
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+            const path = join(directory, entry.name);
+            if (entry.isSymbolicLink()) throw new Error("Chimera data tree contains a symbolic link");
+            if (entry.isDirectory()) total += await allocated(path);
+            else if (entry.isFile()) total += (await lstat(path, { bigint: true })).blocks * 512n;
+        }
+        return total;
+    };
+    return { totalBytes: value.blocks * value.bsize, freeBytes: value.bavail * value.bsize, dataBytes: await allocated(dataRoot) };
 }
 
 export function createAttachmentQuotaService(dependencies: {
@@ -27,6 +40,8 @@ export function createAttachmentQuotaService(dependencies: {
     inspectDisk?: () => Promise<DiskState>;
     now?: () => Date;
     minFreeBytes?: bigint;
+    globalLimitBytes?: bigint;
+    maxDataTreeBytes?: bigint;
     reservationTtlMs?: number;
 } = {}) {
     const database = dependencies.db ?? db;
@@ -34,6 +49,8 @@ export function createAttachmentQuotaService(dependencies: {
     const inspectDisk = dependencies.inspectDisk ?? inspectLocalDisk;
     const now = dependencies.now ?? (() => new Date());
     const minFreeBytes = dependencies.minFreeBytes ?? DEFAULT_MIN_FREE_BYTES;
+    const globalLimitBytes = dependencies.globalLimitBytes ?? DEFAULT_GLOBAL_ATTACHMENT_BYTES;
+    const maxDataTreeBytes = dependencies.maxDataTreeBytes ?? DEFAULT_MAX_DATA_TREE_BYTES;
     const reservationTtlMs = dependencies.reservationTtlMs ?? DEFAULT_RESERVATION_TTL_MS;
 
     const cleanupExpired = async () => {
@@ -67,9 +84,14 @@ export function createAttachmentQuotaService(dependencies: {
                 const requested = BigInt(bytes);
                 const reservations = await tx.chimeraAttachmentReservation.aggregate({ where: { expiresAt: { gt: now() } }, _sum: { bytes: true } });
                 const liveReserved = reservations._sum.bytes ?? 0n;
+                const allocations = await tx.account.aggregate({ _sum: { attachmentUsedBytes: true, attachmentReservedBytes: true } });
+                const globalAllocated = (allocations._sum.attachmentUsedBytes ?? 0n) + (allocations._sum.attachmentReservedBytes ?? 0n);
                 const projectedFree = disk.freeBytes - liveReserved - requested;
                 const projectedUsed = disk.totalBytes - disk.freeBytes + liveReserved + requested;
+                const projectedData = disk.dataBytes + liveReserved + requested;
                 if (disk.totalBytes <= 0n || projectedFree < minFreeBytes || projectedUsed * 100n >= disk.totalBytes * 80n) throw new AttachmentQuotaError();
+                if (projectedData > maxDataTreeBytes || projectedFree <= projectedData + maxDataTreeBytes + minFreeBytes) throw new AttachmentQuotaError();
+                if (globalAllocated + requested > globalLimitBytes) throw new AttachmentQuotaError();
                 if (!account || account.disabledAt || account.attachmentUsedBytes + account.attachmentReservedBytes + requested > account.attachmentQuotaBytes) throw new AttachmentQuotaError();
                 await tx.account.update({ where: { id: accountId }, data: { attachmentReservedBytes: { increment: requested } } });
                 return tx.chimeraAttachmentReservation.create({ data: { accountId, bytes: requested, objectKey, expiresAt: new Date(now().getTime() + reservationTtlMs) } });

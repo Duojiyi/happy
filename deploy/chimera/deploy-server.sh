@@ -3,10 +3,11 @@ set -euo pipefail
 umask 027
 
 readonly ROOT=/opt/chimera
-readonly DATA_ROOT=/data
+readonly STORAGE_ROOT=/srv/chimera-storage
+readonly DATA_ROOT="$STORAGE_ROOT/data"
 readonly PGLITE_ROOT="$DATA_ROOT/pglite"
 readonly STAGING_ROOT=/var/lib/chimera-server-deploy/.chimera-staging/server
-readonly SNAPSHOT_ROOT=/srv/chimera-snapshots
+readonly SNAPSHOT_ROOT="$STORAGE_ROOT/snapshots"
 readonly INPUT_ROOT="$ROOT/server-inputs"
 readonly STATE_ROOT="$ROOT/state"
 readonly OCI_RETENTION_READY="$STATE_ROOT/oci-retention-ready"
@@ -17,7 +18,10 @@ readonly CANDIDATE_PORT=13005
 readonly LOCAL_HEALTH_URL=http://127.0.0.1:3000/health
 readonly CANDIDATE_URL=http://127.0.0.1:${CANDIDATE_PORT}
 readonly PUBLIC_HEALTH_URL=https://103.250.173.136/health
-readonly MIN_FREE_BYTES=$((15 * 1024 * 1024 * 1024))
+readonly MIN_STORAGE_FREE_BYTES=$((5 * 1024 * 1024 * 1024))
+readonly MIN_SYSTEM_FREE_BYTES=$((3 * 1024 * 1024 * 1024))
+readonly MIN_STORAGE_CAPACITY_BYTES=$((29 * 1024 * 1024 * 1024))
+readonly MAX_UNPACKED_IMAGE_BYTES=$((8 * 1024 * 1024 * 1024))
 declare -a RESTORE_BACKUPS=()
 
 die() { printf 'Chimera server deployment rejected\n' >&2; exit 1; }
@@ -36,6 +40,37 @@ prepare_image() {
   local accepted="$INPUT_ROOT/$id"
   [[ -f "$source_archive" && ! -L "$source_archive" && -f "$source_metadata" && ! -L "$source_metadata" && -f "$source_attestation" && ! -L "$source_attestation" ]] || die
   [[ "$(stat -c '%s' "$source_archive")" -le 4294967296 && "$(stat -c '%s' "$source_metadata")" -le 65536 && "$(stat -c '%s' "$source_attestation")" -le 10485760 ]] || die
+  local archive_bytes unpacked_bytes system_free required_system_free
+  archive_bytes="$(stat -c '%s' "$source_archive")"
+  unpacked_bytes="$(python3 - "$source_archive" "$MAX_UNPACKED_IMAGE_BYTES" <<'PY'
+import json, pathlib, sys, tarfile
+archive = pathlib.Path(sys.argv[1])
+maximum = int(sys.argv[2])
+with tarfile.open(archive, "r:*") as outer:
+    index = json.load(outer.extractfile("index.json"))
+    manifests = index.get("manifests", [])
+    if len(manifests) != 1: raise SystemExit(1)
+    manifest_digest = manifests[0].get("digest", "")
+    if not manifest_digest.startswith("sha256:"): raise SystemExit(1)
+    manifest = json.load(outer.extractfile(f"blobs/sha256/{manifest_digest[7:]}"))
+    total = 0
+    for layer in manifest.get("layers", []):
+        if layer.get("mediaType") != "application/vnd.oci.image.layer.v1.tar+gzip": raise SystemExit(1)
+        digest = layer.get("digest", "")
+        if not digest.startswith("sha256:"): raise SystemExit(1)
+        stream = outer.extractfile(f"blobs/sha256/{digest[7:]}")
+        with tarfile.open(fileobj=stream, mode="r|gz") as contents:
+            for member in contents:
+                if member.isfile():
+                    total += member.size
+                    if total > maximum: raise SystemExit(1)
+    print(total)
+PY
+)"
+  [[ "$unpacked_bytes" =~ ^[0-9]+$ ]]
+  system_free="$(df --output=avail -B1 "$ROOT" | tail -n 1 | tr -d ' ')"
+  required_system_free=$(( archive_bytes * 2 + unpacked_bytes + MIN_SYSTEM_FREE_BYTES ))
+  (( system_free > required_system_free )) || die
   [[ ! -e "$incoming" ]] || die
   if [[ -d "$accepted" && -f "$accepted/server-release-input.json" ]]; then
     python3 - "$accepted/server-release-input.json" "$id" "$digest" <<'PY' || exit 1
@@ -163,10 +198,18 @@ assert_pglite_closed() {
   ! fuser -m "$PGLITE_ROOT" >/dev/null 2>&1
 }
 check_snapshot_space() {
-  local data_bytes free_bytes required_bytes
+  local target_data="${1:-}" data_bytes target_bytes=0 free_bytes required_bytes
   data_bytes="$(du -sb "$DATA_ROOT" | awk '{print $1}')"
+  if [[ -n "$target_data" ]]; then
+    [[ -d "$target_data" && ! -L "$target_data" ]] || return 1
+    target_bytes="$(du -sb "$target_data" | awk '{print $1}')"
+  fi
   free_bytes="$(df --output=avail -B1 "$SNAPSHOT_ROOT" | tail -n 1 | tr -d ' ')"
-  required_bytes=$(( data_bytes * 12 / 10 + 15 * 1024 * 1024 * 1024 ))
+  if [[ -n "$target_data" ]]; then
+    required_bytes=$(( data_bytes + target_bytes + MIN_STORAGE_FREE_BYTES ))
+  else
+    required_bytes=$(( data_bytes * 2 + MIN_STORAGE_FREE_BYTES ))
+  fi
   (( free_bytes > required_bytes ))
 }
 create_snapshot() {
@@ -258,35 +301,80 @@ remove_candidate_if_present() {
     docker rm --force "$CANDIDATE_NAME" >/dev/null
   fi
 }
+cleanup_restore_candidates() {
+  local candidate
+  while IFS= read -r -d '' candidate; do
+    [[ -d "$candidate" && ! -L "$candidate" && "$candidate" =~ ^/srv/chimera-storage/data\.restore-[a-z0-9-]+-[0-9]+-[0-9]+$ ]] || return 1
+    rm -rf -- "$candidate" || return 1
+  done < <(find "$STORAGE_ROOT" -mindepth 1 -maxdepth 1 -name 'data.restore-*' -print0)
+}
 restore_snapshot() {
   local id="$1" image="$2" snapshot="$SNAPSHOT_ROOT/$1"
   local transaction="$1-$$-${RANDOM}" candidate="$DATA_ROOT.restore-$transaction" backup="$DATA_ROOT.failed-$transaction"
   local parent; parent="$(dirname "$DATA_ROOT")"
   [[ -f "$snapshot/.verified" && ! -L "$snapshot/.verified" && -d "$snapshot/data" && ! -L "$snapshot/data" ]] || return 1
-  [[ -d "$DATA_ROOT" && ! -L "$DATA_ROOT" && ! -e "$candidate" && ! -e "$backup" ]] || return 1
+  [[ -d "$DATA_ROOT" && ! -L "$DATA_ROOT" && ! -e "$candidate" && ! -e "$backup" && "${#RESTORE_BACKUPS[@]}" == 0 ]] || return 1
   remove_candidate_if_present || return 1
   docker compose --file "$COMPOSE_FILE" stop relay >/dev/null || return 1
   install -d -m 0750 "$candidate" || return 1
-  cp -a -- "$snapshot/data/." "$candidate/" || return 1
-  find "$candidate" -type f -exec sync -f {} + || return 1
-  sync -f "$candidate" || return 1
-  open_test_path "$image" "$candidate" || return 1
-  mv -- "$DATA_ROOT" "$backup" || return 1
+  if ! cp -a -- "$snapshot/data/." "$candidate/" \
+      || ! find "$candidate" -type f -exec sync -f {} + \
+      || ! sync -f "$candidate" \
+      || ! open_test_path "$image" "$candidate"; then
+    rm -rf -- "$candidate"
+    return 1
+  fi
+  if ! mv -- "$DATA_ROOT" "$backup"; then
+    rm -rf -- "$candidate"
+    return 1
+  fi
+  RESTORE_BACKUPS+=("$backup")
   sync -f "$parent" || return 1
   if ! mv -- "$candidate" "$DATA_ROOT"; then
-    if ! mv -- "$backup" "$DATA_ROOT"; then
+    if mv -- "$backup" "$DATA_ROOT"; then
+      RESTORE_BACKUPS=()
+      rm -rf -- "$candidate"
+    else
       printf 'Chimera restore swap failed; original data remains at %s\n' "$backup" >&2
     fi
     sync -f "$parent"
     return 1
   fi
   sync -f "$parent" || return 1
-  RESTORE_BACKUPS+=("$backup")
+}
+restore_pending_backup() {
+  local image="$1" count="${#RESTORE_BACKUPS[@]}" backup failed parent
+  (( count == 1 )) || return 1
+  backup="${RESTORE_BACKUPS[0]}"
+  [[ "$backup" =~ ^/srv/chimera-storage/data\.failed-[a-z0-9-]+-[0-9]+-[0-9]+$ && -d "$backup" && ! -L "$backup" ]] || return 1
+  failed="$DATA_ROOT.failed-recovery-$$-${RANDOM}"
+  parent="$(dirname "$DATA_ROOT")"
+  [[ ! -L "$DATA_ROOT" && ! -e "$failed" ]] || return 1
+  remove_candidate_if_present || return 1
+  docker compose --file "$COMPOSE_FILE" stop relay >/dev/null || return 1
+  open_test_path "$image" "$backup" || return 1
+  cleanup_restore_candidates || return 1
+  if [[ ! -e "$DATA_ROOT" ]]; then
+    mv -- "$backup" "$DATA_ROOT" || return 1
+    sync -f "$parent" || return 1
+    RESTORE_BACKUPS=()
+    return 0
+  fi
+  [[ -d "$DATA_ROOT" ]] || return 1
+  mv -- "$DATA_ROOT" "$failed" || return 1
+  sync -f "$parent" || return 1
+  if ! mv -- "$backup" "$DATA_ROOT"; then
+    mv -- "$failed" "$DATA_ROOT" || true
+    sync -f "$parent"
+    return 1
+  fi
+  sync -f "$parent" || return 1
+  RESTORE_BACKUPS=("$failed")
 }
 finish_restores() {
   local backup
   for backup in "${RESTORE_BACKUPS[@]}"; do
-    [[ "$backup" =~ ^/data\.failed-[a-f0-9-]+-[0-9]+-[0-9]+$ && -d "$backup" && ! -L "$backup" ]] || return 1
+    [[ "$backup" =~ ^/srv/chimera-storage/data\.failed-[a-z0-9-]+-[0-9]+-[0-9]+$ && -d "$backup" && ! -L "$backup" ]] || return 1
     rm -rf -- "$backup" || return 1
   done
   sync -f "$(dirname "$DATA_ROOT")" || return 1
@@ -301,7 +389,7 @@ snapshot_markers() {
 rollback_failed_deploy() {
   local id="$1" old_image="$2" old_digest="$3"
   trap - ERR EXIT
-  if ! recover_release "$id" "$old_image" "$old_digest"; then
+  if ! recover_release "$id" "$old_image" "$old_digest" || ! cleanup_failed_release "$id"; then
     if ! maintenance_on; then printf 'Chimera recovery failed and maintenance reload also failed\n' >&2; fi
   fi
   exit 1
@@ -309,14 +397,16 @@ rollback_failed_deploy() {
 rollback_failed_rollback() {
   local rescue="$1" image="$2" digest="$3"
   trap - ERR EXIT
-  if ! recover_release "$rescue" "$image" "$digest"; then
+  if ! recover_release "$rescue" "$image" "$digest" || ! cleanup_failed_rollback "$rescue"; then
     if ! maintenance_on; then printf 'Chimera rollback recovery failed and maintenance reload also failed\n' >&2; fi
   fi
   exit 1
 }
 recover_release() {
   local snapshot_id="$1" image="$2" digest="$3"
-  if [[ -f "$SNAPSHOT_ROOT/$snapshot_id/.verified" && ! -L "$SNAPSHOT_ROOT/$snapshot_id/.verified" ]]; then
+  if (( ${#RESTORE_BACKUPS[@]} > 0 )); then
+    restore_pending_backup "$image" || return 1
+  elif [[ -f "$SNAPSHOT_ROOT/$snapshot_id/.verified" && ! -L "$SNAPSHOT_ROOT/$snapshot_id/.verified" ]]; then
     restore_snapshot "$snapshot_id" "$image" || return 1
   else
     remove_candidate_if_present || return 1
@@ -331,6 +421,25 @@ recover_release() {
     maintenance_on || return 1
     return 1
   fi
+}
+cleanup_failed_release() {
+  local id="$1"
+  [[ "$id" =~ ^[a-f0-9]{40}$ ]] || return 1
+  remove_candidate_if_present || return 1
+  cleanup_restore_candidates || return 1
+  rm -rf -- "$INPUT_ROOT/$id" || return 1
+  docker image rm "chimera-relay:$id" >/dev/null 2>&1 || true
+  rm -f -- "$STAGING_ROOT/$id.oci.partial" "$STAGING_ROOT/$id.json.partial" "$STAGING_ROOT/$id.attestation.partial" || return 1
+  retain_verified_snapshots 1 || return 1
+  sync -f "$INPUT_ROOT" || return 1
+}
+cleanup_failed_rollback() {
+  local rescue="$1"
+  [[ "$rescue" =~ ^[a-f0-9]{40}$ ]] || return 1
+  cleanup_restore_candidates || return 1
+  rm -rf -- "$SNAPSHOT_ROOT/.tmp-$rescue" "$SNAPSHOT_ROOT/$rescue" || return 1
+  retain_verified_snapshots 1 || return 1
+  sync -f "$SNAPSHOT_ROOT" || return 1
 }
 retain_verified_snapshots() {
   local keep="$1"
@@ -386,12 +495,16 @@ retain_server_artifacts() {
   done
   free_bytes="$(df --output=avail -B1 "$ROOT" | tail -n 1 | tr -d ' ')" || return 1
   [[ "$free_bytes" =~ ^[0-9]+$ ]] || return 1
-  (( free_bytes > MIN_FREE_BYTES ))
+  (( free_bytes > MIN_SYSTEM_FREE_BYTES ))
   if [[ ! -e "$OCI_RETENTION_READY" && ! -L "$OCI_RETENTION_READY" ]]; then mark_oci_retention_ready "$legacy_id"; fi
 }
 deploy_server() {
   local id="$1" digest="$2" old_image old_digest
   old_image="$(current_image)"; old_digest="$(current_digest)"
+  if [[ "$old_image" == "chimera-relay:$id" ]]; then
+    rm -f -- "$STAGING_ROOT/$id.oci.partial" "$STAGING_ROOT/$id.json.partial" "$STAGING_ROOT/$id.attestation.partial"
+    die
+  fi
   prepare_image "$id" "$digest"
   verify_running_old; verify_public
   trap 'rollback_failed_deploy "$id" "$old_image" "$old_digest"' ERR EXIT
@@ -400,35 +513,43 @@ deploy_server() {
   create_snapshot "$id" "$old_image" "$old_digest"; open_test_snapshot "$id" "$old_image"
   migrate_candidate "$id"; start_candidate "$id"; verify_candidate "$id"
   promote_candidate "$id" "$digest"; verify_running_new "$id"
-  retain_server_artifacts; retain_verified_snapshots 2
+  retain_server_artifacts; retain_verified_snapshots 1
   maintenance_off; verify_public
   trap - ERR EXIT
   rm -f -- "$STAGING_ROOT/$id.oci.partial" "$STAGING_ROOT/$id.json.partial" "$STAGING_ROOT/$id.attestation.partial"
   printf 'deployed digest=%s\nrunning digest=%s\n' "$digest" "$(current_digest)"
 }
 rollback_server() {
-  local id="$1" rescue="rollback-$1-$(date +%s)" current_image_value current_digest_value target_image target_digest
+  local id="$1" rescue current_image_value current_digest_value target_image target_digest
+  rescue="$(printf 'chimera-rollback:%s:%s:%s' "$id" "$(date +%s%N)" "$RANDOM" | sha1sum | cut -d ' ' -f 1)"
+  [[ "$rescue" =~ ^[a-f0-9]{40}$ && "$rescue" != "$id" ]] || die
   [[ -f "$SNAPSHOT_ROOT/$id/.verified" && ! -e "$SNAPSHOT_ROOT/$rescue" ]] || die
   current_image_value="$(current_image)"; current_digest_value="$(current_digest)"
   IFS=$'\t' read -r target_image target_digest < <(snapshot_markers "$id")
   trap 'rollback_failed_rollback "$rescue" "$current_image_value" "$current_digest_value"' ERR EXIT
   maintenance_on
-  stop_runtime; assert_pglite_closed; check_snapshot_space
+  stop_runtime; assert_pglite_closed; check_snapshot_space "$SNAPSHOT_ROOT/$id/data"
   create_snapshot "$rescue" "$current_image_value" "$current_digest_value"; open_test_snapshot "$rescue" "$current_image_value"
   restore_snapshot "$id" "$target_image"
   write_current_release "$target_image" "$target_digest"
   CHIMERA_IMAGE="$target_image" docker compose --file "$COMPOSE_FILE" up -d --remove-orphans
   verify_running_old; finish_restores
-  retain_server_artifacts; retain_verified_snapshots 2
+  retain_server_artifacts; retain_verified_snapshots 1
   maintenance_off; verify_public
   trap - ERR EXIT
   printf 'rolled back digest=%s\nrunning digest=%s\n' "$target_digest" "$(current_digest)"
 }
 main() {
   [[ "${EUID:-$(id -u)}" == 0 ]] || die
-  for tool in docker skopeo gh python3 curl fuser flock sync; do command -v "$tool" >/dev/null 2>&1 || die; done
+  for tool in docker skopeo gh python3 curl fuser flock sync findmnt mountpoint; do command -v "$tool" >/dev/null 2>&1 || die; done
   require_root_owned_file "$COMPOSE_FILE"
-  install -d -m 0750 "$INPUT_ROOT" "$STATE_ROOT" "$SNAPSHOT_ROOT"
+  mountpoint -q "$STORAGE_ROOT" || die
+  [[ "$(stat -c '%d' "$STORAGE_ROOT")" != "$(stat -c '%d' /)" ]] || die
+  (( $(df --output=size -B1 "$STORAGE_ROOT" | tail -n 1 | tr -d ' ') >= MIN_STORAGE_CAPACITY_BYTES )) || die
+  for path in "$STORAGE_ROOT" "$DATA_ROOT" "$SNAPSHOT_ROOT"; do
+    [[ -d "$path" && ! -L "$path" && "$(stat -c '%u' "$path")" == 0 ]] || die
+  done
+  install -d -m 0750 "$INPUT_ROOT" "$STATE_ROOT"
   exec 9>/run/lock/chimera-production.lock; flock -n 9 || die
   find "$SNAPSHOT_ROOT" -mindepth 1 -maxdepth 1 -type d -name '.tmp-*' -exec rm -rf -- {} +
   find "$INPUT_ROOT" -mindepth 1 -maxdepth 1 -type d -name '.incoming-*' -exec rm -rf -- {} +

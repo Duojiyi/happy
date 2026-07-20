@@ -4,9 +4,9 @@
 
 **Goal:** Harden and deploy backup server A as the Chimera relay/web host, maintain trusted public-IP HTTPS and consistent rollback, and operate a fail-closed six-hour upstream synchronization workflow with independent audits for executable changes.
 
-**Architecture:** Keep public ingress in Nginx, bind the standalone relay only to loopback, and deploy versioned web/APK/server releases through restricted helpers. Prepare upstream merges in isolated worktrees, protect Chimera policy/workflows, preserve upstream Git ancestry, and separate read-only preparation from write-capable PR/dispatch jobs.
+**Architecture:** Keep public ingress in Caddy, bind the standalone relay only to loopback, and deploy versioned web/APK/server releases through restricted helpers. Prepare upstream merges in isolated worktrees, protect Chimera policy/workflows, preserve upstream Git ancestry, and separate read-only preparation from write-capable PR/dispatch jobs.
 
-**Tech Stack:** Ubuntu 22.04, Docker Compose, Nginx, Certbot 5.4+, systemd, UFW/DOCKER-USER, Git/GitHub Actions, PowerShell/Bash, pnpm.
+**Tech Stack:** Ubuntu 22.04, Docker Compose, Caddy 2.10, Let's Encrypt short-lived IP certificates, systemd, UFW/DOCKER-USER, Git/GitHub Actions, PowerShell/Bash, pnpm.
 
 ---
 
@@ -152,7 +152,7 @@ git add deploy/chimera/certbot deploy/chimera/systemd/chimera-cert-renew.* deplo
 git commit -m "ops: automate trusted IP certificates"
 ```
 
-### Task 3: Define Relay And Nginx Runtime
+### Task 3: Define Relay And Caddy Runtime
 
 **Files:**
 - Create: `deploy/chimera/docker-compose.yml`
@@ -167,7 +167,7 @@ Assert image pinned by digest/version input, restart policy, read-only root wher
 supported, dropped capabilities, no-new-privileges, `/data` persistent mount,
 `127.0.0.1:3005:3005`, no metrics/public database ports, healthcheck, exact
 required secret names including independent `CHIMERA_ACCOUNT_PSEUDONYM_KEY`, and
-Nginx routes `/`, `/v1`, Socket.IO paths, `/files`,
+Caddy routes `/`, `/v1`, Socket.IO paths, `/files`,
 `/chimera-control`, `/downloads`, and ACME.
 
 - [ ] **Step 2: Run and verify failure**
@@ -178,18 +178,18 @@ Expected: FAIL because runtime files are absent.
 
 - [ ] **Step 3: Implement Compose service**
 
-Use standalone Happy Server with `/srv/chimera/data:/data`, environment loaded
+Use standalone Happy Server with `/srv/chimera-storage/data:/data`, environment loaded
 from root-owned `/etc/chimera/server.env`, loopback port only, bounded logs,
-health endpoint, init process, and resource ceilings that leave Nginx/system
+health endpoint, init process, and resource ceilings that leave Caddy/system
 headroom on 3.6 GiB RAM.
 
-- [ ] **Step 4: Implement Nginx route/security policy**
+- [ ] **Step 4: Implement Caddy route/security policy**
 
 Use trusted IP certificate, WebSocket upgrade map, request/body/timeouts by route,
 `/files` content headers and no SPA fallback, control login/API rate limits,
 registration/invite rate limits, CSP for control UI, immutable hashed web assets,
 no-cache index/config/manifest, and downloads range support. Overwrite forwarded
-headers and proxy only from Nginx loopback.
+headers and proxy only from Caddy loopback.
 
 - [ ] **Step 5: Validate config and commit**
 
@@ -249,12 +249,27 @@ capability; no shared group grants staging or helper access.
 
 - [ ] **Step 5: Implement consistent server deployment**
 
-Enable root-owned Nginx maintenance include; stop container; ensure no process
-holds `/data/pglite`; require free bytes > `1.2 * dataBytes + 15 GiB`; copy to
-`/srv/chimera-snapshots/.tmp-$DeploymentId` then atomic rename; restore/open-test snapshot
+Enable root-owned Caddy maintenance include; stop container; ensure no process
+holds `/data/pglite`; require free bytes > `2 * dataBytes + 5 GiB`; copy to
+`/srv/chimera-storage/snapshots/.tmp-$DeploymentId` then atomic rename; restore/open-test snapshot
 with old image; start candidate loopback; migrate/health API, socket, config,
 auth, and files; switch image marker and remove maintenance. On failure restore
 snapshot/old image and verify before reopening.
+
+Provision the existing ext4 data volume before bootstrap:
+
+```bash
+install -d -m 0750 /srv/chimera-storage
+DATA_UUID=$(blkid -s UUID -o value /dev/vdb1)
+printf 'UUID=%s /srv/chimera-storage ext4 defaults,nodev,nosuid 0 2\n' "$DATA_UUID" >> /etc/fstab
+mount -a
+test "$(stat -c '%d' /srv/chimera-storage)" != "$(stat -c '%d' /)"
+test "$(df --output=size -B1 /srv/chimera-storage | tail -n 1)" -ge $((29 * 1024 * 1024 * 1024))
+```
+
+The deploy-user installer adds `RequiresMountsFor=/srv/chimera-storage` to the
+Docker unit. A missing data disk therefore blocks Docker startup instead of
+silently creating an empty data tree on the system disk.
 
 - [ ] **Step 6: Run tests/syntax and commit**
 
@@ -309,7 +324,7 @@ never generate an update identity on the host. Generate the Argon2id admin hash
 from a user-provided test password without logging plaintext, using Argon2 version
 19 and exactly `m=65536,t=3,p=1`; parse the resulting PHC and abort unless every
 value exactly matches. Write root-owned env mode 600, install
-Nginx/Compose/systemd/helper files, issue staging then production IP certificate,
+Caddy/Compose/systemd/helper files, obtain the production short-lived IP certificate,
 and deploy the reviewed server image.
 
 - [ ] **Step 6: Run external smoke and invitation flow**

@@ -6,7 +6,7 @@
 
 **Architecture:** Build unsigned APK/web artifacts in secretless jobs, bind them to commit/version provenance, then sign the APK and update manifest in a no-checkout protected job. Publish immutable GitHub assets and activate server mirrors/static web only after byte/package/version/signer and health validation.
 
-**Tech Stack:** GitHub Actions, pnpm 10, Node 22, Expo prebuild/export, Gradle/Android SDK, `apksigner`, Ed25519, SHA-256, Nginx static releases.
+**Tech Stack:** GitHub Actions, pnpm 10, Node 22, Expo prebuild/export, Gradle/Android SDK, `apksigner`, Ed25519, SHA-256, Caddy-backed static releases.
 
 ---
 

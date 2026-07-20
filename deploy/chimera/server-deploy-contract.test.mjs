@@ -63,6 +63,8 @@ test('deploy and rollback install recovery traps before maintenance mutation', (
   const rollback = source.slice(source.indexOf('rollback_server() {'), source.indexOf('\nmain() {'));
   assert.ok(rollback.indexOf("trap 'rollback_failed_rollback") < rollback.indexOf('maintenance_on'));
   assert.match(rollback, /create_snapshot "\$rescue"/);
+  assert.match(rollback, /chimera-rollback:/);
+  assert.match(rollback, /rescue" =~ \^\[a-f0-9\]\{40\}\$/);
   assert.match(source, /if ! recover_release/);
 });
 
@@ -77,6 +79,13 @@ test('snapshot restore is transactional and preserves original data until restor
   assert.match(restore, /if ! mv -- "\$backup" "\$DATA_ROOT"/);
   assert.doesNotMatch(restore, /rm -rf -- "\$backup"/);
   assert.match(finish, /rm -rf -- "\$backup" \|\| return 1/);
+  assert.match(source, /restore_pending_backup "\$image"/);
+  assert.match(source, /open_test_path "\$image" "\$backup"/);
+  assert.match(source, /RESTORE_BACKUPS=\("\$failed"\)/);
+  assert.match(source, /cleanup_restore_candidates/);
+  assert.ok(restore.indexOf('RESTORE_BACKUPS+=("$backup")') < restore.indexOf('mv -- "$candidate" "$DATA_ROOT"'));
+  assert.match(restore, /rm -rf -- "\$candidate"/);
+  assert.match(restore, /if ! mv -- "\$DATA_ROOT" "\$backup"; then[\s\S]*rm -rf -- "\$candidate"/);
   assert.ok(recovery.indexOf('verify_running_old || return 1') < recovery.indexOf('finish_restores || return 1'));
   assert.ok(rollback.indexOf('verify_running_old; finish_restores') > rollback.indexOf('docker compose --file "$COMPOSE_FILE" up'));
   assert.doesNotMatch(source, /set \+e/);
@@ -112,10 +121,31 @@ function validateArtifactRetention(deploySource) {
   assert.match(retain, /\^\[a-f0-9\]\{40\}\$/);
   assert.match(retain, /! -L "\$entry" && -d "\$entry"/);
   assert.match(retain, /docker image rm "chimera-relay:\$id"/);
-  assert.match(retain, /free_bytes > MIN_FREE_BYTES/);
+  assert.match(retain, /free_bytes > MIN_SYSTEM_FREE_BYTES/);
   assert.doesNotMatch(retain, /docker image prune|docker system prune/);
   return true;
 }
+
+test('deployment capacity covers the transactional peak on a dedicated data filesystem', () => {
+  assert.match(source, /readonly STORAGE_ROOT=\/srv\/chimera-storage/);
+  assert.match(source, /readonly MIN_STORAGE_FREE_BYTES=\$\(\(5 \* 1024 \* 1024 \* 1024\)\)/);
+  const snapshot = body('check_snapshot_space', 'create_snapshot');
+  assert.match(snapshot, /data_bytes \* 2 \+ MIN_STORAGE_FREE_BYTES/);
+  assert.match(snapshot, /data_bytes \+ target_bytes \+ MIN_STORAGE_FREE_BYTES/);
+  assert.match(body('deploy_server', 'rollback_server'), /assert_pglite_closed; check_snapshot_space\n/);
+  assert.match(source.slice(source.indexOf('rollback_server() {'), source.indexOf('\nmain() {')), /check_snapshot_space "\$SNAPSHOT_ROOT\/\$id\/data"/);
+  assert.match(source, /retain_verified_snapshots 1/);
+  assert.match(source, /mountpoint -q "\$STORAGE_ROOT"/);
+  assert.match(source, /stat -c '%d' "\$STORAGE_ROOT"/);
+  assert.match(source, /MIN_STORAGE_CAPACITY_BYTES/);
+  assert.match(source, /archive_bytes \* 2 \+ unpacked_bytes \+ MIN_SYSTEM_FREE_BYTES/);
+  assert.match(source, /maximum = int\(sys\.argv\[2\]\)/);
+  assert.match(source, /if total > maximum: raise SystemExit\(1\)/);
+  assert.doesNotMatch(source, /\(\( unpacked_bytes <=/);
+  assert.match(source, /application\/vnd\.oci\.image\.layer\.v1\.tar\+gzip/);
+  assert.match(source, /cleanup_failed_release "\$id"/);
+  assert.match(source, /rm -rf -- "\$SNAPSHOT_ROOT\/\.tmp-\$rescue" "\$SNAPSHOT_ROOT\/\$rescue"/);
+});
 
 function retainFixture({ active, previous, inputs, legacy }) {
   const inputSet = new Set(inputs);
@@ -159,6 +189,8 @@ test('bootstrap deploy to rollback state machine permits only its bound legacy i
   assert.equal(retainFixture({ active: firstOci, previous: 'd'.repeat(40), inputs: [firstOci], legacy }), null);
   assert.match(source, /readonly OCI_RETENTION_READY="\$STATE_ROOT\/oci-retention-ready"/);
   assert.match(source, /mark_oci_retention_ready "\$legacy_id"/);
+  assert.match(source, /old_image" == "chimera-relay:\$id"/);
+  assert.match(source, /rm -f -- "\$STAGING_ROOT\/\$id\.oci\.partial"/);
 });
 
 test('retention contract rejects protected-release, path-safety, and reserve mutations', () => {
@@ -170,7 +202,7 @@ test('retention contract rejects protected-release, path-safety, and reserve mut
     source.replace('! -L "$entry" && ', ''),
     source.replace('"$active_id" == "$legacy_id"', 'false'),
     source.replace('"$previous_id" != "$legacy_id"', 'false'),
-    source.replace('(( free_bytes > MIN_FREE_BYTES ))', ':'),
+    source.replace('(( free_bytes > MIN_SYSTEM_FREE_BYTES ))', ':'),
   ]) assert.throws(() => validateArtifactRetention(mutated));
 });
 

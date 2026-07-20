@@ -22,6 +22,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     foreach ($role in 'server', 'android', 'web') { Assert-Match $install "install_role $role" "missing isolated $role deployment user installation" }
     Assert-NoMatch $install '/var/lib/chimera-deploy(?:/|\s)|useradd[^\n]*\schimera-deploy(?:\s|$)' 'legacy shared deploy identity must not remain'
     Assert-Match $install 'install -d -m 0755 /opt/chimera' 'runtime targets must remain root-owned and writable only through helpers'
+    Assert-Match $install 'RequiresMountsFor=/srv/chimera-storage' 'Docker must not start without the dedicated data filesystem'
 
     $sudoers = $Sources.sudoers
     foreach ($role in 'server', 'android', 'web') {
@@ -71,7 +72,9 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     foreach ($pattern in @(
         '\^deploy-server\\ ', '\^rollback-server\\ ', 'server-image\.oci', 'server-release-input\.json', 'server-archive-attestation\.jsonl',
         'gh attestation verify', '--bundle "\$incoming/server-archive-attestation\.jsonl"', 'skopeo copy --preserve-digests',
-        'maintenance', 'pglite', 'snapshot', 'data_bytes \* 12 / 10', '15 \* 1024|16106127360', 'health',
+        'maintenance', 'pglite', 'snapshot', 'data_bytes \* 2', 'data_bytes \+ target_bytes', '5 \* 1024|5368709120',
+        'MIN_SYSTEM_FREE_BYTES', 'unpacked_bytes', 'MAX_UNPACKED_IMAGE_BYTES', 'stat -c ''%d''', '29 \* 1024',
+        'restore_pending_backup', 'cleanup_restore_candidates', 'cleanup_failed_release', 'cleanup_failed_rollback', 'health',
         'rollback_failed_deploy', 'rollback_failed_rollback', '--network host', 'sync -f|fsync'
     )) { Assert-Match $server $pattern "Server deployment missing: $pattern" }
     Assert-NoMatch $server 'eval|bash\s+-c|sh\s+-c|docker build|Dockerfile\.server|deploy/chimera/docker-compose' 'Server deployment executes candidate source or shell fragments'
@@ -86,7 +89,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     }
     Assert-Match $Sources.update_key 'expected=ze6ngKGbk7dgWN5d6rXGO0YRE5y54hbLMULFoW5YTHc' 'update verifier key is not pinned'
     Assert-Match $Sources.update_key 'update-manifest-public\.pem' 'update verifier key is not installed to its fixed path'
-    Assert-Match $Sources.compose '/data:/var/lib/chimera' 'relay data must use the snapshot-visible host /data bind'
+    Assert-Match $Sources.compose '/srv/chimera-storage/data:/var/lib/chimera' 'relay data must use the dedicated snapshot-visible data filesystem'
     Assert-Match $Sources.compose '\./proxy-config:/etc/chimera/config:ro' 'proxy must receive only isolated public TLS/maintenance config'
     Assert-NoMatch $Sources.compose '\./config:/etc/chimera/config' 'proxy must not receive relay production secrets'
     Assert-Match $Sources.compose 'happy-server-self-host' 'relay compose command must target the actual self-host package'
@@ -94,6 +97,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
         Assert-Match $Sources.bootstrap $pattern "bootstrap deployment missing: $pattern"
     }
     Assert-Match $Sources.bootstrap 'tls_healthy=0[\s\S]*for attempt in \{1\.\.90\}[\s\S]*curl.*--proto ''=https''[\s\S]*https://103\.250\.173\.136/health[\s\S]*\[\[ "\$tls_healthy" -eq 1 \]\]' 'bootstrap must wait with a bounded retry for initial ACME certificate readiness'
+    Assert-Match $Sources.bootstrap 'legacy_id=.*chimera-bootstrap' 'bootstrap image identity must differ from the first attested release commit'
     Assert-NoMatch $Sources.bootstrap 'ip-(?:cert|key)\.pem' 'bootstrap must let Caddy provision and renew the IP certificate automatically'
     return $true
 }

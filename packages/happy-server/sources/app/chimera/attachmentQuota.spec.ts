@@ -14,6 +14,7 @@ function database() {
         chimeraAttachmentCleanup: { findUnique: async () => null },
         account: {
             findUnique: async ({ where }: any) => where.id === account.id ? { ...account } : null,
+            aggregate: async () => ({ _sum: { attachmentUsedBytes: account.attachmentUsedBytes, attachmentReservedBytes: account.attachmentReservedBytes } }),
             update: async ({ data }: any) => {
                 for (const field of ["attachmentUsedBytes", "attachmentReservedBytes"] as const) {
                     const value = data[field];
@@ -46,7 +47,7 @@ function database() {
 }
 
 const GiB = 1024n * 1024n * 1024n;
-const healthyDisk = async () => ({ totalBytes: 100n * GiB, freeBytes: 50n * GiB });
+const healthyDisk = async () => ({ totalBytes: 100n * GiB, freeBytes: 50n * GiB, dataBytes: 1n * GiB });
 
 describe("Chimera attachment quota", () => {
     it("atomically bounds concurrent reservations by the account quota", async () => {
@@ -64,7 +65,7 @@ describe("Chimera attachment quota", () => {
             () => undefined,
         ]) {
             const state = database(); configure(state);
-            const inspectDisk = state.account.disabledAt ? healthyDisk : async () => ({ totalBytes: 100_000n, freeBytes: 10n });
+            const inspectDisk = state.account.disabledAt ? healthyDisk : async () => ({ totalBytes: 100_000n, freeBytes: 10n, dataBytes: 1_000n });
             const service = createAttachmentQuotaService({ db: state.db, runTransaction: state.runTransaction, inspectDisk });
             await expect(service.reserve("account", 10, "a.enc")).rejects.toBeInstanceOf(AttachmentQuotaError);
             expect(state.reservations).toHaveLength(0);
@@ -73,14 +74,46 @@ describe("Chimera attachment quota", () => {
 
     it("rejects a disk at the 80 percent high-water mark", async () => {
         const state = database();
-        const service = createAttachmentQuotaService({ db: state.db, runTransaction: state.runTransaction, inspectDisk: async () => ({ totalBytes: 100n * GiB, freeBytes: 20n * GiB }) });
+        const service = createAttachmentQuotaService({ db: state.db, runTransaction: state.runTransaction, inspectDisk: async () => ({ totalBytes: 100n * GiB, freeBytes: 20n * GiB, dataBytes: 5n * GiB }) });
+        await expect(service.reserve("account", 10, "a.enc")).rejects.toBeInstanceOf(AttachmentQuotaError);
+    });
+
+    it("accepts a healthy dedicated 30 GiB data filesystem above the default reserve", async () => {
+        const state = database();
+        const service = createAttachmentQuotaService({
+            db: state.db,
+            runTransaction: state.runTransaction,
+            inspectDisk: async () => ({ totalBytes: 30n * GiB, freeBytes: 18n * GiB, dataBytes: 5n * GiB }),
+        });
+        await expect(service.reserve("account", 10, "a.enc")).resolves.toBeDefined();
+    });
+
+    it("enforces the shared attachment ceiling across all accounts", async () => {
+        const state = database();
+        const service = createAttachmentQuotaService({
+            db: state.db,
+            runTransaction: state.runTransaction,
+            inspectDisk: healthyDisk,
+            globalLimitBytes: 200n,
+        });
+        await expect(service.reserve("account", 101, "a.enc")).rejects.toBeInstanceOf(AttachmentQuotaError);
+        expect(state.reservations).toHaveLength(0);
+    });
+
+    it("preserves enough data-disk space for the next deploy and rollback", async () => {
+        const state = database();
+        const service = createAttachmentQuotaService({
+            db: state.db,
+            runTransaction: state.runTransaction,
+            inspectDisk: async () => ({ totalBytes: 30n * GiB, freeBytes: 16n * GiB, dataBytes: 5n * GiB }),
+        });
         await expect(service.reserve("account", 10, "a.enc")).rejects.toBeInstanceOf(AttachmentQuotaError);
     });
 
     it("includes live reservations from other accounts in projected disk capacity", async () => {
         const state = database();
         state.reservations.push({ id: "other", accountId: "other-account", bytes: 6n * GiB, objectKey: "other.enc", createdAt: new Date(), expiresAt: new Date("2026-07-20T00:00:00Z") });
-        const service = createAttachmentQuotaService({ db: state.db, runTransaction: state.runTransaction, now: () => new Date("2026-07-19T00:00:00Z"), minFreeBytes: 15n * GiB, inspectDisk: async () => ({ totalBytes: 100n * GiB, freeBytes: 20n * GiB }) });
+        const service = createAttachmentQuotaService({ db: state.db, runTransaction: state.runTransaction, now: () => new Date("2026-07-19T00:00:00Z"), minFreeBytes: 15n * GiB, inspectDisk: async () => ({ totalBytes: 100n * GiB, freeBytes: 20n * GiB, dataBytes: 1n * GiB }) });
         await expect(service.reserve("account", 1, "a.enc")).rejects.toBeInstanceOf(AttachmentQuotaError);
     });
 
