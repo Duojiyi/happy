@@ -27,6 +27,7 @@ COPY packages/happy-cli/tools packages/happy-cli/tools
 
 RUN SKIP_HAPPY_WIRE_BUILD=1 ELECTRON_SKIP_BINARY_DOWNLOAD=1 pnpm install --frozen-lockfile \
     --filter happy-server-self-host... \
+    --filter happy-app... \
     --filter @slopus/happy-wire...
 
 # Stage 2: build the server
