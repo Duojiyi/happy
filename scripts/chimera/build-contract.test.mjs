@@ -8,6 +8,7 @@ const root = path.resolve(import.meta.dirname, '../..');
 const workflowPath = path.join(root, '.github/workflows/chimera-build.yml');
 const maintainabilityWorkflowPath = path.join(root, '.github/workflows/chimera-audit-maintainability.yml');
 const serverReleaseWorkflowPath = path.join(root, '.github/workflows/chimera-server-release.yml');
+const cliSmokeWorkflowPath = path.join(root, '.github/workflows/cli-smoke-test.yml');
 const typecheckWorkflowPath = path.join(root, '.github/workflows/typecheck.yml');
 const standaloneDockerfilePath = path.join(root, 'Dockerfile');
 const serverDockerfilePath = path.join(root, 'Dockerfile.server');
@@ -117,6 +118,7 @@ export function validateBuildWorkflow(workflow) {
 const source = await readFile(workflowPath, 'utf8').catch(() => null);
 const maintainabilitySource = await readFile(maintainabilityWorkflowPath, 'utf8').catch(() => null);
 const serverReleaseSource = await readFile(serverReleaseWorkflowPath, 'utf8').catch(() => null);
+const cliSmokeSource = await readFile(cliSmokeWorkflowPath, 'utf8').catch(() => null);
 const typecheckSource = await readFile(typecheckWorkflowPath, 'utf8').catch(() => null);
 const standaloneDockerfile = await readFile(standaloneDockerfilePath, 'utf8').catch(() => null);
 const serverDockerfile = await readFile(serverDockerfilePath, 'utf8').catch(() => null);
@@ -156,6 +158,17 @@ if (!source) {
     assert.ok(typecheckSource, `missing ${path.relative(root, typecheckWorkflowPath)}`);
     const typecheck = parse(typecheckSource);
     assert.ok((typecheck.on ?? typecheck.true)?.workflow_dispatch !== undefined, 'typecheck manual dispatch is required');
+    assert.ok(cliSmokeSource, `missing ${path.relative(root, cliSmokeWorkflowPath)}`);
+    const cliSmoke = parse(cliSmokeSource);
+    const cliTriggers = cliSmoke.on ?? cliSmoke.true;
+    for (const trigger of ['pull_request', 'push']) {
+      for (const requiredPath of [
+        '.github/workflows/chimera-audit-maintainability.yml',
+        '.github/workflows/chimera-server-release.yml',
+        'Dockerfile',
+        'Dockerfile.server',
+      ]) assert.ok(cliTriggers?.[trigger]?.paths?.includes(requiredPath), `CLI ${trigger} paths must include ${requiredPath}`);
+    }
   });
 
   test('Chimera build workflow satisfies secretless artifact contract', () => {
