@@ -144,6 +144,11 @@ if (!source) {
     assert.match(serverDockerfile, /^RUN npm install --global bun@1\.3\.14$/m);
     assert.match(standaloneDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'standalone server builder must include app schema sources');
     assert.match(serverDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'server builder must include app schema sources');
+    const serverBuild = serverDockerfile.indexOf('RUN pnpm --filter happy-server-self-host build');
+    const dependencyCleanup = serverDockerfile.indexOf('RUN rm -rf node_modules packages/*/node_modules');
+    const productionInstall = serverDockerfile.indexOf('RUN pnpm install --prod --ignore-scripts --frozen-lockfile');
+    assert.ok(serverBuild >= 0 && serverBuild < dependencyCleanup, 'server must build before removing development dependencies');
+    assert.ok(dependencyCleanup < productionInstall, 'server must reinstall production dependencies after cleanup without running repository scripts');
   });
 
   test('release toolchain changes trigger client evidence and manual typecheck remains available', () => {
