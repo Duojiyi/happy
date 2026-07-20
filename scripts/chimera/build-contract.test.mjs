@@ -142,6 +142,8 @@ if (!source) {
     }
     assert.match(standaloneDockerfile, /^RUN npm install --global bun@1\.3\.14$/m);
     assert.match(serverDockerfile, /^RUN npm install --global bun@1\.3\.14$/m);
+    assert.match(standaloneDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'standalone server builder must include app schema sources');
+    assert.match(serverDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'server builder must include app schema sources');
   });
 
   test('release toolchain changes trigger client evidence and manual typecheck remains available', () => {

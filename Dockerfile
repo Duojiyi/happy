@@ -34,6 +34,7 @@ RUN SKIP_HAPPY_WIRE_BUILD=1 pnpm install --frozen-lockfile
 FROM deps AS builder
 
 COPY packages/happy-wire ./packages/happy-wire
+COPY packages/happy-app ./packages/happy-app
 COPY packages/happy-server ./packages/happy-server
 
 RUN pnpm --filter @slopus/happy-wire build
