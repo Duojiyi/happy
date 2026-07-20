@@ -6,6 +6,8 @@ import { parse } from 'yaml';
 
 const root = path.resolve(import.meta.dirname, '../..');
 const workflowPath = path.join(root, '.github/workflows/chimera-build.yml');
+const maintainabilityWorkflowPath = path.join(root, '.github/workflows/chimera-audit-maintainability.yml');
+const serverDockerfilePath = path.join(root, 'Dockerfile.server');
 
 const PINNED_ACTION = /^[^@\s]+@[0-9a-f]{40}$/;
 
@@ -110,11 +112,23 @@ export function validateBuildWorkflow(workflow) {
 }
 
 const source = await readFile(workflowPath, 'utf8').catch(() => null);
+const maintainabilitySource = await readFile(maintainabilityWorkflowPath, 'utf8').catch(() => null);
+const serverDockerfile = await readFile(serverDockerfilePath, 'utf8').catch(() => null);
 if (!source) {
   test('Chimera build workflow contract', () => {
     assert.fail(`missing ${path.relative(root, workflowPath)}`);
   });
 } else {
+  test('server release build environments pin the required Bun toolchain', () => {
+    assert.ok(maintainabilitySource, `missing ${path.relative(root, maintainabilityWorkflowPath)}`);
+    assert.ok(serverDockerfile, `missing ${path.relative(root, serverDockerfilePath)}`);
+    const audit = parse(maintainabilitySource);
+    const setupBun = allSteps(audit.jobs?.audit).find((step) => step.name === 'Setup Bun');
+    assert.equal(setupBun?.uses, 'oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6');
+    assert.equal(String(setupBun?.with?.['bun-version']), '1.3.14');
+    assert.match(serverDockerfile, /^RUN npm install --global bun@1\.3\.14$/m);
+  });
+
   test('Chimera build workflow satisfies secretless artifact contract', () => {
     validateBuildWorkflow(parse(source));
   });
