@@ -150,8 +150,9 @@ if (!source) {
     const productionDeploy = serverDockerfile.indexOf('RUN pnpm --filter happy-server-self-host deploy --prod --ignore-scripts --legacy /tmp/chimera-server');
     assert.ok(serverBuild >= 0 && serverBuild < dependencyCleanup, 'server must build before removing development dependencies');
     assert.ok(dependencyCleanup < productionInstall && productionInstall < productionDeploy, 'server must deploy only pruned production dependencies after cleanup');
-    assert.match(serverDockerfile, /COPY --from=builder \/tmp\/chimera-server\//, 'runtime must copy the pruned pnpm deploy output');
-    assert.match(serverDockerfile, /CMD \["pnpm", "start"\]/, 'runtime must start the deployed server package directly');
+    assert.match(serverDockerfile, /COPY --from=builder --chown=65532:65532 \/tmp\/chimera-server\//, 'runtime must copy the pruned pnpm deploy output as the unprivileged runtime user');
+    assert.match(serverDockerfile, /^FROM gcr\.io\/distroless\/nodejs20-debian12@sha256:[a-f0-9]{64} AS runner$/m, 'runtime must use a digest-pinned minimal Node image');
+    assert.match(serverDockerfile, /CMD \["dist\/standalone\.mjs", "serve"\]/, 'runtime must start the built standalone server directly');
   });
 
   test('release toolchain changes trigger client evidence and manual typecheck remains available', () => {
