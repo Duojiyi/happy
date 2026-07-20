@@ -54,7 +54,7 @@ try {
     Assert-True ($product.slug -eq 'chimera') 'slug'
     Assert-True ($product.androidApplicationId -eq 'org.chimerahub.chimera') 'application id'
     Assert-True (@($product.deepLinkSchemes) -join ',' -eq 'chimera,happy') 'deep links'
-    Assert-True ($product.relayOrigin -eq 'https://39.98.68.173') 'relay origin'
+    Assert-True ($product.relayOrigin -eq 'https://103.250.173.136') 'relay origin'
     Assert-True ($product.repository -eq 'Duojiyi/happy') 'repository'
     Assert-True ($product.upstreamAppVersion -eq '1.7.0') 'upstream version'
     Assert-True ($product.chimeraRevision -eq 1) 'revision'

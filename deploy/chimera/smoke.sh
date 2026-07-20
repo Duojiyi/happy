@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-host="${1:-39.98.68.173}"
+host="${1:-103.250.173.136}"
 base="https://${host}"
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$base/health" >/dev/null
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$base/v1/chimera/config" >/dev/null

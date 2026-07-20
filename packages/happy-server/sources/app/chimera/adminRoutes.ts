@@ -12,7 +12,7 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 
 const COOKIE_NAME = "__Secure-chimera_admin";
-const ORIGIN = "https://39.98.68.173";
+const ORIGIN = "https://103.250.173.136";
 const UNAUTHORIZED = { error: "Unauthorized" };
 const accountParams = z.object({ id: z.string().length(43).regex(/^[A-Za-z0-9_-]+$/) }).strict();
 const noBody = z.object({}).strict();

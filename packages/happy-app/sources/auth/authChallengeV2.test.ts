@@ -5,13 +5,13 @@ describe('authChallengeV2', () => {
     it('creates the exact canonical challenge payload', () => {
         expect(createAuthPayload({
             version: 2,
-            origin: 'https://39.98.68.173',
+            origin: 'https://103.250.173.136',
             purpose: 'chimera-account-auth',
             challengeId: 'challenge-id',
             nonce: 'base64url-nonce',
             publicKey: 'base64-public-key',
             expiresAt: '2026-07-19T10:00:00.000Z',
-        })).toBe('chimera-auth-v2\nhttps://39.98.68.173\nchimera-account-auth\nchallenge-id\nbase64url-nonce\nbase64-public-key\n2026-07-19T10:00:00.000Z');
+        })).toBe('chimera-auth-v2\nhttps://103.250.173.136\nchimera-account-auth\nchallenge-id\nbase64url-nonce\nbase64-public-key\n2026-07-19T10:00:00.000Z');
     });
 
     it.each([
@@ -24,7 +24,7 @@ describe('authChallengeV2', () => {
     ])('rejects an invalid %s server response', (_name, mutation) => {
         expect(() => parseAuthChallengeResponse({
             version: 2,
-            origin: 'https://39.98.68.173',
+            origin: 'https://103.250.173.136',
             purpose: 'chimera-account-auth',
             challengeId: 'challenge-id',
             nonce: 'YWJjZA',
@@ -37,7 +37,7 @@ describe('authChallengeV2', () => {
     it('rejects a nonce that does not decode to 16 bytes', () => {
         expect(() => parseAuthChallengeResponse({
             version: 2,
-            origin: 'https://39.98.68.173',
+            origin: 'https://103.250.173.136',
             purpose: 'chimera-account-auth',
             challengeId: 'challenge-id',
             nonce: 'YWJjZA',
@@ -52,7 +52,7 @@ describe('authChallengeV2', () => {
     ])('rejects a %s challenge expiry', (_name, expiresAt) => {
         expect(() => parseAuthChallengeResponse({
             version: 2,
-            origin: 'https://39.98.68.173',
+            origin: 'https://103.250.173.136',
             purpose: 'chimera-account-auth',
             challengeId: 'challenge-id',
             nonce: 'AAECAwQFBgcICQoLDA0ODw',

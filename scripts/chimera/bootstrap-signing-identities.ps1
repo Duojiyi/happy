@@ -160,7 +160,7 @@ try {
         & $openssl pkey -in (Join-Path $resumeMaterial 'manifest-ed25519-private.pem') -pubout -outform DER -out $resumeDer 2>$null
         $resumePublic = Get-Ed25519RawPublicKeyBase64Url $resumeDer
         $expected = $transaction.expectedProduct
-        $fixed = [ordered]@{ productName='Chimera'; slug='chimera'; androidApplicationId='org.chimerahub.chimera'; deepLinkSchemes=@('chimera','happy'); relayOrigin='https://39.98.68.173'; repository='Duojiyi/happy'; upstreamAppVersion='1.7.0'; chimeraRevision=1; androidVersionCode=1; updatePublicKey=$resumePublic; androidSignerSha256=$resumeSha }
+        $fixed = [ordered]@{ productName='Chimera'; slug='chimera'; androidApplicationId='org.chimerahub.chimera'; deepLinkSchemes=@('chimera','happy'); relayOrigin='https://103.250.173.136'; repository='Duojiyi/happy'; upstreamAppVersion='1.7.0'; chimeraRevision=1; androidVersionCode=1; updatePublicKey=$resumePublic; androidSignerSha256=$resumeSha }
         if (($expected | ConvertTo-Json -Depth 8 -Compress) -ne ($fixed | ConvertTo-Json -Depth 8 -Compress)) { throw 'Incomplete signing transaction public identity validation failed.' }
         if (-not $finalExists) {
             Move-Item -LiteralPath $resumeBundle -Destination $bundlePath

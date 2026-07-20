@@ -28,24 +28,24 @@ try {
     $upload = { param($Local, $Remote) $events.Add("upload:$Remote") }
     $remote = { param($Verb, $Id) $events.Add("remote:$Verb`:$Id") }
     $health = { param($Url) $events.Add("health:$Url"); $true }
-    Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@39.98.68.173' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://39.98.68.173' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health
+    Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@103.250.173.136' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://103.250.173.136' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health
     Assert-True ($events[0] -eq "upload:.chimera-staging/web/$commit.tar.gz.partial") 'web archive must use an isolated partial staging name'
     Assert-True ($events[1] -eq "remote:activate-web:$commit") 'web helper invocation must contain only verb and commit'
-    Assert-True ($events.Contains('health:https://39.98.68.173/')) 'web root must pass after activation'
+    Assert-True ($events.Contains('health:https://103.250.173.136/')) 'web root must pass after activation'
     Assert-True (($events -join "`n") -match 'health:https://39\.98\.68\.173/assets/app-deadbeef\.js') 'representative hashed asset must pass after activation'
 
     $events.Clear()
     $badHealth = { param($Url) $events.Add("health:$Url"); $false }
-    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@39.98.68.173' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://39.98.68.173' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $badHealth } 'health'
+    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@103.250.173.136' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://103.250.173.136' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $badHealth } 'health'
 
     $events.Clear()
     $failedUpload = { param($Local, $Remote) $events.Add("upload:$Remote"); throw 'web partial upload failed' }
-    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@39.98.68.173' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://39.98.68.173' -UploadOperation $failedUpload -RemoteOperation $remote -HealthOperation $health } 'partial upload failed'
+    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@103.250.173.136' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://103.250.173.136' -UploadOperation $failedUpload -RemoteOperation $remote -HealthOperation $health } 'partial upload failed'
     Assert-True (-not (($events -join "`n") -match 'remote:')) 'failed web partial upload must not invoke activation'
 
     $events.Clear()
     $failedRemote = { param($Verb, $Id) $events.Add("remote:$Verb`:$Id"); throw 'web validation failed' }
-    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@39.98.68.173' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://39.98.68.173' -UploadOperation $upload -RemoteOperation $failedRemote -HealthOperation $health } 'validation failed'
+    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@103.250.173.136' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://103.250.173.136' -UploadOperation $upload -RemoteOperation $failedRemote -HealthOperation $health } 'validation failed'
     Assert-True (-not (($events -join "`n") -match 'health:')) 'remote validation failure must preserve current web release without health polling'
 
     $unsafe = Join-Path $workspace 'unsafe.tar.gz'
@@ -53,11 +53,11 @@ try {
     [IO.File]::WriteAllText($outside, 'unsafe')
     & tar -czf $unsafe -C $workspace outside.txt --transform='s|outside.txt|../outside.txt|' 2>$null
     if ($LASTEXITCODE -eq 0) {
-        Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $unsafe -HostName 'web@39.98.68.173' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://39.98.68.173' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'traversal|unsafe'
+        Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $unsafe -HostName 'web@103.250.173.136' -CommitSha $commit -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://103.250.173.136' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'traversal|unsafe'
     }
     Assert-Throws { Assert-ChimeraWebArchiveEntries @('index.html', '../outside.txt', 'assets/app-deadbeef.js') 'assets/app-deadbeef.js' } 'traversal|unsafe'
-    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@39.98.68.173' -CommitSha '../escape' -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://39.98.68.173' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'CommitSha'
-    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@39.98.68.173' -CommitSha $commit -RepresentativeAsset '../secret' -HealthOrigin 'https://39.98.68.173' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'RepresentativeAsset'
+    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@103.250.173.136' -CommitSha '../escape' -RepresentativeAsset 'assets/app-deadbeef.js' -HealthOrigin 'https://103.250.173.136' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'CommitSha'
+    Assert-Throws { Invoke-ChimeraWebActivation -BundlePath $archive -HostName 'web@103.250.173.136' -CommitSha $commit -RepresentativeAsset '../secret' -HealthOrigin 'https://103.250.173.136' -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'RepresentativeAsset'
 
     Write-Output 'Web activation client tests passed.'
 } finally {

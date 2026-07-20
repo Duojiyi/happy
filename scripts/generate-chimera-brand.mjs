@@ -17,7 +17,7 @@ const keys = [
 ];
 const fixed = {
   productName: 'Chimera', slug: 'chimera', androidApplicationId: 'org.chimerahub.chimera',
-  repository: 'Duojiyi/happy', relayOrigin: 'https://39.98.68.173',
+  repository: 'Duojiyi/happy', relayOrigin: 'https://103.250.173.136',
 };
 
 const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -45,7 +45,7 @@ export function validateProduct(input) {
   }
   let relay;
   try { relay = new URL(input.relayOrigin); } catch { fail('relayOrigin', 'must be a URL'); }
-  if (relay.protocol !== 'https:' || relay.hostname !== '39.98.68.173' || relay.origin !== input.relayOrigin) {
+  if (relay.protocol !== 'https:' || relay.hostname !== '103.250.173.136' || relay.origin !== input.relayOrigin) {
     fail('relayOrigin', 'must be the fixed HTTPS literal-IP origin');
   }
   if (!isSemver(input.upstreamAppVersion)) {

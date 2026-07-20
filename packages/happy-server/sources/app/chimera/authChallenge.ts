@@ -26,7 +26,7 @@ interface ChallengeDb {
 }
 
 interface ChallengeConfig {
-    relayOrigin: "https://39.98.68.173";
+    relayOrigin: "https://103.250.173.136";
     adminSessionSecret: Uint8Array;
 }
 

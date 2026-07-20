@@ -14,7 +14,7 @@ services:
       DATA_DIR: /var/lib/chimera
       HAPPY_STATIC_DIR: /srv/chimera-web
       METRICS_ENABLED: "false"
-      PUBLIC_URL: https://39.98.68.173
+      PUBLIC_URL: https://103.250.173.136
     command:
       - /bin/sh
       - -ec

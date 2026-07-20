@@ -15,7 +15,7 @@ It must not become a collection of fragile search-and-replace patches.
 
 - Publish a production-signed Android APK and a static web application branded
   as Chimera.
-- Fix production Android and web to `https://39.98.68.173` with no server
+- Fix production Android and web to `https://103.250.173.136` with no server
   chooser or fallback to an upstream service.
 - Preserve the Happy encrypted relay, account recovery, device linking, CLI
   pairing, sessions, machines, artifacts, and encrypted attachment behavior.
@@ -61,7 +61,7 @@ It must not become a collection of fragile search-and-replace patches.
 - Primary deep-link scheme: `chimera://`.
 - Compatibility deep-link scheme: `happy://`, retained because the stock Happy
   CLI emits Happy authentication URLs.
-- Relay and web origin: `https://39.98.68.173`.
+- Relay and web origin: `https://103.250.173.136`.
 - Canonical source and releases: `Duojiyi/happy`.
 
 ### Visual Direction
@@ -587,7 +587,7 @@ manifest, and server image remain available for rollback.
 
 Let's Encrypt IP certificates are generally available and must use the
 `shortlived` profile. Certbot 5.4 or newer obtains the certificate with webroot
-validation and `--ip-address 39.98.68.173`. Certificates are valid for 160 hours.
+validation and `--ip-address 103.250.173.136`. Certificates are valid for 160 hours.
 
 - A systemd timer runs renewal checks every six hours with randomized delay.
 - A deploy hook validates the new certificate, reloads Nginx, and performs a

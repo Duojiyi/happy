@@ -44,7 +44,7 @@ export async function stopSocket() {
 export function startSocket(app: Fastify) {
     const io = new Server(app.server, {
         cors: {
-            origin: "https://39.98.68.173",
+            origin: "https://103.250.173.136",
             methods: ["GET", "POST", "OPTIONS"],
             credentials: true,
             allowedHeaders: ["authorization", "content-type", "x-happy-client"]

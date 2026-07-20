@@ -2,13 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { createAuthChallengeService, createAuthPayload } from "./authChallenge";
 
 const key = Buffer.alloc(32, 7).toString("base64");
-const config = { relayOrigin: "https://39.98.68.173" as const, adminSessionSecret: new Uint8Array(32).fill(4) };
+const config = { relayOrigin: "https://103.250.173.136" as const, adminSessionSecret: new Uint8Array(32).fill(4) };
 
 describe("Chimera auth challenges", () => {
     it("uses the client-compatible canonical UTF-8 payload", () => {
         expect(Buffer.from(createAuthPayload({
             origin: config.relayOrigin, purpose: "chimera-account-auth", challengeId: "id", nonce: "nonce", publicKey: "key", expiresAt: "2026-07-19T10:00:00.000Z",
-        })).toString("utf8")).toBe("chimera-auth-v2\nhttps://39.98.68.173\nchimera-account-auth\nid\nnonce\nkey\n2026-07-19T10:00:00.000Z");
+        })).toString("utf8")).toBe("chimera-auth-v2\nhttps://103.250.173.136\nchimera-account-auth\nid\nnonce\nkey\n2026-07-19T10:00:00.000Z");
     });
 
     it("issues a 16-byte nonce while persisting only its keyed digest", async () => {

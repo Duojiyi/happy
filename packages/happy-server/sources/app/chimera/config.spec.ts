@@ -14,7 +14,7 @@ describe("loadChimeraServerConfig", () => {
         const config = loadChimeraServerConfig(validEnv());
 
         expect(config).toMatchObject({
-            relayOrigin: "https://39.98.68.173",
+            relayOrigin: "https://103.250.173.136",
             adminPasswordHash: validEnv().CHIMERA_ADMIN_PASSWORD_HASH,
         });
         expect(config.adminSessionSecret).toEqual(new Uint8Array(32).fill(1));

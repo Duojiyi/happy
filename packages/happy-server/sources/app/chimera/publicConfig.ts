@@ -3,7 +3,7 @@ import { db } from "@/storage/db";
 
 export const CHIMERA_CONFIG_KEY = "startup-announcement";
 export const CHIMERA_UPDATE_MANIFEST_PATH = "/downloads/chimera-update.json" as const;
-export const CHIMERA_CONTROL_ORIGIN = "https://39.98.68.173";
+export const CHIMERA_CONTROL_ORIGIN = "https://103.250.173.136";
 
 const controlCharacter = /[\u0000-\u0009\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
 const plainText = (maximumLength: number) => z.string().max(maximumLength).refine((value) => !controlCharacter.test(value), "Must not contain control characters");

@@ -11,7 +11,7 @@ const { post, crypto_sign_seed_keypair, crypto_sign_detached } = vi.hoisted(() =
 
 vi.mock('axios', () => ({ default: { post } }));
 vi.mock('@/encryption/libsodium.lib', () => ({ default: { crypto_sign_seed_keypair, crypto_sign_detached } }));
-vi.mock('@/sync/serverConfig', () => ({ getServerUrl: () => 'https://39.98.68.173' }));
+vi.mock('@/sync/serverConfig', () => ({ getServerUrl: () => 'https://103.250.173.136' }));
 vi.mock('@/sync/apiSocket', () => ({ getHappyClientId: () => 'client-id' }));
 
 import { authGetToken } from './authGetToken';
@@ -19,7 +19,7 @@ import { authGetToken } from './authGetToken';
 function validChallenge(overrides: Record<string, unknown> = {}) {
     return {
         version: 2,
-        origin: 'https://39.98.68.173',
+        origin: 'https://103.250.173.136',
         purpose: 'chimera-account-auth',
         challengeId: 'challenge-id',
         nonce: 'AAECAwQFBgcICQoLDA0ODw',
@@ -43,12 +43,12 @@ describe('authGetToken', () => {
 
         await expect(authGetToken(new Uint8Array(32), 'invite-code')).resolves.toBe('token');
 
-        expect(post).toHaveBeenNthCalledWith(1, 'https://39.98.68.173/v1/auth/challenge', { publicKey: 'AQID' }, { headers: { 'X-Happy-Client': 'client-id' } });
+        expect(post).toHaveBeenNthCalledWith(1, 'https://103.250.173.136/v1/auth/challenge', { publicKey: 'AQID' }, { headers: { 'X-Happy-Client': 'client-id' } });
         expect(crypto_sign_detached).toHaveBeenCalledWith(
-            new TextEncoder().encode(`chimera-auth-v2\nhttps://39.98.68.173\nchimera-account-auth\nchallenge-id\nAAECAwQFBgcICQoLDA0ODw\nAQID\n${challenge.expiresAt}`),
+            new TextEncoder().encode(`chimera-auth-v2\nhttps://103.250.173.136\nchimera-account-auth\nchallenge-id\nAAECAwQFBgcICQoLDA0ODw\nAQID\n${challenge.expiresAt}`),
             expect.any(Uint8Array),
         );
-        expect(post).toHaveBeenNthCalledWith(2, 'https://39.98.68.173/v1/auth', {
+        expect(post).toHaveBeenNthCalledWith(2, 'https://103.250.173.136/v1/auth', {
             challengeId: 'challenge-id',
             signature: 'BwgJ',
             invitation: 'invite-code',

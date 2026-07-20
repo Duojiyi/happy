@@ -48,7 +48,7 @@ describe.sequential("Chimera standalone integration", () => {
         expect(login.statusCode).toBe(200);
         const cookie = String(login.headers["set-cookie"]).split(";", 1)[0];
         const csrf = login.json().csrfToken;
-        const mutationHeaders = { cookie, origin: "https://39.98.68.173", "x-chimera-csrf": csrf };
+        const mutationHeaders = { cookie, origin: "https://103.250.173.136", "x-chimera-csrf": csrf };
 
         const invitation = await app.inject({ method: "POST", url: "/chimera-control/api/invitations", headers: mutationHeaders, payload: {} });
         expect(invitation.statusCode).toBe(200);
@@ -80,7 +80,7 @@ describe.sequential("Chimera standalone integration", () => {
         const accounts = await app.inject({ method: "GET", url: "/chimera-control/api/accounts", headers: { cookie } });
         const account = accounts.json()[0];
         const address = app.server.address();
-        socketClient = (await import("socket.io-client")).io(`http://127.0.0.1:${address.port}`, { path: "/v1/updates", transports: ["websocket"], auth: { token, clientType: "user-scoped" }, extraHeaders: { Origin: "https://39.98.68.173" } });
+        socketClient = (await import("socket.io-client")).io(`http://127.0.0.1:${address.port}`, { path: "/v1/updates", transports: ["websocket"], auth: { token, clientType: "user-scoped" }, extraHeaders: { Origin: "https://103.250.173.136" } });
         await new Promise<void>((resolveConnect, reject) => { socketClient.once("connect", resolveConnect); socketClient.once("connect_error", reject); setTimeout(() => reject(new Error("socket connect timeout")), 5_000); });
         const disconnected = new Promise<void>((resolveDisconnect) => socketClient.once("disconnect", () => resolveDisconnect()));
         expect((await app.inject({ method: "POST", url: `/chimera-control/api/accounts/${account.id}/disable`, headers: mutationHeaders, payload: {} })).statusCode).toBe(200);

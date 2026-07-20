@@ -19,7 +19,7 @@ const defaults = {
     'POST /chimera-control/api/accounts/:id/revoke-tokens', 'PUT /chimera-control/api/accounts/:id/quota',
   ].map((route) => { const [method, path] = route.split(' '); return `app.${method.toLowerCase()}('${path}', handler);`; }).join('\n'),
   'sources/app/chimera/publicConfig.ts': "app.get('/v1/chimera/config', handler); app.get('/chimera-control/api/config', handler); app.put('/chimera-control/api/config', handler);\n",
-  'sources/app/api/socket.ts': "const cors = { origin: 'https://39.98.68.173' }; socket.use(guard);\n",
+  'sources/app/api/socket.ts': "const cors = { origin: 'https://103.250.173.136' }; socket.use(guard);\n",
   'sources/app/api/routes/attachmentRoutes.ts': "app.post('/v1/sessions/:sessionId/attachments/request-upload', async () => { await quota.reserve(account, size); }); app.put('/v1/sessions/:sessionId/attachments/:attachmentFile', {}, async () => { await quota.claim(); if (isLocalStorage()) { await putLocalFileAtomic(); } else { await s3client.putObject(); } await quota.finalize(); try { work(); } catch { await quota.rollback(); await deleteAttachmentObject(); } }); app.post('/v1/sessions/:sessionId/attachments/request-download', handler); app.get('/v1/sessions/:sessionId/attachments/:attachmentFile', handler);\n",
   'sources/app/chimera/control/index.html': '<title>Chimera Control</title>\n',
   'sources/app/chimera/control/control.js': "headers['X-Chimera-CSRF'] = csrf;\n",

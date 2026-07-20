@@ -26,7 +26,7 @@ export async function verifyAuthChallengeSignature(input: { origin: string; purp
         const tweetnacl = (await import("tweetnacl")).default;
         const publicKey = privacyKit.decodeBase64(input.publicKey);
         const signature = privacyKit.decodeBase64(input.signature);
-        return input.origin === "https://39.98.68.173" && input.purpose === "chimera-account-auth"
+        return input.origin === "https://103.250.173.136" && input.purpose === "chimera-account-auth"
             && publicKey.length === tweetnacl.sign.publicKeyLength && signature.length === tweetnacl.sign.signatureLength
             && tweetnacl.sign.detached.verify(createAuthPayload({ origin: input.origin, purpose: "chimera-account-auth", challengeId: input.challengeId, nonce: input.nonce, publicKey: input.publicKey, expiresAt: input.expiresAt.toISOString() }), signature, publicKey);
     } catch { return false; }

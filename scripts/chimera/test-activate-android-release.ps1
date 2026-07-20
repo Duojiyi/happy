@@ -56,22 +56,22 @@ writeFileSync(signature, sign(null, readFileSync(payload), keys.privateKey));
     $remote = { param($Verb, $Id) $events.Add("remote:$Verb`:$Id") }
     $health = { param($Url, $Range) $events.Add("health:$Url`:$Range"); $true }
     $releaseId = "$commit-v2"
-    Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@39.98.68.173' -ReleaseId $releaseId -HealthOrigin 'https://39.98.68.173' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health
+    Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@103.250.173.136' -ReleaseId $releaseId -HealthOrigin 'https://103.250.173.136' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health
 
     Assert-True ($events[0] -eq "upload:.chimera-staging/android/$releaseId.apk.partial") 'APK must upload to its isolated partial name first'
     Assert-True ($events[1] -eq "upload:.chimera-staging/android/$releaseId.manifest.partial") 'manifest must upload only after the APK partial'
     Assert-True ($events[2] -eq "remote:activate-android:$releaseId") 'remote command must contain only the allowlisted verb and safe ID'
     Assert-True (($events -join "`n") -match 'health:https://39\.98\.68\.173/downloads/chimera-update\.json:False') 'must health-check the active manifest'
-    Assert-True (($events -join "`n") -match [regex]::Escape("health:https://39.98.68.173$($payload.apkPath):True")) 'must range-check the active APK'
+    Assert-True (($events -join "`n") -match [regex]::Escape("health:https://103.250.173.136$($payload.apkPath):True")) 'must range-check the active APK'
 
     $events.Clear()
     $failingUpload = { param($Local, $Remote) $events.Add("upload:$Remote"); if ($Remote -like '*.manifest.partial') { throw 'partial upload interrupted' } }
-    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@39.98.68.173' -ReleaseId $releaseId -HealthOrigin 'https://39.98.68.173' -NodePath $node -UploadOperation $failingUpload -RemoteOperation $remote -HealthOperation $health } 'partial upload interrupted'
+    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@103.250.173.136' -ReleaseId $releaseId -HealthOrigin 'https://103.250.173.136' -NodePath $node -UploadOperation $failingUpload -RemoteOperation $remote -HealthOperation $health } 'partial upload interrupted'
     Assert-True (-not (($events -join "`n") -match 'remote:')) 'partial upload failure must leave the old manifest active'
 
     $events.Clear()
     $rejectRemote = { param($Verb, $Id) $events.Add("remote:$Verb`:$Id"); throw 'server validation failed' }
-    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@39.98.68.173' -ReleaseId $releaseId -HealthOrigin 'https://39.98.68.173' -NodePath $node -UploadOperation $upload -RemoteOperation $rejectRemote -HealthOperation $health } 'server validation failed'
+    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@103.250.173.136' -ReleaseId $releaseId -HealthOrigin 'https://103.250.173.136' -NodePath $node -UploadOperation $upload -RemoteOperation $rejectRemote -HealthOperation $health } 'server validation failed'
     Assert-True (-not (($events -join "`n") -match 'health:')) 'server rejection must not be mistaken for an activated release'
 
     $events.Clear()
@@ -79,19 +79,19 @@ writeFileSync(signature, sign(null, readFileSync(payload), keys.privateKey));
     $badEnvelope = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json -DateKind String
     $badEnvelope.signature = "$(if ($badEnvelope.signature.StartsWith('A')) { 'B' } else { 'A' })$($badEnvelope.signature.Substring(1))"
     [IO.File]::WriteAllText($badSignatureManifest, ($badEnvelope | ConvertTo-Json -Depth 10 -Compress), [Text.UTF8Encoding]::new($false))
-    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $badSignatureManifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@39.98.68.173' -ReleaseId $releaseId -HealthOrigin 'https://39.98.68.173' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'signature verification'
+    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $badSignatureManifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@103.250.173.136' -ReleaseId $releaseId -HealthOrigin 'https://103.250.173.136' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'signature verification'
     Assert-True ($events.Count -eq 0) 'invalid signature must fail before any upload'
 
-    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@39.98.68.173' -ReleaseId "$commit-v3" -HealthOrigin 'https://39.98.68.173' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'commit/version'
+    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@103.250.173.136' -ReleaseId "$commit-v3" -HealthOrigin 'https://103.250.173.136' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'commit/version'
 
     $events.Clear()
     $badHealth = { param($Url, $Range) $events.Add("health:$Url`:$Range"); $false }
-    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@39.98.68.173' -ReleaseId $releaseId -HealthOrigin 'https://39.98.68.173' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $badHealth } 'health'
+    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@103.250.173.136' -ReleaseId $releaseId -HealthOrigin 'https://103.250.173.136' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $badHealth } 'health'
     Assert-True (($events -join "`n") -match 'remote:activate-android') 'health runs only after server activation succeeds'
 
     [IO.File]::WriteAllBytes($apk, [byte[]](2..65))
-    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@39.98.68.173' -ReleaseId $releaseId -HealthOrigin 'https://39.98.68.173' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'sha256|size'
-    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@39.98.68.173' -ReleaseId '../escape-v2' -HealthOrigin 'https://39.98.68.173' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'ReleaseId'
+    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@103.250.173.136' -ReleaseId $releaseId -HealthOrigin 'https://103.250.173.136' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'sha256|size'
+    Assert-Throws { Invoke-ChimeraAndroidActivation -ApkPath $apk -ManifestPath $manifest -ManifestPublicKeyPath $publicKey -HostName 'deploy@103.250.173.136' -ReleaseId '../escape-v2' -HealthOrigin 'https://103.250.173.136' -NodePath $node -UploadOperation $upload -RemoteOperation $remote -HealthOperation $health } 'ReleaseId'
 
     Write-Output 'Android activation client tests passed.'
 } finally {

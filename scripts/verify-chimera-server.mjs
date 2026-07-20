@@ -11,7 +11,7 @@ const checks = [
   ['sources/app/api/api.ts', 'required-admin-control', /adminRoutes\(typed\)/],
   ['sources/app/api/routes/authRoutes.ts', 'required-challenge-completion', /challengeId:\s*z\.string/],
   ['sources/app/api/socket.ts', 'required-socket-event-guard', /socket\.use\(/],
-  ['sources/app/api/socket.ts', 'required-socket-origin', /origin:\s*['"]https:\/\/39\.98\.68\.173['"]/],
+  ['sources/app/api/socket.ts', 'required-socket-origin', /origin:\s*['"]https:\/\/103\.250\.173\.136['"]/],
   ['sources/app/chimera/control/index.html', 'required-control-ui', /Chimera Control/],
   ['sources/app/chimera/control/control.js', 'required-csrf-client', /X-Chimera-CSRF/],
   ['sources/standalone.ts', 'required-loopback-standalone', /const host = ['"]127\.0\.0\.1['"]/],

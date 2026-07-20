@@ -2,7 +2,7 @@
     email admin@chimerahub.org
 }
 
-https://39.98.68.173 {
+https://103.250.173.136 {
     import /etc/chimera/config/maintenance.caddy
     # Let's Encrypt short-lived IP certificates are renewed automatically in
     # Caddy's persistent data volume. Port 80 must remain publicly reachable.
@@ -23,6 +23,6 @@ https://39.98.68.173 {
     }
 }
 
-http://39.98.68.173 {
-    redir https://39.98.68.173{uri} permanent
+http://103.250.173.136 {
+    redir https://103.250.173.136{uri} permanent
 }

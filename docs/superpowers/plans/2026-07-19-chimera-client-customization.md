@@ -72,7 +72,7 @@ Expected: FAIL because `brand/chimera/product.json` and the generator do not exi
   "slug": "chimera",
   "androidApplicationId": "org.chimerahub.chimera",
   "deepLinkSchemes": ["chimera", "happy"],
-  "relayOrigin": "https://39.98.68.173",
+  "relayOrigin": "https://103.250.173.136",
   "repository": "Duojiyi/happy",
   "upstreamAppVersion": "1.7.0",
   "chimeraRevision": 1,
@@ -152,7 +152,7 @@ describe('CHIMERA_POLICY', () => {
 ```
 
 Test `getServerUrl()` with MMKV/runtime/env values set to hostile alternatives;
-production must still return `https://39.98.68.173`. A development-only helper
+production must still return `https://103.250.173.136`. A development-only helper
 may accept localhost only when `__DEV__` is true.
 
 - [ ] **Step 2: Run focused tests and verify failure**
@@ -396,13 +396,13 @@ git commit -m "feat(app): disable official telemetry and services"
 ```ts
 expect(createAuthPayload({
     version: 2,
-    origin: 'https://39.98.68.173',
+    origin: 'https://103.250.173.136',
     purpose: 'chimera-account-auth',
     challengeId: 'challenge-id',
     nonce: 'base64url-nonce',
     publicKey: 'base64-public-key',
     expiresAt: '2026-07-19T10:00:00.000Z',
-})).toBe('chimera-auth-v2\nhttps://39.98.68.173\nchimera-account-auth\nchallenge-id\nbase64url-nonce\nbase64-public-key\n2026-07-19T10:00:00.000Z');
+})).toBe('chimera-auth-v2\nhttps://103.250.173.136\nchimera-account-auth\nchallenge-id\nbase64url-nonce\nbase64-public-key\n2026-07-19T10:00:00.000Z');
 ```
 
 Also reject a different origin, purpose, malformed base64, or expiry outside the

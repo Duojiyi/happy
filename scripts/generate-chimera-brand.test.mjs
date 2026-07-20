@@ -27,7 +27,7 @@ test('accepts the fixed Chimera product metadata', async () => {
   assert.deepEqual(Object.keys(value).sort(), expectedKeys);
   assert.equal(value.productName, 'Chimera');
   assert.equal(value.androidApplicationId, 'org.chimerahub.chimera');
-  assert.equal(value.relayOrigin, 'https://39.98.68.173');
+  assert.equal(value.relayOrigin, 'https://103.250.173.136');
   assert.deepEqual(value.deepLinkSchemes, ['chimera', 'happy']);
   assert.match(value.updatePublicKey, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(Buffer.from(value.updatePublicKey, 'base64url').length, 32);
@@ -46,7 +46,7 @@ test('rejects extra, missing, and non-fixed fields', async () => {
 
 test('rejects malformed network, version, integer, and key fields', async () => {
   const value = await product();
-  for (const relayOrigin of ['http://39.98.68.173', 'https://example.com', 'https://39.98.68.173/path']) {
+  for (const relayOrigin of ['http://103.250.173.136', 'https://example.com', 'https://103.250.173.136/path']) {
     assert.throws(() => validateProduct({ ...value, relayOrigin }), /relayOrigin/i);
   }
   assert.throws(() => validateProduct({ ...value, upstreamAppVersion: '1.7' }), /upstreamAppVersion/i);
@@ -63,7 +63,7 @@ test('generates a deterministic stable product module', async () => {
   assert.equal(first, generateProductModule({ ...value }));
   assert.match(first, /export const PRODUCT_NAME = "Chimera" as const;/);
   assert.match(first, /export const ANDROID_APPLICATION_ID = "org\.chimerahub\.chimera" as const;/);
-  assert.match(first, /export const RELAY_ORIGIN = "https:\/\/39\.98\.68\.173" as const;/);
+  assert.match(first, /export const RELAY_ORIGIN = "https:\/\/103\.250\.173\.136" as const;/);
   assert.match(first, /export const ANDROID_VERSION_CODE = 1 as const;/);
   assert.match(first, /export const VERSION_NAME = "1\.7\.0-chimera\.1" as const;/);
   assert.match(generateProductConfigModule(value), /export const VERSION_NAME = "1\.7\.0-chimera\.1";/);

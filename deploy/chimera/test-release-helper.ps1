@@ -126,7 +126,7 @@ $mutated = $sources.Clone()
 $mutated.android = $sources.android.Replace('openssl pkeyutl -verify', 'true # signature bypass')
 Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'Android server validation'
 $mutated = $sources.Clone()
-$mutated.web = $sources.web.Replace('https://39.98.68.173/$representative', 'https://39.98.68.173/')
+$mutated.web = $sources.web.Replace('https://103.250.173.136/$representative', 'https://103.250.173.136/')
 Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'Web activation'
 $mutated = $sources.Clone()
 $mutated.sudoers = $sources.sudoers + "`nchimera-web-deploy ALL=(root) NOPASSWD: ALL"

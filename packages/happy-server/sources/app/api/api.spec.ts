@@ -38,9 +38,9 @@ describe("listener binding", () => {
 describe("Chimera production API surface", () => {
     it("returns exact CORS headers only for the relay origin and its preflight", async () => {
         const server = await app();
-        const allowed = await server.inject({ method: "OPTIONS", url: "/v1/chimera/config", headers: { origin: "https://39.98.68.173", "access-control-request-method": "PUT", "access-control-request-headers": "content-type,x-chimera-csrf" } });
+        const allowed = await server.inject({ method: "OPTIONS", url: "/v1/chimera/config", headers: { origin: "https://103.250.173.136", "access-control-request-method": "PUT", "access-control-request-headers": "content-type,x-chimera-csrf" } });
         expect(allowed.statusCode).toBe(204);
-        expect(allowed.headers["access-control-allow-origin"]).toBe("https://39.98.68.173");
+        expect(allowed.headers["access-control-allow-origin"]).toBe("https://103.250.173.136");
         expect(allowed.headers["access-control-allow-credentials"]).toBe("true");
         expect(allowed.headers["access-control-allow-methods"]).toBe("GET, POST, PUT, DELETE");
         expect(allowed.headers["access-control-allow-headers"]).toBe("Content-Type, Authorization, X-Chimera-CSRF");

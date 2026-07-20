@@ -7,7 +7,7 @@ import { createAuthChallengeService, createAuthPayload } from "@/app/chimera/aut
 import { createInvitation } from "@/app/chimera/invitations";
 import { isTrustedLoopbackProxy } from "../api";
 
-const config = { relayOrigin: "https://39.98.68.173" as const, adminSessionSecret: new Uint8Array(32).fill(4), invitationPepper: new Uint8Array(32).fill(9) };
+const config = { relayOrigin: "https://103.250.173.136" as const, adminSessionSecret: new Uint8Array(32).fill(4), invitationPepper: new Uint8Array(32).fill(9) };
 
 describe("account auth HTTP routes", () => {
     it("stops its challenge service exactly once when Fastify closes", async () => {

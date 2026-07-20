@@ -16,7 +16,7 @@ readonly CANDIDATE_NAME=chimera-server-candidate
 readonly CANDIDATE_PORT=13005
 readonly LOCAL_HEALTH_URL=http://127.0.0.1:3000/health
 readonly CANDIDATE_URL=http://127.0.0.1:${CANDIDATE_PORT}
-readonly PUBLIC_HEALTH_URL=https://39.98.68.173/health
+readonly PUBLIC_HEALTH_URL=https://103.250.173.136/health
 readonly MIN_FREE_BYTES=$((15 * 1024 * 1024 * 1024))
 declare -a RESTORE_BACKUPS=()
 

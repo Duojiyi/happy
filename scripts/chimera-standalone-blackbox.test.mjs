@@ -17,7 +17,7 @@ export function buildEnv(dir, port, parent = process.env) {
   for (const key of ['DATABASE_URL', 'S3_HOST', 'S3_PORT', 'S3_USE_SSL', 'S3_REGION', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'S3_BUCKET', 'S3_PUBLIC_URL', 'S3_ENDPOINT']) delete env[key];
   return { ...env, DB_PROVIDER: 'pglite', DATA_DIR: dir, PGLITE_DIR: join(dir, 'pglite'), FILES_DIR: join(dir, 'files'), PORT: String(port), HANDY_MASTER_SECRET: secret,
     CHIMERA_ADMIN_PASSWORD_HASH: passwordHash, CHIMERA_ADMIN_SESSION_SECRET: secret, CHIMERA_INVITATION_PEPPER: secret, CHIMERA_ACCOUNT_PSEUDONYM_KEY: secret, CHIMERA_UPDATE_PUBLIC_KEY: secret,
-    PUBLIC_URL: 'https://39.98.68.173', RELAY_URL: 'https://39.98.68.173' };
+    PUBLIC_URL: 'https://103.250.173.136', RELAY_URL: 'https://103.250.173.136' };
 }
 
 async function freePort() {

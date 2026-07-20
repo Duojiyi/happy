@@ -67,10 +67,10 @@ describe("Chimera admin routes", () => {
 
     it("requires the exact origin and session-bound CSRF token for mutations", async () => {
         const server = app();
-        for (const headers of [{ cookie: "__Secure-chimera_admin=session", "x-chimera-csrf": "csrf" }, { cookie: "__Secure-chimera_admin=session", origin: "https://example.test", "x-chimera-csrf": "csrf" }, { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "wrong" }]) {
+        for (const headers of [{ cookie: "__Secure-chimera_admin=session", "x-chimera-csrf": "csrf" }, { cookie: "__Secure-chimera_admin=session", origin: "https://example.test", "x-chimera-csrf": "csrf" }, { cookie: "__Secure-chimera_admin=session", origin: "https://103.250.173.136", "x-chimera-csrf": "wrong" }]) {
             expect((await server.inject({ method: "DELETE", url: "/chimera-control/api/session", headers })).statusCode).toBe(401);
         }
-        const logout = await server.inject({ method: "DELETE", url: "/chimera-control/api/session", headers: { cookie: "foo=bar; __Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" } });
+        const logout = await server.inject({ method: "DELETE", url: "/chimera-control/api/session", headers: { cookie: "foo=bar; __Secure-chimera_admin=session", origin: "https://103.250.173.136", "x-chimera-csrf": "csrf" } });
         expect(logout.statusCode).toBe(204);
         expect(logout.headers["set-cookie"]).toBe("__Secure-chimera_admin=; Path=/chimera-control; HttpOnly; Secure; SameSite=Strict; Max-Age=0");
         expect((server as any).sessions.revoked).toEqual(["session"]);
@@ -81,7 +81,7 @@ describe("Chimera admin routes", () => {
         const server = app();
         expect((await server.inject({ method: "GET", url: "/chimera-control/api/session", headers: { cookie: "foo=bar; __Secure-chimera_admin=session" } })).statusCode).toBe(200);
         expect((await server.inject({ method: "GET", url: "/chimera-control/api/session" })).statusCode).toBe(401);
-        expect((await server.inject({ method: "POST", url: "/chimera-control/api/session/revoke-all", headers: { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" } })).statusCode).toBe(204);
+        expect((await server.inject({ method: "POST", url: "/chimera-control/api/session/revoke-all", headers: { cookie: "__Secure-chimera_admin=session", origin: "https://103.250.173.136", "x-chimera-csrf": "csrf" } })).statusCode).toBe(204);
         await server.close();
     });
 
@@ -126,7 +126,7 @@ describe("Chimera admin routes", () => {
         const id = "A".repeat(43);
         const base = { method: "POST" as const, url: `/chimera-control/api/accounts/${id}/disable`, payload: {} };
         expect((await server.inject({ ...base, headers: { cookie: "__Secure-chimera_admin=session" } })).statusCode).toBe(401);
-        const headers = { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" };
+        const headers = { cookie: "__Secure-chimera_admin=session", origin: "https://103.250.173.136", "x-chimera-csrf": "csrf" };
         expect((await server.inject({ ...base, headers })).statusCode).toBe(200);
         expect((await server.inject({ ...base, headers, payload: { extra: true } })).statusCode).toBe(400);
         expect((await server.inject({ method: "GET", url: "/chimera-control/api/accounts?extra=1", headers: { cookie: "__Secure-chimera_admin=session" } })).statusCode).toBe(400);
@@ -137,7 +137,7 @@ describe("Chimera admin routes", () => {
 
     it("creates invitation plaintext once and never includes digests in list responses", async () => {
         const server = app();
-        const headers = { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" };
+        const headers = { cookie: "__Secure-chimera_admin=session", origin: "https://103.250.173.136", "x-chimera-csrf": "csrf" };
         expect((await server.inject({ method: "POST", url: "/chimera-control/api/invitations", headers: { cookie: "__Secure-chimera_admin=session" }, payload: {} })).statusCode).toBe(401);
         expect((await server.inject({ method: "POST", url: "/chimera-control/api/invitations", headers, payload: { extra: true } })).statusCode).toBe(400);
         const created = await server.inject({ method: "POST", url: "/chimera-control/api/invitations", headers, payload: { label: "Tester", maxUses: 1, expiresAt: "2026-07-26T00:00:00.000Z" } });

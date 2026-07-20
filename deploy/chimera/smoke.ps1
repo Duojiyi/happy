@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string] $HostIp = '39.98.68.173'
+    [string] $HostIp = '103.250.173.136'
 )
 
 $ErrorActionPreference = 'Stop'

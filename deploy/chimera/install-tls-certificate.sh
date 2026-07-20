@@ -17,7 +17,7 @@ root.joinpath("leaf.pem").write_text(blocks[0] + "\n", "ascii")
 if len(blocks) > 1: root.joinpath("intermediates.pem").write_text("\n".join(blocks[1:]) + "\n", "ascii")
 PY
 
-openssl x509 -in "$work/leaf.pem" -noout -checkip 39.98.68.173 >/dev/null
+openssl x509 -in "$work/leaf.pem" -noout -checkip 103.250.173.136 >/dev/null
 openssl x509 -in "$work/leaf.pem" -noout -checkend 172800 >/dev/null
 verify_args=(-purpose sslserver -CAfile /etc/ssl/certs/ca-certificates.crt)
 [[ ! -f "$work/intermediates.pem" ]] || verify_args+=(-untrusted "$work/intermediates.pem")

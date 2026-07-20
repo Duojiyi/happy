@@ -152,7 +152,7 @@ Expected: FAIL because the validator does not exist.
 
 ```ts
 export interface ChimeraServerConfig {
-    relayOrigin: 'https://39.98.68.173';
+    relayOrigin: 'https://103.250.173.136';
     adminPasswordHash: string;
     adminSessionSecret: Uint8Array;
     invitationPepper: Uint8Array;
@@ -341,7 +341,7 @@ health check.
 
 Use `/chimera-control/api/session`. Cookie name `__Secure-chimera_admin` is
 Secure, HttpOnly, SameSite=Strict, and Path `/chimera-control`. Mutations require header
-`X-Chimera-CSRF` plus exact `Origin: https://39.98.68.173`.
+`X-Chimera-CSRF` plus exact `Origin: https://103.250.173.136`.
 
 - [ ] **Step 5: Add dual-layer rate-limit hooks**
 
@@ -393,7 +393,7 @@ admin session/CSRF hooks. Set public config `Cache-Control: no-store`; never
 include the signed update manifest body in database configuration.
 
 Configure Fastify to trust only loopback proxy addresses and configure CORS for
-exact origin `https://39.98.68.173`, required methods/headers, and credentials
+exact origin `https://103.250.173.136`, required methods/headers, and credentials
 policy. Remove production registration of `pushRoutes`, `voiceRoutes`,
 `connectRoutes`, and `devRoutes`; keep core auth/session/machine/artifact/file/
 access-key routes. Standalone production receives `host: '127.0.0.1'`; the

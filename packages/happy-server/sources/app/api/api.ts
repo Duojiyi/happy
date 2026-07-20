@@ -53,7 +53,7 @@ export async function buildApi(opts: StartApiOptions = {}) {
         trustProxy: isTrustedLoopbackProxy,
     });
     app.register(import('@fastify/cors'), {
-        origin: (origin, callback) => callback(null, origin === 'https://39.98.68.173'),
+        origin: (origin, callback) => callback(null, origin === 'https://103.250.173.136'),
         credentials: true,
         allowedHeaders: ['Content-Type', 'Authorization', 'X-Chimera-CSRF'],
         methods: ['GET', 'POST', 'PUT', 'DELETE']

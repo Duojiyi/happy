@@ -117,7 +117,7 @@ git commit -m "ops: codify Chimera host hardening"
 - [ ] **Step 1: Write certificate automation contract tests**
 
 Require Certbot >=5.4, `--preferred-profile shortlived`, webroot, exact
-`--ip-address 39.98.68.173`, staging-first path, production path, deploy hook
+`--ip-address 103.250.173.136`, staging-first path, production path, deploy hook
 `nginx -t` then reload then public health, six-hour timer with randomized delay,
 no HTTP fallback, and no HSTS assumption for IP literals.
 
@@ -131,7 +131,7 @@ Expected: FAIL because certificate units/scripts are absent.
 
 Install Certbot in a dedicated root-owned Python venv at `/opt/chimera-certbot`
 with a recorded version/hash. Serve ACME webroot from `/var/lib/chimera-acme`.
-Issue staging certificate, verify SAN contains only `39.98.68.173`, then issue
+Issue staging certificate, verify SAN contains only `103.250.173.136`, then issue
 trusted production certificate after explicit staging success.
 
 - [ ] **Step 4: Implement renewal and fail-closed deploy hook**
@@ -283,7 +283,7 @@ TCP scan showing only 22/80/443. Output contains no cookie/token/secret.
 
 - [ ] **Step 2: Run smoke against current empty host and record expected failure**
 
-Run: `pwsh -NoProfile -File deploy/chimera/smoke.ps1 -HostIp 39.98.68.173`
+Run: `pwsh -NoProfile -File deploy/chimera/smoke.ps1 -HostIp 103.250.173.136`
 
 Expected: FAIL on HTTPS/app endpoints; SSH inventory remains reachable.
 
@@ -314,7 +314,7 @@ and deploy the reviewed server image.
 
 - [ ] **Step 6: Run external smoke and invitation flow**
 
-Run: `pwsh -NoProfile -File deploy/chimera/smoke.ps1 -HostIp 39.98.68.173`
+Run: `pwsh -NoProfile -File deploy/chimera/smoke.ps1 -HostIp 103.250.173.136`
 
 Expected: PASS. Log into Chimera Control, create one single-use seven-day test
 invite, enable/disable an announcement, and verify public config changes.
@@ -542,7 +542,7 @@ update and verify only Android system confirmation; test web/server rollback.
 
 - [ ] **Step 5: Run external infrastructure acceptance**
 
-Run: `pwsh -NoProfile -File deploy/chimera/smoke.ps1 -HostIp 39.98.68.173`
+Run: `pwsh -NoProfile -File deploy/chimera/smoke.ps1 -HostIp 103.250.173.136`
 
 Expected: PASS for TLS, routes, WebSocket, signed manifest/APK, and port allowlist.
 

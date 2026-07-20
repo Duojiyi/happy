@@ -57,7 +57,7 @@ done
 [[ "$healthy" -eq 1 ]] || exit 1
 tls_healthy=0
 for attempt in {1..90}; do
-  if curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 5 https://39.98.68.173/health >/dev/null; then tls_healthy=1; break; fi
+  if curl --fail --silent --show-error --proto '=https' --tlsv1.2 --max-time 5 https://103.250.173.136/health >/dev/null; then tls_healthy=1; break; fi
   sleep 2
 done
 [[ "$tls_healthy" -eq 1 ]] || exit 1

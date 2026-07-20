@@ -1,5 +1,5 @@
 export interface ChimeraServerConfig {
-    readonly relayOrigin: "https://39.98.68.173";
+    readonly relayOrigin: "https://103.250.173.136";
     readonly adminPasswordHash: string;
     readonly adminSessionSecret: Uint8Array;
     readonly invitationPepper: Uint8Array;
@@ -9,7 +9,7 @@ export interface ChimeraServerConfig {
 
 type Environment = Record<string, string | undefined>;
 
-const RELAY_ORIGIN = "https://39.98.68.173" as const;
+const RELAY_ORIGIN = "https://103.250.173.136" as const;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const BASE64_STANDARD = /^[A-Za-z0-9+/]+$/;
 

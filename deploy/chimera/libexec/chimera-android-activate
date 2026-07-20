@@ -84,8 +84,8 @@ mv -f -- "$downloads/.chimera-update.json.next" "$downloads/chimera-update.json"
 sync_path "$downloads/chimera-update.json"
 
 health_failed=0
-curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 39.98.68.173:443:127.0.0.1 https://39.98.68.173/downloads/chimera-update.json >/dev/null || health_failed=1
-curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 39.98.68.173:443:127.0.0.1 --range 0-0 "https://39.98.68.173/downloads/$filename" >/dev/null || health_failed=1
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 https://103.250.173.136/downloads/chimera-update.json >/dev/null || health_failed=1
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 --range 0-0 "https://103.250.173.136/downloads/$filename" >/dev/null || health_failed=1
 if [[ "$health_failed" -ne 0 ]]; then
   if [[ "$had_previous" -eq 1 ]]; then
     install -m 0644 "$downloads/previous-update.json" "$downloads/.chimera-update.json.rollback"

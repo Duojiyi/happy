@@ -58,8 +58,8 @@ mv -Tf "$ROOT/web/.current-$commit" "$ROOT/web/current"
 sync_dir "$ROOT/web"
 
 health_failed=0
-curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 39.98.68.173:443:127.0.0.1 https://39.98.68.173/ >/dev/null || health_failed=1
-curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 39.98.68.173:443:127.0.0.1 "https://39.98.68.173/$representative" >/dev/null || health_failed=1
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 https://103.250.173.136/ >/dev/null || health_failed=1
+curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 "https://103.250.173.136/$representative" >/dev/null || health_failed=1
 if [[ "$health_failed" -ne 0 ]]; then
   if [[ -n "$previous" ]]; then
     ln -s "$previous" "$ROOT/web/.rollback-$commit"

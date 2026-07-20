@@ -13,13 +13,13 @@ cookies, invitations, private keys, or master secrets.
 
 ## Public endpoints
 
-- Relay/Web: `https://39.98.68.173`
-- Control panel: `https://39.98.68.173/chimera-control/`
-- Update manifest: `https://39.98.68.173/downloads/chimera-update.json`
+- Relay/Web: `https://103.250.173.136`
+- Control panel: `https://103.250.173.136/chimera-control/`
+- Update manifest: `https://103.250.173.136/downloads/chimera-update.json`
 
 ## Required acceptance
 
-- [ ] TLS certificate is valid for IP SAN `39.98.68.173`.
+- [ ] TLS certificate is valid for IP SAN `103.250.173.136`.
 - [ ] Caddy obtained and automatically renews a Let's Encrypt short-lived IP certificate; no internal/self-signed fallback is enabled.
 - [ ] Only SSH, HTTP, and HTTPS are publicly reachable.
 - [ ] Health, WebSocket, Web, control panel, and update routes pass smoke checks.

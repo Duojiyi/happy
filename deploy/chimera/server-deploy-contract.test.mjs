@@ -25,7 +25,7 @@ export function validateServerDeployProtocol(workflow, forcedSource = forced, de
     'deploy-input/server-image.tar', 'deploy-input/server-release-input.json', 'gh attestation verify deploy-input/server-image.tar',
     '.chimera-staging/server/$REVIEWED_SHA.oci.partial', '.chimera-staging/server/$REVIEWED_SHA.json.partial', '.chimera-staging/server/$REVIEWED_SHA.attestation.partial',
     'server-archive-attestation.jsonl', '--bundle deploy-input/server-archive-attestation.jsonl',
-    'chimera-server-deploy@39.98.68.173', 'deploy-server $REVIEWED_SHA $IMAGE_DIGEST',
+    'chimera-server-deploy@103.250.173.136', 'deploy-server $REVIEWED_SHA $IMAGE_DIGEST',
   ]) assert.match(runs, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.equal((runs.match(/\bscp -O\b/g) ?? []).length, 3);
   assert.doesNotMatch(runs, /chimera-deploy@|docker build|Dockerfile\.server/);

@@ -67,7 +67,7 @@ describe("Chimera public configuration", () => {
 
         const payload = { ...enabled, announcement: { ...enabled.announcement, linkButtonLabel: null, linkUrl: null } };
         expect((await server.inject({ method: "PUT", url: "/chimera-control/api/config", payload })).statusCode).toBe(401);
-        expect((await server.inject({ method: "PUT", url: "/chimera-control/api/config", headers: { cookie: "__Secure-chimera_admin=session", origin: "https://39.98.68.173", "x-chimera-csrf": "csrf" }, payload })).statusCode).toBe(200);
+        expect((await server.inject({ method: "PUT", url: "/chimera-control/api/config", headers: { cookie: "__Secure-chimera_admin=session", origin: "https://103.250.173.136", "x-chimera-csrf": "csrf" }, payload })).statusCode).toBe(200);
         expect((await server.inject({ method: "GET", url: "/chimera-control/api/config", headers: { cookie: "__Secure-chimera_admin=session" } })).json()).toEqual(payload);
         await server.close();
     });

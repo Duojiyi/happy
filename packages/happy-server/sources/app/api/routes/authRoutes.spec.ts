@@ -14,7 +14,7 @@ describe("account auth public key canonicalization", () => {
 
 describe("account auth signatures", () => {
     const pair = nacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(5));
-    const base = { origin: "https://39.98.68.173", purpose: "chimera-account-auth", challengeId: "id.nonce", nonce: "AAECAwQFBgcICQoLDA0ODw", publicKey: Buffer.from(pair.publicKey).toString("base64"), expiresAt: new Date("2026-07-19T10:00:00.000Z") };
+    const base = { origin: "https://103.250.173.136", purpose: "chimera-account-auth", challengeId: "id.nonce", nonce: "AAECAwQFBgcICQoLDA0ODw", publicKey: Buffer.from(pair.publicKey).toString("base64"), expiresAt: new Date("2026-07-19T10:00:00.000Z") };
     const signature = Buffer.from(nacl.sign.detached(createAuthPayload({ ...base, purpose: "chimera-account-auth", expiresAt: base.expiresAt.toISOString() }), pair.secretKey)).toString("base64");
 
     it("accepts a real signature for the exact canonical payload", async () => {

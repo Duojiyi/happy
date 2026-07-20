@@ -52,7 +52,7 @@ describe('serverConfig', () => {
     test('returns the generated relay without reading hostile production overrides', async () => {
         const { getServerUrl } = await loadServerConfig(false);
 
-        expect(getServerUrl()).toBe('https://39.98.68.173');
+        expect(getServerUrl()).toBe('https://103.250.173.136');
         expect(storage.getString).not.toHaveBeenCalled();
     });
 
