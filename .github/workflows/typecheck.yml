@@ -5,12 +5,20 @@ on:
     pull_request:
         paths:
             - 'packages/happy-app/**'
+            - 'Dockerfile'
+            - 'Dockerfile.server'
+            - 'scripts/chimera/**'
+            - '.github/workflows/chimera-*.yml'
             - '.github/workflows/typecheck.yml'
     push:
         branches:
             - main
         paths:
             - 'packages/happy-app/**'
+            - 'Dockerfile'
+            - 'Dockerfile.server'
+            - 'scripts/chimera/**'
+            - '.github/workflows/chimera-*.yml'
             - '.github/workflows/typecheck.yml'
 
 jobs:

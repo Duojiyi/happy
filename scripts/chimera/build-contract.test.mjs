@@ -142,6 +142,8 @@ if (!source) {
     }
     assert.match(standaloneDockerfile, /^RUN npm install --global bun@1\.3\.14$/m);
     assert.match(serverDockerfile, /^RUN npm install --global bun@1\.3\.14$/m);
+    assert.match(standaloneDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'standalone server builder must include app schema sources');
+    assert.match(serverDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'server builder must include app schema sources');
   });
 
   test('release toolchain changes trigger client evidence and manual typecheck remains available', () => {
@@ -158,6 +160,12 @@ if (!source) {
     assert.ok(typecheckSource, `missing ${path.relative(root, typecheckWorkflowPath)}`);
     const typecheck = parse(typecheckSource);
     assert.ok((typecheck.on ?? typecheck.true)?.workflow_dispatch !== undefined, 'typecheck manual dispatch is required');
+    const typecheckTriggers = typecheck.on ?? typecheck.true;
+    for (const trigger of ['pull_request', 'push']) {
+      for (const requiredPath of ['Dockerfile', 'Dockerfile.server', 'scripts/chimera/**', '.github/workflows/chimera-*.yml']) {
+        assert.ok(typecheckTriggers?.[trigger]?.paths?.includes(requiredPath), `typecheck ${trigger} paths must include ${requiredPath}`);
+      }
+    }
     assert.ok(cliSmokeSource, `missing ${path.relative(root, cliSmokeWorkflowPath)}`);
     const cliSmoke = parse(cliSmokeSource);
     const cliTriggers = cliSmoke.on ?? cliSmoke.true;
