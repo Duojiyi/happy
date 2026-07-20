@@ -44,7 +44,7 @@
     "migrate": "dotenv -e .env.dev -- prisma migrate dev",
     "migrate:reset": "dotenv -e .env.dev -- prisma migrate reset",
     "generate": "prisma generate --schema=prisma/schema.prisma",
-    "postinstall": "prisma generate --schema=prisma/schema.prisma",
+    "postinstall": "if command -v prisma >/dev/null 2>&1; then prisma generate --schema=prisma/schema.prisma; fi",
     "db": "docker run -d -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=handy -v $(pwd)/.pgdata:/var/lib/postgresql/data -p 5432:5432 postgres",
     "redis": "docker run -d -p 6379:6379 redis",
     "s3": "docker run -d --name minio -p 9000:9000 -p 9001:9001 -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin -v $(pwd)/.minio/data:/data minio/minio server /data --console-address :9001",
