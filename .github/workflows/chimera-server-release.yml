@@ -161,7 +161,7 @@ jobs:
           }
           trap cleanup EXIT
           skopeo copy oci-archive:dist/server-image.tar docker-daemon:chimera-server:candidate >/dev/null
-          test "$(docker image inspect --format '{{.Config.User}}' chimera-server:candidate)" = 65532
+          test "$(docker image inspect --format '{{.Config.User}}' chimera-server:candidate)" = 65532:65532
           sudo install -d -m 2770 -o 65532 -g 65532 "$DATA_ROOT"
           COMMON_ENV=(
             --env NODE_ENV=production

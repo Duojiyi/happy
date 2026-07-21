@@ -60,6 +60,8 @@ function validateSyncWorkflow(source) {
   assert.match(blockedRun, /git ls-remote --exit-code/);
   assert.match(blockedRun, /TITLE="Upstream sync blocked: \$SHA"/);
   assert.match(blockedRun, /gh api --paginate --slurp .*issues\?state=open&per_page=100/);
+  assert.doesNotMatch(blockedRun, /gh api[^\n]*--slurp[^\n]*--jq|gh api[^\n]*--jq[^\n]*--slurp/);
+  assert.match(blockedRun, /jq '\[\.\[\]\[\] \| select\(\.pull_request == null\) \| \{number,title\}\]'/);
   assert.match(blockedRun, /select\(\.pull_request == null\)/);
   assert.match(blockedRun, /select\(\.title == \$title\)/);
   assert.match(blockedRun, /duplicate blocked issues/);
