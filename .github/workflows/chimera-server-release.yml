@@ -143,6 +143,13 @@ jobs:
           outputs: type=oci,dest=dist/server-image.tar
           tags: chimera-server:candidate
 
+      - name: Install OCI runtime loader
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends skopeo
+          skopeo --version
+
       - name: Run the exact distroless server archive
         run: |
           set -euo pipefail
@@ -153,7 +160,7 @@ jobs:
             sudo rm -rf -- "$DATA_ROOT"
           }
           trap cleanup EXIT
-          docker load --input dist/server-image.tar >/dev/null
+          skopeo copy oci-archive:dist/server-image.tar docker-daemon:chimera-server:candidate >/dev/null
           test "$(docker image inspect --format '{{.Config.User}}' chimera-server:candidate)" = 65532
           sudo install -d -m 2770 -o 65532 -g 65532 "$DATA_ROOT"
           COMMON_ENV=(
