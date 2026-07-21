@@ -59,6 +59,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-Match $inspector "signer_lines\[@\].*eq 1|#signer_lines\[@\].*eq 1" 'APK must contain exactly one signer'
 
     $web = $Sources.web
+    Assert-NoMatch $web "`r" 'Web activation helper must be stored with LF line endings for its Bash shebang'
     foreach ($pattern in @('chimera-validate-web-archive', 'representative=', 'https://103\.250\.173\.136/\$representative', 'web/previous', 'rollback-', 'kept <= 5')) {
         Assert-Match $web $pattern "Web activation missing: $pattern"
     }
