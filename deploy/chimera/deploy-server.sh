@@ -298,7 +298,7 @@ verify_candidate() {
   chown "$RUNTIME_GID:$RUNTIME_GID" "$DATA_ROOT/files/$file_probe"
   [[ "$(curl --fail --silent --show-error --max-time 5 "$CANDIDATE_URL/files/$file_probe")" == "$id" ]]
   rm -f -- "$DATA_ROOT/files/$file_probe"
-  socket_handshake="$(curl --fail --silent --show-error --max-time 5 "$CANDIDATE_URL/socket.io/?EIO=4&transport=polling")"
+  socket_handshake="$(curl --fail --silent --show-error --max-time 5 "$CANDIDATE_URL/v1/updates/?EIO=4&transport=polling")"
   [[ "$socket_handshake" == *'"sid"'* ]]
 }
 write_marker() {

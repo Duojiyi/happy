@@ -67,10 +67,13 @@ test('server imports only root-frozen OCI bytes bound to commit digest and metad
 
 test('candidate is reachable only on the host loopback port', () => {
   const candidate = body('start_candidate', 'verify_candidate');
+  const verification = body('verify_candidate', 'write_marker');
   assert.match(candidate, /--network host/);
   assert.match(candidate, /--env PORT="\$CANDIDATE_PORT"/);
   assert.doesNotMatch(candidate, /--publish|0\.0\.0\.0/);
   assert.match(source, /CANDIDATE_URL=http:\/\/127\.0\.0\.1/);
+  assert.match(verification, /\/v1\/updates\/\?EIO=4&transport=polling/);
+  assert.doesNotMatch(verification, /\/socket\.io\//);
 });
 
 test('distroless runtime uses only compiled standalone entrypoints', () => {
