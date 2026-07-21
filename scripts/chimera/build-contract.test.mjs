@@ -166,7 +166,7 @@ if (!source) {
     assert.ok(runtimeSmoke, 'server release must run the exact OCI archive before scanning and attestation');
     for (const pattern of [
       /skopeo copy oci-archive:dist\/server-image\.tar docker-daemon:chimera-server:candidate/,
-      /Config\.User.*65532/,
+      /Config\.User\}\}' chimera-server:candidate\)" = 65532:65532/,
       /dist\/standalone\.mjs migrate/,
       /dist\/standalone\.mjs serve/,
       /127\.0\.0\.1:13005\/health/,
