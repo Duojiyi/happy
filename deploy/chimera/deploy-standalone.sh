@@ -18,7 +18,8 @@ for path in /srv/chimera-storage/data /srv/chimera-storage/snapshots; do
   [[ ! -e "$path" && ! -L "$path" ]] || [[ -d "$path" && ! -L "$path" && "$(stat -c '%u' "$path")" == 0 ]] || exit 1
 done
 install -d -m 0755 "$ROOT/releases" "$ROOT/state" "$ROOT/downloads" "$ROOT/downloads/releases" "$ROOT/web" "$ROOT/web/releases" "$ROOT/config" "$ROOT/proxy-config"
-install -d -m 0750 /srv/chimera-storage/data /srv/chimera-storage/snapshots
+install -d -m 2770 -o root -g 65532 /srv/chimera-storage/data
+install -d -m 0750 -o root -g root /srv/chimera-storage/snapshots
 frozen="$ROOT/releases/.incoming-$id.tar"
 incoming="$ROOT/releases/.incoming-$id"
 release="$ROOT/releases/$id"
@@ -56,6 +57,10 @@ chmod 0644 "$ROOT/proxy-config/maintenance.caddy"
 legacy_id="$(printf 'chimera-bootstrap:%s' "$id" | sha1sum | cut -d ' ' -f 1)"
 [[ "$legacy_id" =~ ^[a-f0-9]{40}$ && "$legacy_id" != "$id" ]] || exit 1
 docker build --pull --tag "chimera-relay:$legacy_id" --file "$release/Dockerfile.server" "$release"
+docker run --rm --network none --env NODE_ENV=production --env DB_PROVIDER=pglite \
+  --env PGLITE_DIR=/var/lib/chimera/pglite --env DATA_DIR=/var/lib/chimera \
+  --volume /srv/chimera-storage/data:/var/lib/chimera --entrypoint /nodejs/bin/node \
+  "chimera-relay:$legacy_id" dist/standalone.mjs migrate
 CHIMERA_IMAGE="chimera-relay:$legacy_id" docker compose --file "$ROOT/docker-compose.yml" config >/dev/null
 CHIMERA_IMAGE="chimera-relay:$legacy_id" docker compose --file "$ROOT/docker-compose.yml" up -d --remove-orphans
 healthy=0

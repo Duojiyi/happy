@@ -26,6 +26,10 @@ const bundledDependencies = new Set([
   // The published 0.1.0 package does not include the newest voice schemas yet.
   // Keep the server release unblocked by bundling the workspace copy.
   '@slopus/happy-wire',
+  // Prisma's generated CommonJS client cannot be consumed through named ESM
+  // imports after Bun externalizes it. Bundle the interop boundary so the
+  // distroless Node runtime can load the standalone module.
+  '@prisma/client',
 ]);
 
 for (const dependency of Object.keys(pkg.dependencies ?? {})) {

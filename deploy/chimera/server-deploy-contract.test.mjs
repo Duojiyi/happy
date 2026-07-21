@@ -5,11 +5,14 @@ import test from 'node:test';
 import { parse } from 'yaml';
 
 const root = path.resolve(import.meta.dirname, '../..');
-const [source, forced, android, workflowSource] = await Promise.all([
+const [source, forced, android, workflowSource, composeSource, installerSource, bootstrapSource] = await Promise.all([
   readFile(path.join(import.meta.dirname, 'deploy-server.sh'), 'utf8'),
   readFile(path.join(import.meta.dirname, 'bin/chimera-server-helper'), 'utf8'),
   readFile(path.join(import.meta.dirname, 'libexec/chimera-android-activate'), 'utf8'),
   readFile(path.join(root, '.github/workflows/chimera-server-release.yml'), 'utf8'),
+  readFile(path.join(import.meta.dirname, 'docker-compose.yml'), 'utf8'),
+  readFile(path.join(import.meta.dirname, 'install-deploy-user.sh'), 'utf8'),
+  readFile(path.join(import.meta.dirname, 'deploy-standalone.sh'), 'utf8'),
 ]);
 
 function body(name, next) {
@@ -42,10 +45,21 @@ test('workflow, forced command, and privileged helper share one immutable OCI pr
 test('server imports only root-frozen OCI bytes bound to commit digest and metadata', () => {
   for (const pattern of [
     /server-image\.oci/, /server-release-input\.json/, /imageArchiveSha256/, /archive_hash=hashlib\.sha256/, /stream\.read\(1024\*1024\)/,
-    /index\.get\("manifests"/, /blobs\/sha256/, /calculated\.hexdigest\(\)/, /server-archive-attestation\.jsonl/, /gh attestation verify/, /--bundle "\$incoming\/server-archive-attestation\.jsonl"/, /--predicate-type 'https:\/\/slsa\.dev\/provenance\/v1'/, /skopeo copy --preserve-digests/, /docker-daemon:chimera-relay:\$id/,
+    /index\.get\("manifests"/, /blobs\/sha256/, /calculated\.hexdigest\(\)/, /server-archive-attestation\.jsonl/, /gh attestation verify/, /--bundle "\$incoming\/server-archive-attestation\.jsonl"/, /--predicate-type 'https:\/\/slsa\.dev\/provenance\/v1'/, /import_verified_image/, /docker tag 'chimera-server:candidate' "chimera-relay:\$id"/,
   ]) assert.match(source, pattern);
   assert.ok(source.indexOf('install -m 0600 "$source_archive"') < source.indexOf('python3 - "$incoming/server-image.oci"'));
   assert.doesNotMatch(source, /docker build|Dockerfile\.server|tar --extract|RELEASE_ROOT|deploy\/chimera\/docker-compose/);
+  assert.doesNotMatch(source, /--cert-identity|--cert-oidc-issuer|--signer-repo/);
+  assert.match(source, /--signer-workflow 'Duojiyi\/happy\/\.github\/workflows\/chimera-server-release\.yml'/);
+  assert.match(source, /--signer-digest "\$trusted_workflow_sha" --source-digest "\$id"/);
+  const importer = body('import_verified_image', 'prepare_image');
+  assert.match(importer, /io\.containerd\.image\.name/);
+  assert.match(importer, /docker\.io\/library\/chimera-server:candidate/);
+  assert.match(importer, /docker load --input "\$archive"/);
+  assert.match(importer, /docker image inspect --format '\{\{\.Id\}\}'/);
+  assert.match(importer, /actual_digest" != "\$expected_digest"/);
+  assert.doesNotMatch(importer, /skopeo|--preserve-digests/);
+  assert.match(source, /docker image inspect --format '\{\{\.Id\}\}' "chimera-relay:\$id"\)" == "\$digest"/);
   assert.match(source, /require_root_owned_file "\$COMPOSE_FILE"/);
 });
 
@@ -55,6 +69,51 @@ test('candidate is reachable only on the host loopback port', () => {
   assert.match(candidate, /--env PORT="\$CANDIDATE_PORT"/);
   assert.doesNotMatch(candidate, /--publish|0\.0\.0\.0/);
   assert.match(source, /CANDIDATE_URL=http:\/\/127\.0\.0\.1/);
+});
+
+test('distroless runtime uses only compiled standalone entrypoints', () => {
+  const compose = parse(composeSource);
+  assert.deepEqual(compose.services.relay.command, ['dist/standalone.mjs', 'serve']);
+  assert.deepEqual(compose.services.relay.healthcheck.test.slice(0, 2), ['CMD', '/nodejs/bin/node']);
+  assert.equal(compose.services.relay.user, '65532:65532');
+  for (const content of [composeSource, body('migrate_candidate', 'start_candidate')]) {
+    assert.doesNotMatch(content, /\/bin\/sh|\bpnpm\b|\btsx\b/);
+  }
+  assert.doesNotMatch(source, /--entrypoint node\b/);
+  assert.match(source, /--entrypoint \/nodejs\/bin\/node/);
+  assert.match(body('migrate_candidate', 'start_candidate'), /dist\/standalone\.mjs migrate/);
+  assert.match(bootstrapSource, /dist\/standalone\.mjs migrate/);
+});
+
+test('fresh host bootstraps rollback state from the verified OCI image before normal promotion', () => {
+  const initial = body('bootstrap_verified_release', 'deploy_server');
+  const deploy = body('deploy_server', 'rollback_server');
+  const cleanup = body('cleanup_failed_bootstrap', 'bootstrap_verified_release');
+  assert.match(initial, /find "\$DATA_ROOT" -mindepth 1 -maxdepth 1 -print -quit/);
+  assert.match(initial, /find "\$SNAPSHOT_ROOT" -mindepth 1 -maxdepth 1 -print -quit/);
+  assert.match(initial, /reference=chimera-relay:\*/);
+  assert.ok(initial.indexOf('prepare_image') < initial.indexOf('migrate_candidate'));
+  assert.match(initial, /legacy_id=.*chimera-bootstrap/);
+  assert.match(initial, /docker tag "chimera-relay:\$id" "chimera-relay:\$legacy_id"/);
+  assert.ok(initial.indexOf('verify_candidate') < initial.indexOf('docker compose --file "$COMPOSE_FILE" up'));
+  assert.ok(initial.indexOf('verify_public') < initial.indexOf('write_current_release'));
+  assert.ok(initial.indexOf('write_current_release') < initial.indexOf('mark_oci_retention_ready'));
+  assert.doesNotMatch(initial, /maintenance_on|create_snapshot|old_image/);
+  assert.match(deploy, /! -e "\$STATE_ROOT\/current-image"[\s\S]*! -e "\$STATE_ROOT\/current-digest"[\s\S]*bootstrap_verified_release/);
+  assert.doesNotMatch(deploy, /bootstrap_verified_release[\s\S]{0,80}\breturn\b/);
+  assert.match(cleanup, /docker compose .* down --remove-orphans/);
+  assert.match(cleanup, /rm -f -- "\$STATE_ROOT\/current-image" "\$STATE_ROOT\/current-digest"/);
+  assert.match(cleanup, /find "\$DATA_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf/);
+});
+
+test('root-owned data roots grant only the distroless runtime group write access', () => {
+  for (const content of [installerSource, bootstrapSource]) {
+    assert.match(content, /install -d -m 2770 -o root -g 65532 \/srv\/chimera-storage\/data/);
+  }
+  assert.match(source, /readonly RUNTIME_GID=65532/);
+  assert.match(source, /stat -c '%g' "\$DATA_ROOT"/);
+  assert.match(source, /install -d -m 2770 -o root -g "\$RUNTIME_GID" "\$temporary\/data"/);
+  assert.match(source, /install -d -m 2770 -o root -g "\$RUNTIME_GID" "\$candidate"/);
 });
 
 test('deploy and rollback install recovery traps before maintenance mutation', () => {
