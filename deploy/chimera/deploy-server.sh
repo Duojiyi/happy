@@ -584,11 +584,14 @@ deploy_server() {
     bootstrap_verified_release "$id" "$digest"
   fi
   old_image="$(current_image)"; old_digest="$(current_digest)"
-  if [[ "$old_image" == "chimera-relay:$id" ]]; then
-    rm -f -- "$STAGING_ROOT/$id.oci.partial" "$STAGING_ROOT/$id.json.partial" "$STAGING_ROOT/$id.attestation.partial"
-    die
-  fi
   prepare_image "$id" "$digest"
+  if [[ "$old_image" == "chimera-relay:$id" ]]; then
+    [[ "$old_digest" == "$digest" ]]
+    verify_running_old; verify_public
+    rm -f -- "$STAGING_ROOT/$id.oci.partial" "$STAGING_ROOT/$id.json.partial" "$STAGING_ROOT/$id.attestation.partial"
+    printf 'deployed digest=%s\nrunning digest=%s\n' "$digest" "$(current_digest)"
+    return
+  fi
   verify_running_old; verify_public
   trap 'rollback_failed_deploy "$id" "$old_image" "$old_digest"' ERR EXIT
   maintenance_on

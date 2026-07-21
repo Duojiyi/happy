@@ -257,8 +257,15 @@ test('bootstrap deploy to rollback state machine permits only its bound legacy i
   assert.equal(retainFixture({ active: firstOci, previous: 'd'.repeat(40), inputs: [firstOci], legacy }), null);
   assert.match(source, /readonly OCI_RETENTION_READY="\$STATE_ROOT\/oci-retention-ready"/);
   assert.match(source, /mark_oci_retention_ready "\$legacy_id"/);
-  assert.match(source, /old_image" == "chimera-relay:\$id"/);
-  assert.match(source, /rm -f -- "\$STAGING_ROOT\/\$id\.oci\.partial"/);
+});
+
+test('same-SHA deployment retry revalidates immutable inputs and reports only healthy matching state', () => {
+  const deploy = body('deploy_server', 'rollback_server');
+  const idempotent = deploy.slice(deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]'), deploy.indexOf('verify_running_old; verify_public', deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]')) + 'verify_running_old; verify_public'.length);
+  assert.ok(deploy.indexOf('prepare_image "$id" "$digest"') < deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]'));
+  assert.match(idempotent, /\[\[ "\$old_digest" == "\$digest" \]\]/);
+  assert.match(idempotent, /verify_running_old; verify_public/);
+  assert.match(deploy, /rm -f -- "\$STAGING_ROOT\/\$id\.oci\.partial" "\$STAGING_ROOT\/\$id\.json\.partial" "\$STAGING_ROOT\/\$id\.attestation\.partial"[\s\S]*printf 'deployed digest=%s\\nrunning digest=%s\\n'[\s\S]*return/);
 });
 
 test('retention contract rejects protected-release, path-safety, and reserve mutations', () => {
