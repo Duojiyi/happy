@@ -155,6 +155,10 @@ if (!source) {
     const productionDeploy = serverDockerfile.indexOf('RUN pnpm --filter happy-server-self-host deploy --prod --ignore-scripts --legacy /tmp/chimera-server');
     assert.ok(serverBuild >= 0 && serverBuild < dependencyCleanup, 'server must build before removing development dependencies');
     assert.ok(dependencyCleanup < productionInstall && productionInstall < productionDeploy, 'server must deploy only pruned production dependencies after cleanup');
+    assert.match(serverDockerfile, /pnpm --filter happy-server-self-host generate/, 'server image must explicitly generate its Prisma runtime before pruning development dependencies');
+    assert.match(serverDockerfile, /libquery_engine-debian-openssl-3\.0\.x\.so\.node/, 'server image must verify the generated Linux Prisma query engine');
+    assert.match(serverDockerfile, /cp -a "\$PRISMA_CLIENT_DIR" \/tmp\/prisma-client/, 'server image must preserve the generated Prisma runtime across dependency pruning');
+    assert.match(serverDockerfile, /cp -a \/tmp\/prisma-client \/tmp\/chimera-server\/node_modules\/\.prisma\/client/, 'server deploy output must contain the generated Prisma runtime');
     assert.match(serverDockerfile, /COPY --from=builder --chown=65532:65532 \/tmp\/chimera-server\//, 'runtime must copy the pruned pnpm deploy output as the unprivileged runtime user');
     assert.match(serverDockerfile, /^USER 65532:65532$/m, 'runtime must explicitly pin its unprivileged uid and gid');
     assert.match(serverDockerfile, /RUN rm -rf \/tmp\/chimera-server\/node_modules\/prisma[\s\S]*?node_modules\/@prisma\/config[\s\S]*?node_modules\/effect/, 'runtime deploy must remove build-only Prisma CLI dependencies');
