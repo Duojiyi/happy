@@ -59,7 +59,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-Match $inspector "signer_lines\[@\].*eq 1|#signer_lines\[@\].*eq 1" 'APK must contain exactly one signer'
 
     $web = $Sources.web
-    foreach ($pattern in @('chimera-validate-web-archive', 'representative=', 'https://103\.250\.173\.136/\$representative', 'web/previous', 'rollback-', 'kept <= 5')) {
+    foreach ($pattern in @('chimera-validate-web-archive', 'representative=', 'https://103\.250\.173\.136/\$representative', 'web/previous', 'rollback-', 'kept <= 5', 'docker compose.*restart relay', 'State\.Health.*Status', 'restart_relay \|\| health_failed=1')) {
         Assert-Match $web $pattern "Web activation missing: $pattern"
     }
     Assert-Match $web 'install -m 0600 "\$source" "\$frozen"[\s\S]*chimera-validate-web-archive "\$frozen"' 'Web must validate root-frozen bytes, not mutable staging'
@@ -67,6 +67,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-Match $web 'else[\s\S]*previous" == "\$releases/"\*[\s\S]*-d "\$previous"' 'Subsequent Web activations must keep previous inside immutable releases'
     Assert-Match $web 'if \[\[ -e "\$target" \|\| -L "\$target"[\s\S]*previous" == "\$bootstrap"[\s\S]*stat -c.*%u:%a.*target.*0:755[\s\S]*rm -rf --one-file-system -- "\$target"' 'Only a root-owned stale first-activation target may be removed for retry'
     Assert-Match $web 'previous=[\s\S]*install -m 0600 "\$source"' 'Previous target validation must happen before archive extraction creates a release target'
+    Assert-Match $web 'mv -Tf "\$ROOT/web/\.rollback-\$commit" "\$ROOT/web/current"[\s\S]*restart_relay \|\| die[\s\S]*rm -rf --one-file-system -- "\$target"' 'Web rollback must remount the previous release before deleting the failed target'
     Assert-Match $web 'else[\s\S]*rm -f -- "\$ROOT/web/current"[\s\S]*rm -rf --one-file-system -- "\$target"' 'first Web activation health failure must remove failed current/target'
     foreach ($pattern in @('member\.issym\(\)', 'member\.islnk\(\)', 'normalized in seen', 'path\.is_absolute\(\)')) {
         Assert-Match $Sources.web_validator $pattern "Web archive validation missing: $pattern"
