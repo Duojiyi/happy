@@ -250,7 +250,7 @@ create_snapshot() {
 }
 open_test_path() {
   local image="$1" data="$2"
-  docker run --rm --network none --volume "$data:/data" --entrypoint /nodejs/bin/node "$image" -e '
+  docker run --rm --network none --user "$RUNTIME_GID:$RUNTIME_GID" --volume "$data:/data" --entrypoint /nodejs/bin/node "$image" -e '
     import("@electric-sql/pglite").then(async ({ PGlite }) => { const db=new PGlite("/data/pglite"); await db.query("select 1"); await db.close(); }).catch(()=>process.exit(1));'
 }
 open_test_snapshot() {
@@ -261,13 +261,13 @@ open_test_snapshot() {
 open_test_data() { open_test_path "$2" "$DATA_ROOT"; }
 migrate_candidate() {
   local id="$1"
-  docker run --rm --network none --env NODE_ENV=production --env DB_PROVIDER=pglite --env PGLITE_DIR=/data/pglite --env DATA_DIR=/data \
+  docker run --rm --network none --user "$RUNTIME_GID:$RUNTIME_GID" --env NODE_ENV=production --env DB_PROVIDER=pglite --env PGLITE_DIR=/data/pglite --env DATA_DIR=/data \
     --volume "$DATA_ROOT:/data" --entrypoint /nodejs/bin/node "chimera-relay:$id" dist/standalone.mjs migrate
 }
 start_candidate() {
   local id="$1"
   docker rm --force "$CANDIDATE_NAME" >/dev/null 2>&1 || true
-  docker run --detach --name "$CANDIDATE_NAME" --network host \
+  docker run --detach --name "$CANDIDATE_NAME" --network host --user "$RUNTIME_GID:$RUNTIME_GID" \
     --env-file "$ROOT/config/production.env" --env NODE_ENV=production --env PORT="$CANDIDATE_PORT" \
     --env DB_PROVIDER=pglite --env PGLITE_DIR=/data/pglite --env DATA_DIR=/data \
     --volume "$DATA_ROOT:/data" "chimera-relay:$id" dist/standalone.mjs serve >/dev/null

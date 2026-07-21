@@ -156,6 +156,7 @@ if (!source) {
     assert.ok(serverBuild >= 0 && serverBuild < dependencyCleanup, 'server must build before removing development dependencies');
     assert.ok(dependencyCleanup < productionInstall && productionInstall < productionDeploy, 'server must deploy only pruned production dependencies after cleanup');
     assert.match(serverDockerfile, /COPY --from=builder --chown=65532:65532 \/tmp\/chimera-server\//, 'runtime must copy the pruned pnpm deploy output as the unprivileged runtime user');
+    assert.match(serverDockerfile, /^USER 65532:65532$/m, 'runtime must explicitly pin its unprivileged uid and gid');
     assert.match(serverDockerfile, /RUN rm -rf \/tmp\/chimera-server\/node_modules\/prisma[\s\S]*?node_modules\/@prisma\/config[\s\S]*?node_modules\/effect/, 'runtime deploy must remove build-only Prisma CLI dependencies');
     assert.match(serverDockerfile, /^FROM gcr\.io\/distroless\/nodejs22-debian13@sha256:[a-f0-9]{64} AS runner$/m, 'runtime must use a digest-pinned minimal Node image');
     assert.match(serverDockerfile, /CMD \["dist\/standalone\.mjs", "serve"\]/, 'runtime must start the built standalone server directly');

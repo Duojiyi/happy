@@ -81,6 +81,9 @@ test('distroless runtime uses only compiled standalone entrypoints', () => {
   }
   assert.doesNotMatch(source, /--entrypoint node\b/);
   assert.match(source, /--entrypoint \/nodejs\/bin\/node/);
+  for (const name of ['open_test_path', 'migrate_candidate', 'start_candidate']) {
+    assert.match(source.slice(source.indexOf(`${name}() {`), source.indexOf('\n}', source.indexOf(`${name}() {`))), /--user "\$RUNTIME_GID:\$RUNTIME_GID"/);
+  }
   assert.match(body('migrate_candidate', 'start_candidate'), /dist\/standalone\.mjs migrate/);
   assert.match(bootstrapSource, /dist\/standalone\.mjs migrate/);
 });

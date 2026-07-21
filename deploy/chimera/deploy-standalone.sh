@@ -57,7 +57,7 @@ chmod 0644 "$ROOT/proxy-config/maintenance.caddy"
 legacy_id="$(printf 'chimera-bootstrap:%s' "$id" | sha1sum | cut -d ' ' -f 1)"
 [[ "$legacy_id" =~ ^[a-f0-9]{40}$ && "$legacy_id" != "$id" ]] || exit 1
 docker build --pull --tag "chimera-relay:$legacy_id" --file "$release/Dockerfile.server" "$release"
-docker run --rm --network none --env NODE_ENV=production --env DB_PROVIDER=pglite \
+docker run --rm --network none --user 65532:65532 --env NODE_ENV=production --env DB_PROVIDER=pglite \
   --env PGLITE_DIR=/var/lib/chimera/pglite --env DATA_DIR=/var/lib/chimera \
   --volume /srv/chimera-storage/data:/var/lib/chimera --entrypoint /nodejs/bin/node \
   "chimera-relay:$legacy_id" dist/standalone.mjs migrate
