@@ -276,7 +276,7 @@ test('same-SHA deployment retry revalidates immutable inputs and reports only he
   assert.match(runningBase, /docker inspect --format '\{\{\.Config\.Image\}\}'/);
   assert.match(running, /docker inspect --format '\{\{\.Image\}\}'/);
   assert.match(running, /docker image inspect --format '\{\{\.Id\}\}'/);
-  assert.match(running, /"\$tag_id" == "\$expected_config" && "\$container_id" == "\$expected_config"/);
+  assert.match(running, /"\$container_id" == "\$tag_id"[\s\S]*"\$tag_id" == "\$digest" \|\| "\$tag_id" == "\$expected_config"/);
   assert.match(deploy, /rm -f -- "\$STAGING_ROOT\/\$id\.oci\.partial" "\$STAGING_ROOT\/\$id\.json\.partial" "\$STAGING_ROOT\/\$id\.attestation\.partial"[\s\S]*printf 'deployed digest=%s\\nrunning digest=%s\\n'[\s\S]*return/);
 });
 

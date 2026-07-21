@@ -355,7 +355,8 @@ with tarfile.open(sys.argv[1], "r:*") as bundle:
     print(manifest["config"]["digest"])
 PY
 )"
-  [[ "$expected_config" =~ ^sha256:[a-f0-9]{64}$ && "$tag_id" == "$expected_config" && "$container_id" == "$expected_config" ]]
+  [[ "$expected_config" =~ ^sha256:[a-f0-9]{64}$ && "$container_id" == "$tag_id" && \
+     ( "$tag_id" == "$digest" || "$tag_id" == "$expected_config" ) ]]
 }
 remove_candidate_if_present() {
   if docker container inspect "$CANDIDATE_NAME" >/dev/null 2>&1; then
