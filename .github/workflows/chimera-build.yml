@@ -96,13 +96,14 @@ jobs:
           fi
           CHANGED_PATHS=$(mktemp)
           trap 'rm -f "$CHANGED_PATHS"' EXIT
-          if ! git diff --no-renames --name-only -z "$DIFF_RANGE" > "$CHANGED_PATHS"; then
+          if ! git -c core.quotePath=true diff --no-renames --name-only "$DIFF_RANGE" > "$CHANGED_PATHS"; then
             echo 'Unable to calculate a trustworthy diff; requiring client builds' >&2
             echo 'client-required=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           CLIENT_REQUIRED=false
-          while IFS= read -r -d '' CHANGED_PATH; do
+          while IFS= read -r CHANGED_PATH; do
+            echo "Classifying path: $CHANGED_PATH"
             case "$CHANGED_PATH" in
               .github/workflows/chimera-build.yml|scripts/generate-chimera-brand.mjs)
                 CLIENT_REQUIRED=true
@@ -121,7 +122,7 @@ jobs:
   android:
     name: Build unsigned Android APK
     needs: classify
-    if: ${{ needs.classify.outputs.client-required == 'true' }}
+    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.client-required == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -236,7 +237,7 @@ jobs:
   web:
     name: Build immutable Web archive
     needs: classify
-    if: ${{ needs.classify.outputs.client-required == 'true' }}
+    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.client-required == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -304,7 +305,7 @@ jobs:
   provenance:
     name: Attest unsigned artifacts
     needs: [classify, android, web]
-    if: ${{ needs.classify.outputs.client-required == 'true' && needs.android.result == 'success' && needs.web.result == 'success' }}
+    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.client-required == 'true' && needs.android.result == 'success' && needs.web.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

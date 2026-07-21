@@ -90,8 +90,8 @@ export function validateBuildWorkflow(workflow) {
   assert.match(classifyText, /git merge-base --is-ancestor/, 'push baseline must be an ancestor of the current main commit');
   assert.match(classifyText, /PUSH_BASELINE_RESULT["']? != ["']success["'][\s\S]*?client-required=true/, 'baseline lookup failure must require client builds');
   assert.match(classifyText, /Unable to establish a trustworthy diff; requiring client builds/, 'classifier must fail closed when the diff is unavailable');
-  assert.match(classifyText, /git diff --no-renames/, 'classifier must expose both sides of client path renames');
-  assert.match(classifyText, /if ! git diff[\s\S]*?client-required=true/, 'diff command failures must require client builds');
+  assert.match(classifyText, /git -c core\.quotePath=true diff --no-renames --name-only/, 'classifier must expose both rename sides and quote unsafe path characters');
+  assert.match(classifyText, /if ! git -c core\.quotePath=true diff[\s\S]*?client-required=true/, 'diff command failures must require client builds');
   assert.doesNotMatch(classifyText, /done\s*<\s*<\(/, 'classifier must not hide diff failures in process substitution');
   assert.match(classifyText, /workflow_dispatch[\s\S]*?client-required=true/, 'manual builds must require client artifacts');
   assert.match(classifyText, /EVENT_NAME["']? == ["']pull_request["'][\s\S]*?BASE_SHA\.\.\.\$HEAD_SHA/, 'pull requests must classify merge-base changes only');
@@ -109,6 +109,8 @@ export function validateBuildWorkflow(workflow) {
     /release-input\.json/,
   ], 'chimera-android-unsigned');
   assert.equal(jobs.android.needs, 'classify', 'android must wait for path classification');
+  assert.match(jobs.android.if ?? '', /always\(\)/, 'android must override a skipped push-baseline ancestor');
+  assert.match(jobs.android.if ?? '', /needs\.classify\.result == 'success'/, 'android must require successful classification');
   assert.match(jobs.android.if ?? '', /needs\.classify\.outputs\.client-required == 'true'/, 'android must run only when client builds are required');
   assertBuildJob(jobs.web, 'web', [
     /pnpm\s+(?:chimera:brand:check|run\s+chimera:brand:check)/,
@@ -118,6 +120,8 @@ export function validateBuildWorkflow(workflow) {
     /release-input\.json/,
   ], 'chimera-web-unsigned');
   assert.equal(jobs.web.needs, 'classify', 'web must wait for path classification');
+  assert.match(jobs.web.if ?? '', /always\(\)/, 'web must override a skipped push-baseline ancestor');
+  assert.match(jobs.web.if ?? '', /needs\.classify\.result == 'success'/, 'web must require successful classification');
   assert.match(jobs.web.if ?? '', /needs\.classify\.outputs\.client-required == 'true'/, 'web must run only when client builds are required');
 
   const androidAssemble = allSteps(jobs.android).find((step) => step.name === 'Assemble unsigned release APK');
@@ -136,6 +140,8 @@ export function validateBuildWorkflow(workflow) {
     attestations: 'write',
   }, 'provenance permissions must be minimal and attestation-only');
   assert.deepEqual(provenance.needs?.slice?.().sort(), ['android', 'classify', 'web'], 'provenance must wait for classification and both builds');
+  assert.match(provenance.if ?? '', /always\(\)/, 'provenance must override a skipped push-baseline ancestor');
+  assert.match(provenance.if ?? '', /needs\.classify\.result == 'success'/, 'provenance must require successful classification');
   assert.equal(allSteps(provenance).some((step) => step.uses?.startsWith('actions/checkout@')), false, 'provenance must not checkout candidate source');
   assert.doesNotMatch(runText(provenance), /pnpm\s+install|npm\s+install|node\s+scripts\//, 'provenance must not execute candidate code');
   assert.ok(allSteps(provenance).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), 'provenance must download immutable build artifacts');
@@ -321,9 +327,9 @@ if (!source) {
     const workflow = parse(source);
     const classifyStep = workflow.jobs.classify.steps.find((item) => item.id === 'paths');
     classifyStep.run = classifyStep.run
-      .replace('git diff --no-renames', 'git diff')
+      .replace('git -c core.quotePath=true diff --no-renames', 'git diff')
       .replace('*)\n                CLIENT_REQUIRED=true', '*)\n                ;;');
-    assert.throws(() => validateBuildWorkflow(workflow), /unknown paths must require|both sides of client path renames/);
+    assert.throws(() => validateBuildWorkflow(workflow), /unknown paths must require|both rename sides/);
   });
 
   test('contract rejects a package-relative Web output directory', () => {
