@@ -382,6 +382,7 @@ jobs:
           AAPT2="$ANDROID_HOME/build-tools/35.0.0/aapt2"
           "$APKSIGNER" sign --ks "$PRIVATE/chimera-release.jks" --ks-key-alias chimera-release \
             --ks-pass env:CHIMERA_ANDROID_STORE_PASSWORD --key-pass env:CHIMERA_ANDROID_KEY_PASSWORD \
+            --v4-signing-enabled false \
             --out signed/Chimera.apk candidate/android/Chimera-unsigned.apk
           "$APKSIGNER" verify --verbose --print-certs signed/Chimera.apk > /tmp/post-sign.txt
           ACTUAL_SIGNER=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' /tmp/post-sign.txt | head -n 1 | tr -d ':' | tr '[:lower:]' '[:upper:]')

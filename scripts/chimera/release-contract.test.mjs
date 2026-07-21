@@ -114,6 +114,7 @@ export function validateClientReleaseWorkflow(workflow) {
     /apksigner.*verify/is,
     /aapt2.*dump badging/is,
     /apksigner.*sign/is,
+    /--v4-signing-enabled\s+false/,
     /signer.*SHA-256|certificate SHA-256/i,
     /release-input\.json/,
     /canonical|Object\.keys\([^)]*\)\.sort/,
