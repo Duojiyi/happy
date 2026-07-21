@@ -44,6 +44,7 @@ test('forced SSH status exposes only aggregate health', () => {
 });
 
 test('one-time production bootstrap validates host policy before activation', () => {
+  assert.doesNotMatch(sudoers, /\r/, 'sudoers policy must retain Unix line endings for visudo');
   assert.match(bootstrap, /visudo -cf "\$SUDOERS_TMP"/);
   assert.ok(bootstrap.indexOf('visudo -cf "$SUDOERS_TMP"') < bootstrap.indexOf('mv -f -- "$SUDOERS_TMP" /etc/sudoers.d/chimera-deploy'));
   assert.ok(bootstrap.indexOf('systemctl start chimera-disk-check.service') < bootstrap.indexOf('systemctl enable --now chimera-disk-check.timer'));

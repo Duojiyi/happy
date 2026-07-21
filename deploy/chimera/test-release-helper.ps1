@@ -27,6 +27,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-Match $install 'chimera-status-helper' 'installer must bind the status-only forced command'
 
     $sudoers = $Sources.sudoers
+    Assert-NoMatch $sudoers "`r" 'sudoers policy must retain Unix line endings for visudo'
     foreach ($role in 'server', 'android', 'web') {
         Assert-Match $sudoers "chimera-$role-deploy ALL=\(root\) NOPASSWD: /usr/local/libexec/chimera-$role-(?:deploy|activate)" "sudoers missing exact $role helper"
     }

@@ -4,3 +4,4 @@
 deploy/chimera/bin/* text eol=lf
 deploy/chimera/libexec/* text eol=lf
 deploy/chimera/chimera-disk-status text eol=lf
+deploy/chimera/sudoers/* text eol=lf
