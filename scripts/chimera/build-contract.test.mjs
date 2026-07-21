@@ -145,6 +145,7 @@ if (!source) {
     assert.match(serverDockerfile, /^RUN npm install --global bun@1\.3\.14$/m);
     assert.match(standaloneDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'standalone server builder must include app schema sources');
     assert.match(serverDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'server builder must include app schema sources');
+    assert.match(serverDockerfile, /^COPY packages\/happy-server\/scripts\/generate-prisma-if-available\.cjs packages\/happy-server\/scripts\/$/m, 'server dependency layer must include its lifecycle script');
     const serverBuild = serverDockerfile.indexOf('RUN pnpm --filter happy-server-self-host build');
     const dependencyCleanup = serverDockerfile.indexOf('RUN rm -rf node_modules packages/*/node_modules');
     const productionInstall = serverDockerfile.indexOf('RUN pnpm install --prod --ignore-scripts --frozen-lockfile');
