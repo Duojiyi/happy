@@ -22,6 +22,7 @@ readonly MIN_STORAGE_FREE_BYTES=$((5 * 1024 * 1024 * 1024))
 readonly MIN_SYSTEM_FREE_BYTES=$((3 * 1024 * 1024 * 1024))
 readonly MIN_STORAGE_CAPACITY_BYTES=$((29 * 1024 * 1024 * 1024))
 readonly MAX_UNPACKED_IMAGE_BYTES=$((8 * 1024 * 1024 * 1024))
+readonly RUNTIME_GID=65532
 declare -a RESTORE_BACKUPS=()
 
 die() { printf 'Chimera server deployment rejected\n' >&2; exit 1; }
@@ -29,6 +30,30 @@ require_root_owned_file() {
   local file="$1"
   [[ -f "$file" && ! -L "$file" && "$(stat -c '%u' "$file")" == 0 ]] || die
   (( (8#$(stat -c '%a' "$file") & 8#022) == 0 )) || die
+}
+import_verified_image() {
+  local archive="$1" id="$2" release_digest="$3" expected_manifest expected_config source_name actual_digest
+  IFS=$'\t' read -r expected_manifest expected_config source_name < <(python3 - "$archive" <<'PY'
+import json,sys,tarfile
+with tarfile.open(sys.argv[1], "r:*") as bundle:
+    index=json.load(bundle.extractfile("index.json"))
+    descriptor=index["manifests"][0]
+    manifest_digest=descriptor["digest"]
+    manifest=json.load(bundle.extractfile(f"blobs/sha256/{manifest_digest.removeprefix('sha256:')}"))
+    print(manifest_digest, manifest["config"]["digest"], descriptor.get("annotations", {}).get("io.containerd.image.name", ""), sep="\t")
+PY
+)
+  [[ "$expected_manifest" == "$release_digest" && "$expected_config" =~ ^sha256:[a-f0-9]{64}$ && "$source_name" == 'docker.io/library/chimera-server:candidate' ]] || die
+  docker load --input "$archive" >/dev/null
+  actual_digest="$(docker image inspect --format '{{.Id}}' 'chimera-server:candidate')"
+  [[ "$actual_digest" == "$expected_manifest" || "$actual_digest" == "$expected_config" ]] || die
+  docker tag 'chimera-server:candidate' "chimera-relay:$id"
+  docker image rm 'chimera-server:candidate' >/dev/null
+  actual_digest="$(docker image inspect --format '{{.Id}}' "chimera-relay:$id")"
+  if [[ "$actual_digest" != "$expected_manifest" && "$actual_digest" != "$expected_config" ]]; then
+    docker image rm "chimera-relay:$id" >/dev/null 2>&1 || true
+    die
+  fi
 }
 
 prepare_image() {
@@ -80,7 +105,18 @@ if m.get("commitSha") != sys.argv[2] or m.get("imageDigest") != sys.argv[3]: rai
 PY
     if ! docker image inspect "chimera-relay:$id" >/dev/null 2>&1; then
       [[ -f "$accepted/server-image.oci" ]] || die
-      skopeo copy --preserve-digests "oci-archive:$accepted/server-image.oci" "docker-daemon:chimera-relay:$id"
+      import_verified_image "$accepted/server-image.oci" "$id" "$digest"
+    else
+      local cached_id expected_config
+      cached_id="$(docker image inspect --format '{{.Id}}' "chimera-relay:$id")"
+      expected_config="$(python3 - "$accepted/server-image.oci" "$digest" <<'PY'
+import json,sys,tarfile
+with tarfile.open(sys.argv[1], "r:*") as bundle:
+    manifest=json.load(bundle.extractfile(f"blobs/sha256/{sys.argv[2].removeprefix('sha256:')}"))
+    print(manifest["config"]["digest"])
+PY
+)"
+      [[ "$cached_id" == "$digest" || "$cached_id" == "$expected_config" ]] || die
     fi
     return
   fi
@@ -147,14 +183,12 @@ PY
   gh attestation verify "$incoming/server-image.oci" --repo 'Duojiyi/happy' \
     --bundle "$incoming/server-archive-attestation.jsonl" \
     --predicate-type 'https://slsa.dev/provenance/v1' \
-    --cert-identity 'https://github.com/Duojiyi/happy/.github/workflows/chimera-server-release.yml@refs/heads/main' \
-    --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
-    --signer-repo 'Duojiyi/happy' --signer-workflow 'Duojiyi/happy/.github/workflows/chimera-server-release.yml' \
+    --signer-workflow 'Duojiyi/happy/.github/workflows/chimera-server-release.yml' \
     --signer-digest "$trusted_workflow_sha" --source-digest "$id" --source-ref 'refs/heads/main' \
     --deny-self-hosted-runners
   mv -- "$incoming" "$accepted"
   sync -f "$INPUT_ROOT"
-  skopeo copy --preserve-digests "oci-archive:$accepted/server-image.oci" "docker-daemon:chimera-relay:$id"
+  import_verified_image "$accepted/server-image.oci" "$id" "$digest"
   sync -f "$accepted"
 }
 
@@ -192,6 +226,10 @@ verify_url() {
 }
 verify_running_old() { verify_url "$LOCAL_HEALTH_URL"; }
 verify_public() { curl --fail --silent --show-error --max-time 5 "$PUBLIC_HEALTH_URL" >/dev/null; }
+verify_public_ready() {
+  for attempt in {1..90}; do verify_public && return 0; sleep 2; done
+  return 1
+}
 stop_runtime() { docker compose --file "$COMPOSE_FILE" stop relay; }
 assert_pglite_closed() {
   command -v fuser >/dev/null 2>&1 || die
@@ -216,7 +254,7 @@ create_snapshot() {
   local id="$1" old_image="$2" old_digest="$3"
   local temporary="$SNAPSHOT_ROOT/.tmp-$id" snapshot="$SNAPSHOT_ROOT/$id"
   [[ ! -e "$temporary" && ! -e "$snapshot" ]] || die
-  install -d -m 0750 "$temporary/data"
+  install -d -m 2770 -o root -g "$RUNTIME_GID" "$temporary/data"
   cp -a -- "$DATA_ROOT/." "$temporary/data/"
   install -m 0640 "$COMPOSE_FILE" "$temporary/docker-compose.yml"
   printf '%s\n' "$old_image" > "$temporary/old-image"
@@ -227,7 +265,7 @@ create_snapshot() {
 }
 open_test_path() {
   local image="$1" data="$2"
-  docker run --rm --network none --volume "$data:/data" --entrypoint node "$image" -e '
+  docker run --rm --network none --user "$RUNTIME_GID:$RUNTIME_GID" --volume "$data:/data" --entrypoint /nodejs/bin/node "$image" -e '
     import("@electric-sql/pglite").then(async ({ PGlite }) => { const db=new PGlite("/data/pglite"); await db.query("select 1"); await db.close(); }).catch(()=>process.exit(1));'
 }
 open_test_snapshot() {
@@ -238,16 +276,16 @@ open_test_snapshot() {
 open_test_data() { open_test_path "$2" "$DATA_ROOT"; }
 migrate_candidate() {
   local id="$1"
-  docker run --rm --network none --env NODE_ENV=production --env DB_PROVIDER=pglite --env PGLITE_DIR=/data/pglite --env DATA_DIR=/data \
-    --volume "$DATA_ROOT:/data" "chimera-relay:$id" pnpm --filter happy-server-self-host exec tsx ./sources/standalone.ts migrate
+  docker run --rm --network none --user "$RUNTIME_GID:$RUNTIME_GID" --env NODE_ENV=production --env DB_PROVIDER=pglite --env PGLITE_DIR=/data/pglite --env DATA_DIR=/data \
+    --volume "$DATA_ROOT:/data" --entrypoint /nodejs/bin/node "chimera-relay:$id" dist/standalone.mjs migrate
 }
 start_candidate() {
   local id="$1"
   docker rm --force "$CANDIDATE_NAME" >/dev/null 2>&1 || true
-  docker run --detach --name "$CANDIDATE_NAME" --network host \
+  docker run --detach --name "$CANDIDATE_NAME" --network host --user "$RUNTIME_GID:$RUNTIME_GID" \
     --env-file "$ROOT/config/production.env" --env NODE_ENV=production --env PORT="$CANDIDATE_PORT" \
     --env DB_PROVIDER=pglite --env PGLITE_DIR=/data/pglite --env DATA_DIR=/data \
-    --volume "$DATA_ROOT:/data" "chimera-relay:$id" >/dev/null
+    --volume "$DATA_ROOT:/data" "chimera-relay:$id" dist/standalone.mjs serve >/dev/null
 }
 verify_candidate() {
   local id="$1" status socket_handshake file_probe="chimera-deploy-health-$1.txt"
@@ -255,7 +293,9 @@ verify_candidate() {
   curl --fail --silent --show-error --max-time 5 --output /dev/null "$CANDIDATE_URL/v1/chimera/config"
   status="$(curl --silent --show-error --max-time 5 --output /dev/null --write-out '%{http_code}' "$CANDIDATE_URL/v1/account/profile")"
   [[ "$status" == 401 ]]
-  install -d -m 0750 "$DATA_ROOT/files"; printf '%s\n' "$id" > "$DATA_ROOT/files/$file_probe"
+  install -d -m 2770 -o root -g "$RUNTIME_GID" "$DATA_ROOT/files"
+  printf '%s\n' "$id" > "$DATA_ROOT/files/$file_probe"
+  chown "$RUNTIME_GID:$RUNTIME_GID" "$DATA_ROOT/files/$file_probe"
   [[ "$(curl --fail --silent --show-error --max-time 5 "$CANDIDATE_URL/files/$file_probe")" == "$id" ]]
   rm -f -- "$DATA_ROOT/files/$file_probe"
   socket_handshake="$(curl --fail --silent --show-error --max-time 5 "$CANDIDATE_URL/socket.io/?EIO=4&transport=polling")"
@@ -316,7 +356,7 @@ restore_snapshot() {
   [[ -d "$DATA_ROOT" && ! -L "$DATA_ROOT" && ! -e "$candidate" && ! -e "$backup" && "${#RESTORE_BACKUPS[@]}" == 0 ]] || return 1
   remove_candidate_if_present || return 1
   docker compose --file "$COMPOSE_FILE" stop relay >/dev/null || return 1
-  install -d -m 0750 "$candidate" || return 1
+  install -d -m 2770 -o root -g "$RUNTIME_GID" "$candidate" || return 1
   if ! cp -a -- "$snapshot/data/." "$candidate/" \
       || ! find "$candidate" -type f -exec sync -f {} + \
       || ! sync -f "$candidate" \
@@ -496,10 +536,53 @@ retain_server_artifacts() {
   free_bytes="$(df --output=avail -B1 "$ROOT" | tail -n 1 | tr -d ' ')" || return 1
   [[ "$free_bytes" =~ ^[0-9]+$ ]] || return 1
   (( free_bytes > MIN_SYSTEM_FREE_BYTES ))
-  if [[ ! -e "$OCI_RETENTION_READY" && ! -L "$OCI_RETENTION_READY" ]]; then mark_oci_retention_ready "$legacy_id"; fi
+  if [[ -n "$legacy_id" && ! -e "$OCI_RETENTION_READY" && ! -L "$OCI_RETENTION_READY" ]]; then
+    mark_oci_retention_ready "$legacy_id"
+  fi
+}
+cleanup_failed_bootstrap() {
+  local id="$1" legacy_id="$2"
+  trap - ERR EXIT
+  remove_candidate_if_present || true
+  docker compose --file "$COMPOSE_FILE" down --remove-orphans >/dev/null 2>&1 || true
+  rm -f -- "$STATE_ROOT/current-image" "$STATE_ROOT/current-digest" "$OCI_RETENTION_READY"
+  find "$DATA_ROOT" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+  docker image rm "chimera-relay:$legacy_id" >/dev/null 2>&1 || true
+  cleanup_failed_release "$id" || true
+  exit 1
+}
+bootstrap_verified_release() {
+  local id="$1" digest="$2" legacy_id tags container
+  [[ ! -e "$OCI_RETENTION_READY" && ! -L "$OCI_RETENTION_READY" ]] || die
+  [[ -z "$(find "$DATA_ROOT" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die
+  [[ -z "$(find "$SNAPSHOT_ROOT" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die
+  [[ -z "$(docker compose --file "$COMPOSE_FILE" ps -aq relay)" ]] || die
+  ! docker container inspect "$CANDIDATE_NAME" >/dev/null 2>&1 || die
+  tags="$(docker image ls --format '{{.Repository}}:{{.Tag}}' --filter 'reference=chimera-relay:*')"
+  [[ -z "$tags" ]] || die
+  prepare_image "$id" "$digest"
+  legacy_id="$(printf 'chimera-bootstrap:%s' "$id" | sha1sum | cut -d ' ' -f 1)"
+  [[ "$legacy_id" =~ ^[a-f0-9]{40}$ && "$legacy_id" != "$id" ]] || die
+  trap 'cleanup_failed_bootstrap "$id" "$legacy_id"' ERR EXIT
+  docker tag "chimera-relay:$id" "chimera-relay:$legacy_id"
+  migrate_candidate "$id"
+  start_candidate "$id"; verify_candidate "$id"
+  remove_candidate_if_present
+  CHIMERA_IMAGE="chimera-relay:$legacy_id" docker compose --file "$COMPOSE_FILE" up -d --remove-orphans
+  verify_url "$LOCAL_HEALTH_URL"
+  container="$(docker compose --file "$COMPOSE_FILE" ps -q relay)"
+  [[ -n "$container" && "$(docker inspect --format '{{.Config.Image}}' "$container")" == "chimera-relay:$legacy_id" ]]
+  verify_public_ready
+  write_current_release "chimera-relay:$legacy_id" "$digest"
+  mark_oci_retention_ready "$legacy_id"
+  trap - ERR EXIT
 }
 deploy_server() {
   local id="$1" digest="$2" old_image old_digest
+  if [[ ! -e "$STATE_ROOT/current-image" && ! -L "$STATE_ROOT/current-image" && \
+        ! -e "$STATE_ROOT/current-digest" && ! -L "$STATE_ROOT/current-digest" ]]; then
+    bootstrap_verified_release "$id" "$digest"
+  fi
   old_image="$(current_image)"; old_digest="$(current_digest)"
   if [[ "$old_image" == "chimera-relay:$id" ]]; then
     rm -f -- "$STAGING_ROOT/$id.oci.partial" "$STAGING_ROOT/$id.json.partial" "$STAGING_ROOT/$id.attestation.partial"
@@ -541,7 +624,7 @@ rollback_server() {
 }
 main() {
   [[ "${EUID:-$(id -u)}" == 0 ]] || die
-  for tool in docker skopeo gh python3 curl fuser flock sync findmnt mountpoint; do command -v "$tool" >/dev/null 2>&1 || die; done
+  for tool in docker gh python3 curl fuser flock sync findmnt mountpoint; do command -v "$tool" >/dev/null 2>&1 || die; done
   require_root_owned_file "$COMPOSE_FILE"
   mountpoint -q "$STORAGE_ROOT" || die
   [[ "$(stat -c '%d' "$STORAGE_ROOT")" != "$(stat -c '%d' /)" ]] || die
@@ -549,6 +632,8 @@ main() {
   for path in "$STORAGE_ROOT" "$DATA_ROOT" "$SNAPSHOT_ROOT"; do
     [[ -d "$path" && ! -L "$path" && "$(stat -c '%u' "$path")" == 0 ]] || die
   done
+  [[ "$(stat -c '%g' "$DATA_ROOT")" == "$RUNTIME_GID" ]] || die
+  (( (8#$(stat -c '%a' "$DATA_ROOT") & 8#027) == 8#020 )) || die
   install -d -m 0750 "$INPUT_ROOT" "$STATE_ROOT"
   exec 9>/run/lock/chimera-production.lock; flock -n 9 || die
   find "$SNAPSHOT_ROOT" -mindepth 1 -maxdepth 1 -type d -name '.tmp-*' -exec rm -rf -- {} +

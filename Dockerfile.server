@@ -63,4 +63,5 @@ EXPOSE 3000
 
 # Command to run the application
 COPY --from=builder /repo/package.json /repo/pnpm-workspace.yaml /repo/
+USER 65532:65532
 CMD ["dist/standalone.mjs", "serve"]

@@ -15,15 +15,13 @@ services:
       HAPPY_STATIC_DIR: /srv/chimera-web
       METRICS_ENABLED: "false"
       PUBLIC_URL: https://103.250.173.136
-    command:
-      - /bin/sh
-      - -ec
-      - pnpm --filter happy-server-self-host exec tsx ./sources/standalone.ts migrate && exec pnpm --filter happy-server-self-host start
+    user: "65532:65532"
+    command: ["dist/standalone.mjs", "serve"]
     volumes:
       - /srv/chimera-storage/data:/var/lib/chimera
       - ./web/current:/srv/chimera-web:ro
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5

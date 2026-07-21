@@ -12,6 +12,7 @@ const cliSmokeWorkflowPath = path.join(root, '.github/workflows/cli-smoke-test.y
 const typecheckWorkflowPath = path.join(root, '.github/workflows/typecheck.yml');
 const standaloneDockerfilePath = path.join(root, 'Dockerfile');
 const serverDockerfilePath = path.join(root, 'Dockerfile.server');
+const serverRuntimeBuildPath = path.join(root, 'packages/happy-server/scripts/build-runtime.cjs');
 
 const PINNED_ACTION = /^[^@\s]+@[0-9a-f]{40}$/;
 
@@ -122,6 +123,7 @@ const cliSmokeSource = await readFile(cliSmokeWorkflowPath, 'utf8').catch(() => 
 const typecheckSource = await readFile(typecheckWorkflowPath, 'utf8').catch(() => null);
 const standaloneDockerfile = await readFile(standaloneDockerfilePath, 'utf8').catch(() => null);
 const serverDockerfile = await readFile(serverDockerfilePath, 'utf8').catch(() => null);
+const serverRuntimeBuild = await readFile(serverRuntimeBuildPath, 'utf8').catch(() => null);
 if (!source) {
   test('Chimera build workflow contract', () => {
     assert.fail(`missing ${path.relative(root, workflowPath)}`);
@@ -132,6 +134,7 @@ if (!source) {
     assert.ok(serverReleaseSource, `missing ${path.relative(root, serverReleaseWorkflowPath)}`);
     assert.ok(standaloneDockerfile, `missing ${path.relative(root, standaloneDockerfilePath)}`);
     assert.ok(serverDockerfile, `missing ${path.relative(root, serverDockerfilePath)}`);
+    assert.ok(serverRuntimeBuild, `missing ${path.relative(root, serverRuntimeBuildPath)}`);
     for (const [name, workflow, job] of [
       ['maintainability audit', parse(maintainabilitySource), 'audit'],
       ['server release', parse(serverReleaseSource), 'build'],
@@ -153,9 +156,23 @@ if (!source) {
     assert.ok(serverBuild >= 0 && serverBuild < dependencyCleanup, 'server must build before removing development dependencies');
     assert.ok(dependencyCleanup < productionInstall && productionInstall < productionDeploy, 'server must deploy only pruned production dependencies after cleanup');
     assert.match(serverDockerfile, /COPY --from=builder --chown=65532:65532 \/tmp\/chimera-server\//, 'runtime must copy the pruned pnpm deploy output as the unprivileged runtime user');
+    assert.match(serverDockerfile, /^USER 65532:65532$/m, 'runtime must explicitly pin its unprivileged uid and gid');
     assert.match(serverDockerfile, /RUN rm -rf \/tmp\/chimera-server\/node_modules\/prisma[\s\S]*?node_modules\/@prisma\/config[\s\S]*?node_modules\/effect/, 'runtime deploy must remove build-only Prisma CLI dependencies');
     assert.match(serverDockerfile, /^FROM gcr\.io\/distroless\/nodejs22-debian13@sha256:[a-f0-9]{64} AS runner$/m, 'runtime must use a digest-pinned minimal Node image');
     assert.match(serverDockerfile, /CMD \["dist\/standalone\.mjs", "serve"\]/, 'runtime must start the built standalone server directly');
+    assert.match(serverRuntimeBuild, /bundledDependencies[\s\S]*?'@prisma\/client'/, 'runtime build must bundle the Prisma CommonJS interop boundary');
+    const releaseBuild = parse(serverReleaseSource).jobs?.build;
+    const runtimeSmoke = allSteps(releaseBuild).find((step) => step.name === 'Run the exact distroless server archive');
+    assert.ok(runtimeSmoke, 'server release must run the exact OCI archive before scanning and attestation');
+    for (const pattern of [
+      /docker load --input dist\/server-image\.tar/,
+      /Config\.User.*65532/,
+      /dist\/standalone\.mjs migrate/,
+      /dist\/standalone\.mjs serve/,
+      /127\.0\.0\.1:13005\/health/,
+      /127\.0\.0\.1:13005\/v1\/chimera\/config/,
+      /v1\/account\/profile.*401/,
+    ]) assert.match(runtimeSmoke.run ?? '', pattern, `server archive runtime smoke missing ${pattern}`);
   });
 
   test('release toolchain changes trigger client evidence and manual typecheck remains available', () => {

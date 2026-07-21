@@ -6,7 +6,7 @@ server_key_file="$1"
 android_key_file="$2"
 web_key_file="$3"
 [[ "${EUID:-$(id -u)}" == 0 ]] || { printf 'installer must run as root\n' >&2; exit 1; }
-for tool in python3 openssl docker skopeo gh curl flock fuser sync java findmnt mountpoint; do command -v "$tool" >/dev/null 2>&1 || { printf 'missing required host tool: %s\n' "$tool" >&2; exit 1; }; done
+for tool in python3 openssl docker gh curl flock fuser sync java findmnt mountpoint; do command -v "$tool" >/dev/null 2>&1 || { printf 'missing required host tool: %s\n' "$tool" >&2; exit 1; }; done
 docker compose version >/dev/null 2>&1 || { printf 'Docker Compose plugin is required\n' >&2; exit 1; }
 [[ -x /opt/android-sdk/build-tools/35.0.0/aapt2 && -x /opt/android-sdk/build-tools/35.0.0/apksigner ]] || { printf 'Android Build Tools 35.0.0 must be provisioned first\n' >&2; exit 1; }
 mountpoint -q /srv/chimera-storage || { printf 'dedicated Chimera data filesystem is required\n' >&2; exit 1; }
@@ -56,7 +56,10 @@ install_role web "$web_key_file"
 # Runtime targets stay root-owned. Deploy identities can write only their own
 # staging tree; their exact sudo helper performs validated activation.
 install -d -m 0755 /opt/chimera /opt/chimera/downloads /opt/chimera/downloads/releases /opt/chimera/web /opt/chimera/web/releases /opt/chimera/config /opt/chimera/proxy-config
-install -d -m 0750 /srv/chimera-storage/data /srv/chimera-storage/snapshots
+install -m 0640 -o root -g root deploy/chimera/docker-compose.yml /opt/chimera/docker-compose.yml
+install -m 0644 -o root -g root deploy/chimera/Caddyfile /opt/chimera/Caddyfile
+install -d -m 2770 -o root -g 65532 /srv/chimera-storage/data
+install -d -m 0750 -o root -g root /srv/chimera-storage/snapshots
 install -d -m 0755 /etc/systemd/system/docker.service.d
 printf '[Unit]\nRequiresMountsFor=/srv/chimera-storage\n' > /etc/systemd/system/docker.service.d/chimera-storage.conf
 chmod 0644 /etc/systemd/system/docker.service.d/chimera-storage.conf

@@ -71,7 +71,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     $server = $Sources.server
     foreach ($pattern in @(
         '\^deploy-server\\ ', '\^rollback-server\\ ', 'server-image\.oci', 'server-release-input\.json', 'server-archive-attestation\.jsonl',
-        'gh attestation verify', '--bundle "\$incoming/server-archive-attestation\.jsonl"', 'skopeo copy --preserve-digests',
+        'gh attestation verify', '--bundle "\$incoming/server-archive-attestation\.jsonl"', 'docker load --input "\$archive"',
         'maintenance', 'pglite', 'snapshot', 'data_bytes \* 2', 'data_bytes \+ target_bytes', '5 \* 1024|5368709120',
         'MIN_SYSTEM_FREE_BYTES', 'unpacked_bytes', 'MAX_UNPACKED_IMAGE_BYTES', 'stat -c ''%d''', '29 \* 1024',
         'restore_pending_backup', 'cleanup_restore_candidates', 'cleanup_failed_release', 'cleanup_failed_rollback', 'health',
@@ -92,7 +92,10 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-Match $Sources.compose '/srv/chimera-storage/data:/var/lib/chimera' 'relay data must use the dedicated snapshot-visible data filesystem'
     Assert-Match $Sources.compose '\./proxy-config:/etc/chimera/config:ro' 'proxy must receive only isolated public TLS/maintenance config'
     Assert-NoMatch $Sources.compose '\./config:/etc/chimera/config' 'proxy must not receive relay production secrets'
-    Assert-Match $Sources.compose 'happy-server-self-host' 'relay compose command must target the actual self-host package'
+    Assert-NoMatch $Sources.compose '/bin/sh|\bpnpm\b|\btsx\b' 'distroless relay compose must not invoke unavailable shell or package-manager tools'
+    Assert-Match $Sources.compose 'test:\s*\["CMD",\s*"/nodejs/bin/node",\s*"-e"' 'distroless relay healthcheck must use the absolute Node runtime'
+    Assert-Match $Sources.server 'dist/standalone\.mjs migrate' 'server deployment must use the compiled migration entrypoint'
+    Assert-Match $Sources.bootstrap 'dist/standalone\.mjs migrate' 'bootstrap deployment must use the compiled migration entrypoint'
     foreach ($pattern in @('\^\[a-f0-9\]\{40\}\$', 'path\.is_absolute\(\)', 'member\.issym\(\)', 'current-image\.next', 'curl.*127\.0\.0\.1:3000/health')) {
         Assert-Match $Sources.bootstrap $pattern "bootstrap deployment missing: $pattern"
     }
