@@ -5,6 +5,17 @@ ROOT=/opt/chimera
 STAGING=/var/lib/chimera-web-deploy/.chimera-staging/web
 die() { printf 'Chimera Web activation rejected\n' >&2; exit 1; }
 sync_dir() { sync -f "$1"; }
+restart_relay() {
+  local container
+  docker compose --project-directory "$ROOT" --file "$ROOT/docker-compose.yml" restart relay >/dev/null || return 1
+  container="$(docker compose --project-directory "$ROOT" --file "$ROOT/docker-compose.yml" ps -q relay)"
+  [[ "$container" =~ ^[a-f0-9]{64}$ ]] || return 1
+  for _ in $(seq 1 30); do
+    [[ "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container" 2>/dev/null || true)" == "healthy" ]] && return 0
+    sleep 2
+  done
+  return 1
+}
 IFS= read -r command || die
 IFS= read -r extra && die
 exec 9>/run/lock/chimera-production.lock
@@ -71,6 +82,7 @@ mv -Tf "$ROOT/web/.current-$commit" "$ROOT/web/current"
 sync_dir "$ROOT/web"
 
 health_failed=0
+restart_relay || health_failed=1
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 https://103.250.173.136/ >/dev/null || health_failed=1
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 --resolve 103.250.173.136:443:127.0.0.1 "https://103.250.173.136/$representative" >/dev/null || health_failed=1
 if [[ "$health_failed" -ne 0 ]]; then
@@ -82,6 +94,7 @@ if [[ "$health_failed" -ne 0 ]]; then
     rm -f -- "$ROOT/web/current"
     sync_dir "$ROOT/web"
   fi
+  restart_relay || die
   rm -rf --one-file-system -- "$target"
   sync_dir "$releases"
   die
