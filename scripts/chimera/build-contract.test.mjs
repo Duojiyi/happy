@@ -141,7 +141,7 @@ if (!source) {
       assert.equal(String(setupBun?.with?.['bun-version']), '1.3.14', `${name} must pin Bun 1.3.14`);
     }
     assert.match(standaloneDockerfile, /^RUN npm install --global bun@1\.3\.14$/m);
-    assert.match(serverDockerfile, /^FROM node:22-bookworm-slim AS deps$/m, 'server builder must use the supported Node 22 runtime ABI');
+    assert.match(serverDockerfile, /^FROM node:22-trixie-slim AS deps$/m, 'server builder must use the supported Node 22 runtime ABI');
     assert.match(serverDockerfile, /^RUN npm install --global bun@1\.3\.14$/m);
     assert.match(standaloneDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'standalone server builder must include app schema sources');
     assert.match(serverDockerfile, /^COPY packages\/happy-app \.\/packages\/happy-app$/m, 'server builder must include app schema sources');
@@ -153,7 +153,8 @@ if (!source) {
     assert.ok(serverBuild >= 0 && serverBuild < dependencyCleanup, 'server must build before removing development dependencies');
     assert.ok(dependencyCleanup < productionInstall && productionInstall < productionDeploy, 'server must deploy only pruned production dependencies after cleanup');
     assert.match(serverDockerfile, /COPY --from=builder --chown=65532:65532 \/tmp\/chimera-server\//, 'runtime must copy the pruned pnpm deploy output as the unprivileged runtime user');
-    assert.match(serverDockerfile, /^FROM gcr\.io\/distroless\/nodejs22-debian12@sha256:[a-f0-9]{64} AS runner$/m, 'runtime must use a digest-pinned minimal Node image');
+    assert.match(serverDockerfile, /RUN rm -rf \/tmp\/chimera-server\/node_modules\/prisma[\s\S]*?node_modules\/@prisma\/config[\s\S]*?node_modules\/effect/, 'runtime deploy must remove build-only Prisma CLI dependencies');
+    assert.match(serverDockerfile, /^FROM gcr\.io\/distroless\/nodejs22-debian13@sha256:[a-f0-9]{64} AS runner$/m, 'runtime must use a digest-pinned minimal Node image');
     assert.match(serverDockerfile, /CMD \["dist\/standalone\.mjs", "serve"\]/, 'runtime must start the built standalone server directly');
   });
 
