@@ -307,16 +307,16 @@ jobs:
             jq -e --arg sha "$SHA" --arg version "$VERSION" --argjson code "$VERSION_CODE" --arg signer "$EXPECTED_SIGNER_SHA256" '.payload.commitSha == $sha and .payload.versionName == $version and .payload.versionCode == $code and .payload.packageName == "org.chimerahub.chimera" and .payload.signerSha256 == $signer' /tmp/existing/chimera-update.json
             jq -e --arg sha "$SHA" --arg unsigned "$UNSIGNED_SHA" --arg version "$VERSION" --argjson code "$VERSION_CODE" --arg signer "$EXPECTED_SIGNER_SHA256" '.commitSha == $sha and .unsignedSha256 == $unsigned and .versionName == $version and .versionCode == $code and .signerSha256 == $signer' /tmp/existing/release-metadata.json
             node - /tmp/existing/chimera-update.json <<'NODE'
-            const fs = require('node:fs');
-            const crypto = require('node:crypto');
-            const envelope = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-            const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
-              ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
-            const raw = Buffer.from('ze6ngKGbk7dgWN5d6rXGO0YRE5y54hbLMULFoW5YTHc', 'base64url');
-            const spki = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), raw]);
-            const valid = crypto.verify(null, Buffer.from(JSON.stringify(canonical(envelope.payload))), { key: spki, format: 'der', type: 'spki' }, Buffer.from(envelope.signature, 'base64url'));
-            if (!valid) throw new Error('existing manifest signature is invalid');
-            NODE
+          const fs = require('node:fs');
+          const crypto = require('node:crypto');
+          const envelope = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+            ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+          const raw = Buffer.from('ze6ngKGbk7dgWN5d6rXGO0YRE5y54hbLMULFoW5YTHc', 'base64url');
+          const spki = Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), raw]);
+          const valid = crypto.verify(null, Buffer.from(JSON.stringify(canonical(envelope.payload))), { key: spki, format: 'der', type: 'spki' }, Buffer.from(envelope.signature, 'base64url'));
+          if (!valid) throw new Error('existing manifest signature is invalid');
+          NODE
             test "$(jq -r '.payload.sha256' /tmp/existing/chimera-update.json)" = "$(jq -r '.signedSha256' /tmp/existing/release-metadata.json)"
             EXISTING_APK="/tmp/existing/Chimera-$VERSION.apk"
             EXISTING_APK_SHA=$(sha256sum "$EXISTING_APK" | cut -d ' ' -f 1)
@@ -523,11 +523,13 @@ jobs:
           RELEASE_VERSION_CODE: ${{ needs.signing.outputs.version-code }}
           TRUSTED_BUILD_WORKFLOW_SHA: ${{ inputs.trusted_build_workflow_sha }}
           RELEASE_VERSION_NAME: ${{ needs.signing.outputs.version-name }}
+          RELEASE_WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BUILD_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$TRUSTED_BUILD_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RELEASE_VERSION_CODE" =~ ^[1-9][0-9]*$ ]]
           [[ "$RELEASE_VERSION_NAME" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?-chimera\.[1-9][0-9]*$ ]]
           test "$(find publish/signed -type f | wc -l)" -eq 4
@@ -546,8 +548,8 @@ jobs:
           for FILE in publish/signed/Chimera.apk publish/signed/chimera-update.json; do
             gh attestation verify "$FILE" --repo '${{ github.repository }}' \
               --signer-workflow '${{ github.repository }}/.github/workflows/chimera-release.yml' \
-              --signer-digest "$REVIEWED_SHA" \
-              --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
+              --signer-digest "$RELEASE_WORKFLOW_SHA" \
+              --source-digest "$RELEASE_WORKFLOW_SHA" --source-ref 'refs/heads/main' \
               --deny-self-hosted-runners
           done
           gh attestation verify publish/web/Chimera-web.tar.gz --repo '${{ github.repository }}' \
