@@ -35,10 +35,11 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
         Assert-Match $forced 'SSH_ORIGINAL_COMMAND' "$role helper must be a forced-command gate"
         Assert-Match $forced '\^scp\\ -t\\ ' "$role helper must anchor its upload protocol"
         Assert-Match $forced "/usr/local/libexec/chimera-$role-(?:deploy|activate)" "$role helper must invoke only its privileged role"
+        Assert-Match $forced 'exec /usr/bin/sudo -n /usr/local/libexec/.+ <<< ' "$role helper must replace the forced-command process when invoking its privileged role"
         foreach ($other in @('server', 'android', 'web') | Where-Object { $_ -ne $role }) {
             Assert-NoMatch $forced "activate-$other|deploy-$other|\.chimera-staging/$other" "$role forced command crosses into $other"
         }
-        Assert-NoMatch $forced 'eval|bash\s+-c|sh\s+-c' "$role helper permits shell fragments"
+        Assert-NoMatch $forced 'eval|bash\s+-c|sh\s+-c|\|\s*exec' "$role helper permits shell fragments or a subshell-only exec"
     }
 
     $android = $Sources.android
