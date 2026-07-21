@@ -52,7 +52,7 @@ export function validateBuildWorkflow(workflow) {
   assert.ok(triggers?.push?.branches?.includes('main'), 'main push trigger is required');
   assert.ok(triggers?.workflow_dispatch !== undefined, 'manual dispatch trigger is required');
   for (const trigger of ['pull_request', 'push']) {
-    for (const requiredPath of ['.npmrc', 'pnpm-workspace.yaml', 'patches/**']) {
+    for (const requiredPath of ['.npmrc', 'pnpm-workspace.yaml', 'patches/**', 'packages/happy-server/**']) {
       assert.ok(triggers?.[trigger]?.paths?.includes(requiredPath), `${trigger} paths must include ${requiredPath}`);
     }
   }
@@ -161,6 +161,7 @@ if (!source) {
     const triggers = workflow.on ?? workflow.true;
     for (const trigger of ['pull_request', 'push']) {
       for (const requiredPath of [
+        'packages/happy-server/**',
         '.github/workflows/chimera-audit-maintainability.yml',
         '.github/workflows/chimera-server-release.yml',
         'Dockerfile',

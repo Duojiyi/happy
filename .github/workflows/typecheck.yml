@@ -5,6 +5,7 @@ on:
     pull_request:
         paths:
             - 'packages/happy-app/**'
+            - 'packages/happy-server/**'
             - 'Dockerfile'
             - 'Dockerfile.server'
             - 'scripts/chimera/**'
@@ -15,6 +16,7 @@ on:
             - main
         paths:
             - 'packages/happy-app/**'
+            - 'packages/happy-server/**'
             - 'Dockerfile'
             - 'Dockerfile.server'
             - 'scripts/chimera/**'

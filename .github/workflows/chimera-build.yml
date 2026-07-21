@@ -5,6 +5,7 @@ on:
     paths:
       - 'brand/chimera/**'
       - 'packages/happy-app/**'
+      - 'packages/happy-server/**'
       - 'packages/happy-wire/**'
       - 'scripts/**'
       - 'patches/**'
@@ -22,6 +23,7 @@ on:
     paths:
       - 'brand/chimera/**'
       - 'packages/happy-app/**'
+      - 'packages/happy-server/**'
       - 'packages/happy-wire/**'
       - 'scripts/**'
       - 'patches/**'
