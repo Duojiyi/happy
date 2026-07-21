@@ -80,7 +80,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-NoMatch $server 'eval|bash\s+-c|sh\s+-c|docker build|Dockerfile\.server|deploy/chimera/docker-compose' 'Server deployment executes candidate source or shell fragments'
     Assert-Match $android 'if ! ln "\$release/\$filename" "\$downloads/\$filename"[\s\S]*cmp --silent' 'Android APK target must be immutable or byte-identical'
 
-    foreach ($pattern in @('issuer acme', 'acme-v02\.api\.letsencrypt\.org/directory', 'profile shortlived', 'protocols tls1\.2 tls1\.3')) {
+    foreach ($pattern in @('default_sni 103\.250\.173\.136', 'issuer acme', 'acme-v02\.api\.letsencrypt\.org/directory', 'profile shortlived', 'protocols tls1\.2 tls1\.3')) {
         Assert-Match $Sources.caddy $pattern "Caddy automatic trusted IP certificate configuration missing: $pattern"
     }
     Assert-NoMatch $Sources.caddy 'tls\s+[^\r\n]*ip-(?:cert|key)\.pem|tls\s+internal' 'Caddy must not depend on a static or self-signed IP certificate'
