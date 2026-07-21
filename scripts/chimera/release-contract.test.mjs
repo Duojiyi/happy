@@ -38,6 +38,18 @@ function assertContains(text, patterns, name) {
   for (const pattern of patterns) assert.match(text, pattern, `${name} missing ${pattern}`);
 }
 
+function assertValidShellHeredocs(script, name) {
+  const lines = script.split('\n');
+  for (let index = 0; index < lines.length; index++) {
+    const match = lines[index].match(/<<-?['"]?([A-Z][A-Z0-9_]*)['"]?/);
+    if (!match) continue;
+    const terminator = match[1];
+    const end = lines.findIndex((line, candidate) => candidate > index && line === terminator);
+    assert.notEqual(end, -1, `${name} heredoc ${terminator} must have an unindented shell terminator`);
+    index = end;
+  }
+}
+
 function assertFlatArtifactDownloads(workflow, name) {
   for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
     for (const step of steps(job).filter((item) => item.uses?.startsWith('actions/download-artifact@') && item.with?.['artifact-ids'])) {
@@ -71,6 +83,7 @@ export function validateClientReleaseWorkflow(workflow) {
   assert.deepEqual(signing.permissions, { actions: 'read', attestations: 'read', checks: 'read', contents: 'read' }, 'signing permissions must be minimal and allow check-run verification');
   assertNoCheckout(signing, 'signing');
   const sign = runs(signing);
+  assertValidShellHeredocs(sign, 'signing');
   assertContains(sign, [
     /artifact-ids|artifact_id/i,
     /BUILD_RUN_ID/,
@@ -145,6 +158,9 @@ export function validateClientReleaseWorkflow(workflow) {
     /\.sha256/,
     /chimera-release\.yml/,
   ], 'publication job');
+  assert.match(publish, /RELEASE_WORKFLOW_SHA[\s\S]*--signer-digest "\$RELEASE_WORKFLOW_SHA"[\s\S]*--source-digest "\$RELEASE_WORKFLOW_SHA"/, 'signed provenance must bind to the actual release workflow SHA');
+  const signedVerification = publish.slice(publish.indexOf('for FILE in publish/signed/'), publish.indexOf('gh attestation verify publish/web/'));
+  assert.doesNotMatch(signedVerification, /--signer-digest "\$REVIEWED_SHA"|--source-digest "\$REVIEWED_SHA"/, 'product commit SHA must not impersonate the release workflow signer SHA');
   assert.doesNotMatch(publish, /--clobber|release delete|git push.*--force/i, 'publication must never replace immutable assets');
   assert.match(serialized(workflow), /server_release_run_id/);
   return true;

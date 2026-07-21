@@ -1,5 +1,6 @@
 {
     email admin@chimerahub.org
+    default_sni 103.250.173.136
 }
 
 https://103.250.173.136 {

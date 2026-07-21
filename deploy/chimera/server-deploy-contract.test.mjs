@@ -67,10 +67,13 @@ test('server imports only root-frozen OCI bytes bound to commit digest and metad
 
 test('candidate is reachable only on the host loopback port', () => {
   const candidate = body('start_candidate', 'verify_candidate');
+  const verification = body('verify_candidate', 'write_marker');
   assert.match(candidate, /--network host/);
   assert.match(candidate, /--env PORT="\$CANDIDATE_PORT"/);
   assert.doesNotMatch(candidate, /--publish|0\.0\.0\.0/);
   assert.match(source, /CANDIDATE_URL=http:\/\/127\.0\.0\.1/);
+  assert.match(verification, /\/v1\/updates\/\?EIO=4&transport=polling/);
+  assert.doesNotMatch(verification, /\/socket\.io\//);
 });
 
 test('distroless runtime uses only compiled standalone entrypoints', () => {
@@ -254,8 +257,27 @@ test('bootstrap deploy to rollback state machine permits only its bound legacy i
   assert.equal(retainFixture({ active: firstOci, previous: 'd'.repeat(40), inputs: [firstOci], legacy }), null);
   assert.match(source, /readonly OCI_RETENTION_READY="\$STATE_ROOT\/oci-retention-ready"/);
   assert.match(source, /mark_oci_retention_ready "\$legacy_id"/);
-  assert.match(source, /old_image" == "chimera-relay:\$id"/);
-  assert.match(source, /rm -f -- "\$STAGING_ROOT\/\$id\.oci\.partial"/);
+});
+
+test('same-SHA deployment retry revalidates immutable inputs and reports only healthy matching state', () => {
+  const deploy = body('deploy_server', 'rollback_server');
+  const prepare = body('prepare_image', 'reload_proxy');
+  const runningBase = body('verify_running_new', 'verify_running_release');
+  const running = body('verify_running_release', 'remove_candidate_if_present');
+  const idempotent = deploy.slice(deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]'), deploy.indexOf('return', deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]')) + 'return'.length);
+  assert.match(idempotent, /\[\[ "\$old_digest" == "\$digest" \]\]/);
+  assert.ok(idempotent.indexOf('[[ "$old_digest" == "$digest" ]]') < idempotent.indexOf('prepare_image "$id" "$digest"'));
+  assert.match(idempotent, /verify_running_release "\$id" "\$digest"; verify_public/);
+  for (const pair of [
+    ['source_archive', 'server-image.oci'],
+    ['source_metadata', 'server-release-input.json'],
+    ['source_attestation', 'server-archive-attestation.jsonl'],
+  ]) assert.match(prepare, new RegExp(`cmp -- "\\$${pair[0]}" "\\$accepted\\/${pair[1].replace('.', '\\.')}`));
+  assert.match(runningBase, /docker inspect --format '\{\{\.Config\.Image\}\}'/);
+  assert.match(running, /docker inspect --format '\{\{\.Image\}\}'/);
+  assert.match(running, /docker image inspect --format '\{\{\.Id\}\}'/);
+  assert.match(running, /"\$container_id" == "\$tag_id"[\s\S]*"\$tag_id" == "\$digest" \|\| "\$tag_id" == "\$expected_config"/);
+  assert.match(deploy, /rm -f -- "\$STAGING_ROOT\/\$id\.oci\.partial" "\$STAGING_ROOT\/\$id\.json\.partial" "\$STAGING_ROOT\/\$id\.attestation\.partial"[\s\S]*printf 'deployed digest=%s\\nrunning digest=%s\\n'[\s\S]*return/);
 });
 
 test('retention contract rejects protected-release, path-safety, and reserve mutations', () => {

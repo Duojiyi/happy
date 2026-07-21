@@ -35,10 +35,11 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
         Assert-Match $forced 'SSH_ORIGINAL_COMMAND' "$role helper must be a forced-command gate"
         Assert-Match $forced '\^scp\\ -t\\ ' "$role helper must anchor its upload protocol"
         Assert-Match $forced "/usr/local/libexec/chimera-$role-(?:deploy|activate)" "$role helper must invoke only its privileged role"
+        Assert-Match $forced 'exec /usr/bin/sudo -n /usr/local/libexec/.+ <<< ' "$role helper must replace the forced-command process when invoking its privileged role"
         foreach ($other in @('server', 'android', 'web') | Where-Object { $_ -ne $role }) {
             Assert-NoMatch $forced "activate-$other|deploy-$other|\.chimera-staging/$other" "$role forced command crosses into $other"
         }
-        Assert-NoMatch $forced 'eval|bash\s+-c|sh\s+-c' "$role helper permits shell fragments"
+        Assert-NoMatch $forced 'eval|bash\s+-c|sh\s+-c|\|\s*exec' "$role helper permits shell fragments or a subshell-only exec"
     }
 
     $android = $Sources.android
@@ -80,7 +81,7 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-NoMatch $server 'eval|bash\s+-c|sh\s+-c|docker build|Dockerfile\.server|deploy/chimera/docker-compose' 'Server deployment executes candidate source or shell fragments'
     Assert-Match $android 'if ! ln "\$release/\$filename" "\$downloads/\$filename"[\s\S]*cmp --silent' 'Android APK target must be immutable or byte-identical'
 
-    foreach ($pattern in @('issuer acme', 'acme-v02\.api\.letsencrypt\.org/directory', 'profile shortlived', 'protocols tls1\.2 tls1\.3')) {
+    foreach ($pattern in @('default_sni 103\.250\.173\.136', 'issuer acme', 'acme-v02\.api\.letsencrypt\.org/directory', 'profile shortlived', 'protocols tls1\.2 tls1\.3')) {
         Assert-Match $Sources.caddy $pattern "Caddy automatic trusted IP certificate configuration missing: $pattern"
     }
     Assert-NoMatch $Sources.caddy 'tls\s+[^\r\n]*ip-(?:cert|key)\.pem|tls\s+internal' 'Caddy must not depend on a static or self-signed IP certificate'
