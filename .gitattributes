@@ -1,3 +1,6 @@
 *.sh text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+deploy/chimera/bin/* text eol=lf
+deploy/chimera/libexec/* text eol=lf
+deploy/chimera/chimera-disk-status text eol=lf

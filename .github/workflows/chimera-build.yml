@@ -109,7 +109,7 @@ jobs:
                 CLIENT_REQUIRED=true
                 break
                 ;;
-              deploy/chimera/*|packages/happy-server/*|Dockerfile|Dockerfile.server|.github/workflows/chimera-release.yml|.github/workflows/chimera-server-release.yml|.github/workflows/chimera-audit-maintainability.yml|.github/workflows/cli-smoke-test.yml|.github/workflows/typecheck.yml|scripts/chimera/*.test.mjs)
+              docs/*.md|docs/*.mdx|docs/*.txt|deploy/chimera/*|packages/happy-server/*|Dockerfile|Dockerfile.server|.github/workflows/chimera-release.yml|.github/workflows/chimera-server-release.yml|.github/workflows/chimera-audit-maintainability.yml|.github/workflows/cli-smoke-test.yml|.github/workflows/typecheck.yml|scripts/chimera/*.test.mjs)
                 ;;
               *)
                 CLIENT_REQUIRED=true

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${SSH_ORIGINAL_COMMAND:-}" == status-server ]]; then
+  exec /usr/bin/sudo -n /usr/local/libexec/chimera-disk-status
+fi
+printf 'Chimera status command rejected\n' >&2
+exit 1

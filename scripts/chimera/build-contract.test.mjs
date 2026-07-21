@@ -82,9 +82,10 @@ export function validateBuildWorkflow(workflow) {
     assert.ok(classifyText.includes(requiredPath), `classifier must include client input ${requiredPath}`);
   }
   assert.match(classifyText, /\.github\/workflows\/chimera-build\.yml\|scripts\/generate-chimera-brand\.mjs\)\s+CLIENT_REQUIRED=true/, 'build workflow and brand generator changes must require client builds');
-  for (const skippablePath of ['deploy/chimera/*', 'packages/happy-server/*', 'Dockerfile', 'Dockerfile.server', '.github/workflows/chimera-release.yml', '.github/workflows/chimera-server-release.yml', '.github/workflows/chimera-audit-maintainability.yml', '.github/workflows/cli-smoke-test.yml', '.github/workflows/typecheck.yml', 'scripts/chimera/*.test.mjs']) {
+  for (const skippablePath of ['docs/*.md', 'docs/*.mdx', 'docs/*.txt', 'deploy/chimera/*', 'packages/happy-server/*', 'Dockerfile', 'Dockerfile.server', '.github/workflows/chimera-release.yml', '.github/workflows/chimera-server-release.yml', '.github/workflows/chimera-audit-maintainability.yml', '.github/workflows/cli-smoke-test.yml', '.github/workflows/typecheck.yml', 'scripts/chimera/*.test.mjs']) {
     assert.ok(classifyText.includes(skippablePath), `classifier must explicitly allow ${skippablePath} to skip`);
   }
+  assert.doesNotMatch(classifyText, /docs\/\*\|/, 'docs fast-skip must not allow executable files');
   assert.match(classifyText, /\*\)\s+CLIENT_REQUIRED=true/, 'unknown paths must require client builds');
   assert.match(classifyText, /git cat-file -e/, 'classifier must verify diff commits exist');
   assert.match(classifyText, /git merge-base --is-ancestor/, 'push baseline must be an ancestor of the current main commit');

@@ -1,6 +1,8 @@
 Defaults:chimera-android-deploy !authenticate
 Defaults:chimera-web-deploy !authenticate
 Defaults:chimera-server-deploy !authenticate
+Defaults:chimera-status-monitor !authenticate
 chimera-android-deploy ALL=(root) NOPASSWD: /usr/local/libexec/chimera-android-activate
 chimera-web-deploy ALL=(root) NOPASSWD: /usr/local/libexec/chimera-web-activate
 chimera-server-deploy ALL=(root) NOPASSWD: /usr/local/libexec/chimera-server-deploy
+chimera-status-monitor ALL=(root) NOPASSWD: /usr/local/libexec/chimera-disk-status

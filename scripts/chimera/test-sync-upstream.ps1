@@ -21,13 +21,20 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $seed 'docs'), (Join-Path $seed 'brand/chimera'), (Join-Path $seed 'scripts/chimera'), (Join-Path $seed 'packages/happy-app') -Force | Out-Null
     Set-Content -LiteralPath (Join-Path $seed 'README.md') -Value 'base'
     Set-Content -LiteralPath (Join-Path $seed 'package.json') -Value '{"type":"module"}'
-    Set-Content -LiteralPath (Join-Path $seed 'packages/happy-app/app.config.js') -Value 'export default { expo: { version: "1.0.0" } };'
+    Set-Content -LiteralPath (Join-Path $seed 'packages/happy-app/app.config.js') -Value 'throw new Error("sync must not execute candidate app config");'
+    Set-Content -LiteralPath (Join-Path $seed 'packages/happy-app/package.json') -Value '{"name":"happy-app","version":"1.0.0"}'
     Set-Content -LiteralPath (Join-Path $seed 'brand/chimera/upstream.json') -Value '{"schemaVersion":1}'
+    Set-Content -LiteralPath (Join-Path $seed 'brand/chimera/product.json') -Value '{"upstreamAppVersion":"1.7.0","chimeraRevision":4,"androidVersionCode":44}'
     Set-Content -LiteralPath (Join-Path $seed 'scripts/chimera/bump-release.mjs') -Value @'
-import { mkdir, writeFile } from 'node:fs/promises';
-const value = process.argv[process.argv.indexOf('--upstream-app-version') + 1];
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+const value = process.argv[2];
+const product = JSON.parse(await readFile('brand/chimera/product.json', 'utf8'));
+product.upstreamAppVersion = value;
+product.chimeraRevision += 1;
+product.androidVersionCode += 1;
 await mkdir('brand/chimera', { recursive: true });
 await writeFile('brand/chimera/bumped-version.txt', `${value}\n`);
+await writeFile('brand/chimera/product.json', `${JSON.stringify(product)}\n`);
 '@
     git -C $seed add .
     git -C $seed commit -m base | Out-Null
@@ -55,9 +62,11 @@ await writeFile('brand/chimera/bumped-version.txt', `${value}\n`);
     if (-not (Test-Path $bundle)) { throw 'candidate bundle missing' }
     $candidate = Join-Path $root 'candidate'
     git clone --branch $json.branch $bundle $candidate | Out-Null
-    if ((Get-Content -Raw (Join-Path $candidate 'brand/chimera/bumped-version.txt')).Trim() -ne '1.0.0') { throw 'initial candidate bump used the wrong app version' }
+    if ((Get-Content -Raw (Join-Path $candidate 'brand/chimera/bumped-version.txt')).Trim() -ne '1.7.0') { throw 'initial candidate bump did not use protected product version' }
+    $candidateProduct = Get-Content -Raw (Join-Path $candidate 'brand/chimera/product.json') | ConvertFrom-Json
+    if ($candidateProduct.upstreamAppVersion -ne '1.7.0' -or $candidateProduct.chimeraRevision -ne 5 -or $candidateProduct.androidVersionCode -ne 45) { throw 'candidate did not deterministically increment protected release metadata' }
 
-    Set-Content -LiteralPath (Join-Path $seed 'packages/happy-app/app.config.js') -Value 'export default { expo: { version: "2.0.0" } };'
+    Set-Content -LiteralPath (Join-Path $seed 'packages/happy-app/package.json') -Value '{"name":"happy-app","version":"2.0.0"}'
     Set-Content -LiteralPath (Join-Path $seed 'docs/tool.ts') -Value 'console.log("executable docs fixture");'
     Set-Content -LiteralPath (Join-Path $seed 'README.sh') -Value 'exit 0'
     git -C $seed add .
@@ -71,7 +80,7 @@ await writeFile('brand/chimera/bumped-version.txt', `${value}\n`);
     if ($secondJson.status -ne 'candidate' -or $secondJson.classification -ne 'executable') { throw 'executable file under docs or README.* bypassed audits' }
     $secondCandidate = Join-Path $root 'candidate-second'
     git clone --branch $secondJson.branch $secondBundle $secondCandidate | Out-Null
-    if ((Get-Content -Raw (Join-Path $secondCandidate 'brand/chimera/bumped-version.txt')).Trim() -ne '2.0.0') { throw 'release bump did not resolve the candidate worktree app version' }
+    if ((Get-Content -Raw (Join-Path $secondCandidate 'brand/chimera/bumped-version.txt')).Trim() -ne '1.7.0') { throw 'release bump must use protected product upstream version' }
 
     $leaseRemote = Join-Path $root 'lease.git'
     git init --bare $leaseRemote | Out-Null

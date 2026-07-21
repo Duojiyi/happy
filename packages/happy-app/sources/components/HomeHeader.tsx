@@ -9,6 +9,7 @@ import { useRouter, useSegments } from 'expo-router';
 import { Image } from 'expo-image';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import { t } from '@/text';
+import { PRODUCT_NAME } from '@/chimera/product.generated';
 
 const stylesheet = StyleSheet.create((theme, runtime) => ({
     headerButton: {
@@ -133,7 +134,7 @@ function HeaderLeft() {
     return (
         <View style={styles.logoContainer}>
             <Image
-                source={require('@/assets/images/logo-black.png')}
+                source={require('@/assets/images/icon-monochrome.png')}
                 contentFit="contain"
                 style={[{ width: 24, height: 24 }]}
                 tintColor={theme.colors.header.tint}
@@ -195,7 +196,7 @@ function HeaderTitleWithSubtitle({ subtitle }: { subtitle?: string }) {
     return (
         <View style={styles.titleContainer}>
             <Text style={styles.titleText}>
-                {t('sidebar.sessionsTitle')}
+                {PRODUCT_NAME}
             </Text>
             {hasCustomSubtitle && (
                 <Text style={styles.subtitleText}>

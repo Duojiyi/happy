@@ -1,0 +1,16 @@
+[Unit]
+Description=Chimera disk capacity and storage monitor
+RequiresMountsFor=/srv/chimera-storage
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/local/libexec/chimera-disk-check
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/chimera/state
+ReadOnlyPaths=/srv/chimera-storage /opt/chimera /var/lib/docker

@@ -23,12 +23,16 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     Assert-NoMatch $install '/var/lib/chimera-deploy(?:/|\s)|useradd[^\n]*\schimera-deploy(?:\s|$)' 'legacy shared deploy identity must not remain'
     Assert-Match $install 'install -d -m 0755 /opt/chimera' 'runtime targets must remain root-owned and writable only through helpers'
     Assert-Match $install 'RequiresMountsFor=/srv/chimera-storage' 'Docker must not start without the dedicated data filesystem'
+    Assert-Match $install 'chimera-status-monitor' 'installer must provision a separate status-only user'
+    Assert-Match $install 'chimera-status-helper' 'installer must bind the status-only forced command'
 
     $sudoers = $Sources.sudoers
     foreach ($role in 'server', 'android', 'web') {
         Assert-Match $sudoers "chimera-$role-deploy ALL=\(root\) NOPASSWD: /usr/local/libexec/chimera-$role-(?:deploy|activate)" "sudoers missing exact $role helper"
     }
     Assert-NoMatch $sudoers 'NOPASSWD:\s*(?:ALL|/bin/(?:ba)?sh|/usr/bin/env)|\*' 'sudoers grants arbitrary command execution'
+    Assert-Match $sudoers 'chimera-status-monitor ALL=\(root\) NOPASSWD: /usr/local/libexec/chimera-disk-status' 'status-only sudo rule missing'
+    Assert-NoMatch $sudoers 'chimera-server-deploy ALL=\(root\) NOPASSWD: /usr/local/libexec/chimera-disk-status' 'server deploy identity must not read disk status'
 
     foreach ($role in 'server', 'android', 'web') {
         $forced = $Sources["forced_$role"]
@@ -89,6 +93,12 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
     foreach ($pattern in @('default_sni 103\.250\.173\.136', 'issuer acme', 'acme-v02\.api\.letsencrypt\.org/directory', 'profile shortlived', 'protocols tls1\.2 tls1\.3')) {
         Assert-Match $Sources.caddy $pattern "Caddy automatic trusted IP certificate configuration missing: $pattern"
     }
+    Assert-Match $Sources.forced_status '\$\{SSH_ORIGINAL_COMMAND:-\}" == status-server' 'status helper must accept exactly status-server'
+    Assert-Match $Sources.forced_status '/usr/local/libexec/chimera-disk-status' 'status helper must invoke only disk status'
+    Assert-NoMatch $Sources.forced_status 'scp|deploy-server|rollback-server|activate-' 'status helper must not deploy or upload'
+    Assert-NoMatch $Sources.forced_server 'status-server|chimera-disk-status' 'server deploy helper must not expose monitoring'
+    Assert-Match $Sources.caddy '@immutable path_regexp immutable \[-\.\]\[0-9a-f\]\{8,\}\\\.\[\^/\]\+\$' 'Caddy must identify fingerprinted Web assets without matching mutable entry points'
+    Assert-Match $Sources.caddy 'header @immutable Cache-Control "public, max-age=31536000, immutable"' 'Caddy must cache fingerprinted Web assets immutably'
     Assert-NoMatch $Sources.caddy 'tls\s+[^\r\n]*ip-(?:cert|key)\.pem|tls\s+internal' 'Caddy must not depend on a static or self-signed IP certificate'
     foreach ($pattern in @('-checkip 103\.250\.173\.136', 'verify_args=\(-purpose sslserver -CAfile', 'openssl verify "\$\{verify_args\[@\]\}"', '-checkend 172800', 'Certificate/private key mismatch')) {
         Assert-Match $Sources.tls $pattern "TLS provisioning missing: $pattern"
@@ -117,6 +127,7 @@ $sources = @{
     forced_server = Read-Required 'bin/chimera-server-helper'
     forced_android = Read-Required 'bin/chimera-android-helper'
     forced_web = Read-Required 'bin/chimera-web-helper'
+    forced_status = Read-Required 'bin/chimera-status-helper'
     android = Read-Required 'libexec/chimera-android-activate'
     android_validator = Read-Required 'libexec/chimera-validate-android-release'
     inspector = Read-Required 'libexec/chimera-apk-inspect'
@@ -136,6 +147,9 @@ $mutated = $sources.Clone()
 $mutated.forced_android = $sources.forced_android + "`nactivate-web deadbeef"
 Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'crosses into web'
 $mutated = $sources.Clone()
+$mutated.forced_status = $sources.forced_status + "`nscp -t .chimera-staging/server/file"
+Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'must not deploy or upload'
+$mutated = $sources.Clone()
 $mutated.android = $sources.android.Replace('openssl pkeyutl -verify', 'true # signature bypass')
 Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'Android server validation'
 $mutated = $sources.Clone()
@@ -147,6 +161,9 @@ Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'arbitrary command'
 $mutated = $sources.Clone()
 $mutated.caddy = $sources.caddy.Replace('profile shortlived', 'tls internal')
 Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'automatic trusted IP certificate'
+$mutated = $sources.Clone()
+$mutated.caddy = $sources.caddy.Replace('public, max-age=31536000, immutable', 'public, max-age=0')
+Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'cache fingerprinted Web assets immutably'
 $mutated = $sources.Clone()
 $mutated.bootstrap = $sources.bootstrap.Replace('for attempt in {1..90}', 'for attempt in {1..1}')
 Assert-Throws { Test-ChimeraReleaseHelperContract $mutated } 'ACME certificate readiness'

@@ -1,0 +1,95 @@
+name: Chimera Independent External Monitor
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: chimera-external-monitor
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  public-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted monitor
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Run public TLS endpoint WebSocket and APK checks
+        run: node scripts/chimera/external-monitor.mjs https://103.250.173.136
+
+  disk-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: production-monitor
+    permissions:
+      contents: read
+    steps:
+      - name: Read only aggregate disk health through forced command
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.CHIMERA_STATUS_MONITOR_SSH_KEY }}
+          SSH_HOST_KEY: ${{ secrets.CHIMERA_STATUS_MONITOR_HOST_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh-keygen -F 103.250.173.136 -f ~/.ssh/known_hosts >/dev/null
+          RESULT=$(ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" chimera-status-monitor@103.250.173.136 status-server)
+          test "$RESULT" = ok
+
+  upsert-failure:
+    needs: [public-probe, disk-probe]
+    if: ${{ always() && (needs.public-probe.result == 'failure' || needs.disk-probe.result == 'failure') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Upsert one operational alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE='[ops] Chimera external monitor is failing'
+          BODY=$(printf 'The independent six-hour production probe failed.\n\nRun: %s\n\nCheck TLS expiry, IP SAN, public routes, WebSocket polling, APK delivery, and the restricted disk status probe.' "$RUN_URL")
+          NUMBER=$(gh issue list --repo "$GH_REPO" --state open --search "$TITLE in:title" --json number,title | jq -r --arg title "$TITLE" '[.[] | select(.title == $title)] | if length <= 1 then .[0].number // empty else error("duplicate exact monitor issues") end')
+          if [[ "$NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            gh issue comment "$NUMBER" --repo "$GH_REPO" --body "$BODY"
+          else
+            gh issue create --repo "$GH_REPO" --title "$TITLE" --body "$BODY"
+          fi
+
+  close-recovered:
+    needs: [public-probe, disk-probe]
+    if: ${{ always() && needs.public-probe.result == 'success' && needs.disk-probe.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Close the exact recovered operational alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE='[ops] Chimera external monitor is failing'
+          NUMBER=$(gh issue list --repo "$GH_REPO" --state open --search "$TITLE in:title" --json number,title | jq -r --arg title "$TITLE" '[.[] | select(.title == $title)] | if length <= 1 then .[0].number // empty else error("duplicate exact monitor issues") end')
+          if [[ "$NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            gh issue close "$NUMBER" --repo "$GH_REPO" --reason completed --comment "The independent production probes recovered. Run: $RUN_URL"
+          fi

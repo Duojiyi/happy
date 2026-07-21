@@ -17,8 +17,12 @@ const RULES = [
   ['push-integration', /\b(?:expo-notifications|registerForPush|pushRegistration|apiPush)\b/i],
   ['telemetry-or-purchases', /\b(?:new\s+PostHog|PostHog\.init|tracking\.(?:capture|identify)|RevenueCat\.configure|Purchases\.configure|configurePurchases)\b/i],
   ['removed-settings-or-route', /\bid\s*:\s*['"`](?:voice|connected-accounts|changelog|about|server)['"`]|(?:router\.(?:push|navigate|replace)|href)\s*=?\s*\(?\s*['"`]\/(?:settings\/(?:voice|connect(?:\/[^'"`]+)?)|dev\/purchases|changelog)/],
+  ['legacy-visible-branding', /logo-black\.png|\bOpen Happy\b|t\(\s*['"`]sidebar\.sessionsTitle['"`]\s*\)/],
+  ['disabled-integration-ui', /settings(?:Features|Account)\.(?:disableAnalytics|analytics(?:Disabled|Enabled)?)/],
 ];
-const BUNDLE_RULES = RULES.filter(([rule]) => !['server-selector', 'removed-settings-or-route'].includes(rule));
+const BUNDLE_RULES = RULES.filter(([rule]) => ![
+  'server-selector', 'removed-settings-or-route', 'legacy-visible-branding', 'disabled-integration-ui',
+].includes(rule));
 
 // These legacy modules are intentionally retained for upstream mergeability but are
 // unreachable from the Chimera route graph. Tests and fixtures are excluded below.
