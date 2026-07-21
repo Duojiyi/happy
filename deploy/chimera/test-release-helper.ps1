@@ -63,6 +63,10 @@ function Test-ChimeraReleaseHelperContract([hashtable]$Sources) {
         Assert-Match $web $pattern "Web activation missing: $pattern"
     }
     Assert-Match $web 'install -m 0600 "\$source" "\$frozen"[\s\S]*chimera-validate-web-archive "\$frozen"' 'Web must validate root-frozen bytes, not mutable staging'
+    Assert-Match $web 'previous" == "\$bootstrap"[\s\S]*! -L "\$bootstrap"[\s\S]*stat -c.*%u:%a.*0:755' 'First Web activation must trust only the fixed root-owned bootstrap directory'
+    Assert-Match $web 'else[\s\S]*previous" == "\$releases/"\*[\s\S]*-d "\$previous"' 'Subsequent Web activations must keep previous inside immutable releases'
+    Assert-Match $web 'if \[\[ -e "\$target" \|\| -L "\$target"[\s\S]*previous" == "\$bootstrap"[\s\S]*stat -c.*%u:%a.*target.*0:755[\s\S]*rm -rf --one-file-system -- "\$target"' 'Only a root-owned stale first-activation target may be removed for retry'
+    Assert-Match $web 'previous=[\s\S]*install -m 0600 "\$source"' 'Previous target validation must happen before archive extraction creates a release target'
     Assert-Match $web 'else[\s\S]*rm -f -- "\$ROOT/web/current"[\s\S]*rm -rf --one-file-system -- "\$target"' 'first Web activation health failure must remove failed current/target'
     foreach ($pattern in @('member\.issym\(\)', 'member\.islnk\(\)', 'normalized in seen', 'path\.is_absolute\(\)')) {
         Assert-Match $Sources.web_validator $pattern "Web archive validation missing: $pattern"
