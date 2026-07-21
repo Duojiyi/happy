@@ -165,7 +165,7 @@ if (!source) {
     const runtimeSmoke = allSteps(releaseBuild).find((step) => step.name === 'Run the exact distroless server archive');
     assert.ok(runtimeSmoke, 'server release must run the exact OCI archive before scanning and attestation');
     for (const pattern of [
-      /docker load --input dist\/server-image\.tar/,
+      /skopeo copy oci-archive:dist\/server-image\.tar docker-daemon:chimera-server:candidate/,
       /Config\.User.*65532/,
       /dist\/standalone\.mjs migrate/,
       /dist\/standalone\.mjs serve/,
