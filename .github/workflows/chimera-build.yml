@@ -1,23 +1,7 @@
 name: Chimera Secretless Build
 
 on:
-  pull_request:
-    paths:
-      - 'brand/chimera/**'
-      - 'packages/happy-app/**'
-      - 'packages/happy-server/**'
-      - 'packages/happy-wire/**'
-      - 'scripts/**'
-      - 'patches/**'
-      - '.npmrc'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'package.json'
-      - '.github/workflows/chimera-build.yml'
-      - '.github/workflows/chimera-audit-maintainability.yml'
-      - '.github/workflows/chimera-server-release.yml'
-      - 'Dockerfile'
-      - 'Dockerfile.server'
+  pull_request: {}
   push:
     branches: [main]
     paths:

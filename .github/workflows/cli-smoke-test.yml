@@ -13,14 +13,6 @@ on:
       - '.github/workflows/cli-smoke-test.yml'
   pull_request:
     branches: [ main ]
-    paths:
-      - 'packages/happy-cli/**'
-      - 'packages/happy-server/**'
-      - 'Dockerfile'
-      - 'Dockerfile.server'
-      - '.github/workflows/chimera-audit-maintainability.yml'
-      - '.github/workflows/chimera-server-release.yml'
-      - '.github/workflows/cli-smoke-test.yml'
   workflow_dispatch:
 
 jobs:

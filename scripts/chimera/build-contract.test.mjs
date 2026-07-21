@@ -50,12 +50,11 @@ export function validateBuildWorkflow(workflow) {
   assert.ok(workflow && typeof workflow === 'object', 'workflow must be an object');
   const triggers = workflow.on ?? workflow.true;
   assert.ok(triggers?.pull_request, 'pull_request trigger is required');
+  assert.equal(triggers.pull_request.paths, undefined, 'required pull_request checks must not use path filters');
   assert.ok(triggers?.push?.branches?.includes('main'), 'main push trigger is required');
   assert.ok(triggers?.workflow_dispatch !== undefined, 'manual dispatch trigger is required');
-  for (const trigger of ['pull_request', 'push']) {
-    for (const requiredPath of ['.npmrc', 'pnpm-workspace.yaml', 'patches/**', 'packages/happy-server/**']) {
-      assert.ok(triggers?.[trigger]?.paths?.includes(requiredPath), `${trigger} paths must include ${requiredPath}`);
-    }
+  for (const requiredPath of ['.npmrc', 'pnpm-workspace.yaml', 'patches/**', 'packages/happy-server/**']) {
+    assert.ok(triggers?.push?.paths?.includes(requiredPath), `push paths must include ${requiredPath}`);
   }
 
   const jobs = workflow.jobs;
@@ -189,35 +188,32 @@ if (!source) {
   test('release toolchain changes trigger client evidence and manual typecheck remains available', () => {
     const workflow = parse(source);
     const triggers = workflow.on ?? workflow.true;
-    for (const trigger of ['pull_request', 'push']) {
-      for (const requiredPath of [
+    assert.equal(triggers.pull_request.paths, undefined, 'required client evidence must run for every pull request');
+    for (const requiredPath of [
         'packages/happy-server/**',
         '.github/workflows/chimera-audit-maintainability.yml',
         '.github/workflows/chimera-server-release.yml',
         'Dockerfile',
         'Dockerfile.server',
-      ]) assert.ok(triggers?.[trigger]?.paths?.includes(requiredPath), `${trigger} paths must include ${requiredPath}`);
-    }
+      ]) assert.ok(triggers?.push?.paths?.includes(requiredPath), `push paths must include ${requiredPath}`);
     assert.ok(typecheckSource, `missing ${path.relative(root, typecheckWorkflowPath)}`);
     const typecheck = parse(typecheckSource);
     assert.ok((typecheck.on ?? typecheck.true)?.workflow_dispatch !== undefined, 'typecheck manual dispatch is required');
     const typecheckTriggers = typecheck.on ?? typecheck.true;
-    for (const trigger of ['pull_request', 'push']) {
-      for (const requiredPath of ['Dockerfile', 'Dockerfile.server', 'scripts/chimera/**', '.github/workflows/chimera-*.yml']) {
-        assert.ok(typecheckTriggers?.[trigger]?.paths?.includes(requiredPath), `typecheck ${trigger} paths must include ${requiredPath}`);
-      }
+    assert.equal(typecheckTriggers.pull_request.paths, undefined, 'required typecheck must run for every pull request');
+    for (const requiredPath of ['Dockerfile', 'Dockerfile.server', 'scripts/chimera/**', '.github/workflows/chimera-*.yml']) {
+      assert.ok(typecheckTriggers?.push?.paths?.includes(requiredPath), `typecheck push paths must include ${requiredPath}`);
     }
     assert.ok(cliSmokeSource, `missing ${path.relative(root, cliSmokeWorkflowPath)}`);
     const cliSmoke = parse(cliSmokeSource);
     const cliTriggers = cliSmoke.on ?? cliSmoke.true;
-    for (const trigger of ['pull_request', 'push']) {
-      for (const requiredPath of [
+    assert.equal(cliTriggers.pull_request.paths, undefined, 'required CLI smoke must run for every pull request');
+    for (const requiredPath of [
         '.github/workflows/chimera-audit-maintainability.yml',
         '.github/workflows/chimera-server-release.yml',
         'Dockerfile',
         'Dockerfile.server',
-      ]) assert.ok(cliTriggers?.[trigger]?.paths?.includes(requiredPath), `CLI ${trigger} paths must include ${requiredPath}`);
-    }
+      ]) assert.ok(cliTriggers?.push?.paths?.includes(requiredPath), `CLI push paths must include ${requiredPath}`);
   });
 
   test('Chimera build workflow satisfies secretless artifact contract', () => {
