@@ -316,8 +316,6 @@ jobs:
             .buildRunId == $run and .imageDigest == $imageDigest and .imageArchiveSha256 == $archive and .sbomSha256 == $sbom
           ' publish/server-release-input.json
           gh attestation verify publish/server-image.tar --repo '${{ github.repository }}' \
-            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
-            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
             --signer-repo '${{ github.repository }}' \
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
             --signer-digest "$TRUSTED_WORKFLOW_SHA" \
@@ -335,8 +333,6 @@ jobs:
           for PREDICATE in 'https://slsa.dev/provenance/v1' 'https://spdx.dev/Document/v2.3'; do
             gh attestation verify /tmp/oci-manifest.json --repo '${{ github.repository }}' \
               --bundle /tmp/oci-attestations.jsonl --predicate-type "$PREDICATE" \
-              --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
-              --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
               --signer-repo '${{ github.repository }}' \
               --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
               --signer-digest "$TRUSTED_WORKFLOW_SHA" \
@@ -423,8 +419,6 @@ jobs:
           ' deploy-input/server-release-input.json
           gh attestation verify deploy-input/server-image.tar --repo '${{ github.repository }}' \
             --predicate-type 'https://slsa.dev/provenance/v1' \
-            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
-            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
             --signer-repo '${{ github.repository }}' \
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
             --signer-digest "$TRUSTED_WORKFLOW_SHA" \
@@ -436,8 +430,6 @@ jobs:
           gh attestation verify deploy-input/server-image.tar --repo '${{ github.repository }}' \
             --bundle deploy-input/server-archive-attestation.jsonl \
             --predicate-type 'https://slsa.dev/provenance/v1' \
-            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
-            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
             --signer-repo '${{ github.repository }}' \
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
             --signer-digest "$TRUSTED_WORKFLOW_SHA" \
@@ -445,8 +437,6 @@ jobs:
             --deny-self-hosted-runners
           for PREDICATE in 'https://slsa.dev/provenance/v1' 'https://spdx.dev/Document/v2.3'; do
             gh attestation verify "$IMAGE_REF" --repo '${{ github.repository }}' --predicate-type "$PREDICATE" \
-              --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-server-release.yml@refs/heads/main' \
-              --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
               --signer-repo '${{ github.repository }}' \
               --signer-workflow '${{ github.repository }}/.github/workflows/chimera-server-release.yml' \
               --signer-digest "$TRUSTED_WORKFLOW_SHA" \
@@ -481,8 +471,6 @@ jobs:
             REPORT="$REPORT_DIR/content/$REPORT_NAME"
             jq -e --arg sha "$REVIEWED_SHA" --arg base "$EXPECTED_BASE_SHA" --arg diff "$EXPECTED_DIFF_SHA256" --arg check "$NAME" --arg auditor "$AUDITOR_ID" '.reviewedSha == $sha and .baseSha == $base and .diffSha256 == $diff and .checkName == $check and .auditorId == $auditor and .resolution == "PASS" and .findings == []' "$REPORT"
             gh attestation verify "$REPORT" --repo '${{ github.repository }}' \
-              --cert-identity "https://github.com/${{ github.repository }}/$EXPECTED_PATH@refs/heads/main" \
-              --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
               --signer-repo '${{ github.repository }}' --signer-workflow "${{ github.repository }}/$EXPECTED_PATH" \
               --signer-digest "$REVIEWED_SHA" --source-digest "$REVIEWED_SHA" --source-ref 'refs/heads/main' \
               --deny-self-hosted-runners

@@ -180,8 +180,6 @@ jobs:
             REPORT="$REPORT_DIR/content/$REPORT_NAME"
             jq -e --arg sha "$SHA" --arg base "$EXPECTED_BASE_SHA" --arg diff "$EXPECTED_DIFF_SHA256" --arg check "$NAME" --arg auditor "$AUDITOR_ID" '.reviewedSha == $sha and .baseSha == $base and .diffSha256 == $diff and .checkName == $check and .auditorId == $auditor and .resolution == "PASS" and .findings == []' "$REPORT"
             gh attestation verify "$REPORT" --repo "$REPO" \
-              --cert-identity "https://github.com/$REPO/$EXPECTED_PATH@refs/heads/main" \
-              --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
               --signer-repo "$REPO" --signer-workflow "$REPO/$EXPECTED_PATH" \
               --signer-digest "$SHA" --source-digest "$SHA" --source-ref 'refs/heads/main' \
               --deny-self-hosted-runners
@@ -239,8 +237,6 @@ jobs:
             .sha256 == $digest and .size == ($size | tonumber) and (.versionCode | type) == "number"
           ' "$INPUT"
           gh attestation verify "$APK" --repo '${{ github.repository }}' \
-            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-build.yml@refs/heads/main' \
-            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
             --signer-repo '${{ github.repository }}' \
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-build.yml' \
             --signer-digest "$TRUSTED_BUILD_WORKFLOW_SHA" \
@@ -252,8 +248,6 @@ jobs:
           WEB_SHA=$(sha256sum "$WEB" | cut -d ' ' -f 1)
           jq -e --arg sha "$REVIEWED_SHA" --arg run "$BUILD_RUN_ID" --arg digest "$WEB_SHA" '.commitSha == $sha and .buildRunId == $run and .sha256 == $digest and .artifactKind == "web-archive"' "$WEB_INPUT"
           gh attestation verify "$WEB" --repo '${{ github.repository }}' \
-            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-build.yml@refs/heads/main' \
-            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
             --signer-repo '${{ github.repository }}' \
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-build.yml' \
             --signer-digest "$TRUSTED_BUILD_WORKFLOW_SHA" \
@@ -553,8 +547,6 @@ jobs:
           jq -e --arg sha "$REVIEWED_SHA" --arg run "$BUILD_RUN_ID" --arg digest "$WEB_SHA" '.commitSha == $sha and .buildRunId == $run and .sha256 == $digest and .artifactKind == "web-archive"' publish/web/release-input.json
           for FILE in publish/signed/Chimera.apk publish/signed/chimera-update.json; do
             gh attestation verify "$FILE" --repo '${{ github.repository }}' \
-              --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-release.yml@refs/heads/main' \
-              --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
               --signer-repo '${{ github.repository }}' \
               --signer-workflow '${{ github.repository }}/.github/workflows/chimera-release.yml' \
               --signer-digest "$REVIEWED_SHA" \
@@ -562,8 +554,6 @@ jobs:
               --deny-self-hosted-runners
           done
           gh attestation verify publish/web/Chimera-web.tar.gz --repo '${{ github.repository }}' \
-            --cert-identity 'https://github.com/${{ github.repository }}/.github/workflows/chimera-build.yml@refs/heads/main' \
-            --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
             --signer-repo '${{ github.repository }}' \
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-build.yml' \
             --signer-digest "$TRUSTED_BUILD_WORKFLOW_SHA" \
