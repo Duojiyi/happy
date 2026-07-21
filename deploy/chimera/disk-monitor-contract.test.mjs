@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 
 const root = new URL('./', import.meta.url);
 const [script, status, forcedServer, forcedStatus, sudoers, service, timer, installer, bootstrap] = await Promise.all([
@@ -41,6 +42,11 @@ test('forced SSH status exposes only aggregate health', () => {
   assert.match(status, /timedelta\(hours=8\)/);
   assert.match(status, /print\('ok'\)/);
   assert.doesNotMatch(status, /print\(data|json\.dumps/);
+});
+
+test('one-time production bootstrap installer is directly executable', () => {
+  const mode = execFileSync('git', ['ls-files', '-s', 'deploy/chimera/install-monitoring.sh'], { encoding: 'utf8' });
+  assert.match(mode, /^100755\s/, 'bootstrap installer must be directly executable');
 });
 
 test('one-time production bootstrap validates host policy before activation', () => {
