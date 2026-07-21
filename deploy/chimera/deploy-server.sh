@@ -97,7 +97,20 @@ PY
   required_system_free=$(( archive_bytes * 2 + unpacked_bytes + MIN_SYSTEM_FREE_BYTES ))
   (( system_free > required_system_free )) || die
   [[ ! -e "$incoming" ]] || die
+  python3 - "$source_archive" "$source_metadata" "$source_attestation" "$STAGING_ROOT" <<'PY' || exit 1
+import pathlib,sys
+root=pathlib.Path(sys.argv[4]).resolve(strict=True)
+for raw in sys.argv[1:4]:
+    item=pathlib.Path(raw)
+    if item.is_symlink() or item.resolve(strict=True).parent != root: raise SystemExit(1)
+PY
   if [[ -d "$accepted" && -f "$accepted/server-release-input.json" ]]; then
+    [[ ! -L "$accepted" && -f "$accepted/server-image.oci" && ! -L "$accepted/server-image.oci" && \
+       ! -L "$accepted/server-release-input.json" && -f "$accepted/server-archive-attestation.jsonl" && \
+       ! -L "$accepted/server-archive-attestation.jsonl" ]] || die
+    cmp -- "$source_archive" "$accepted/server-image.oci"
+    cmp -- "$source_metadata" "$accepted/server-release-input.json"
+    cmp -- "$source_attestation" "$accepted/server-archive-attestation.jsonl"
     python3 - "$accepted/server-release-input.json" "$id" "$digest" <<'PY' || exit 1
 import json,pathlib,sys
 m=json.loads(pathlib.Path(sys.argv[1]).read_text("utf-8"))
@@ -121,13 +134,6 @@ PY
     return
   fi
   [[ ! -e "$accepted" ]] || die
-  python3 - "$source_archive" "$source_metadata" "$source_attestation" "$STAGING_ROOT" <<'PY' || exit 1
-import pathlib,sys
-root=pathlib.Path(sys.argv[4]).resolve(strict=True)
-for raw in sys.argv[1:4]:
-    item=pathlib.Path(raw)
-    if item.is_symlink() or item.resolve(strict=True).parent != root: raise SystemExit(1)
-PY
   install -d -m 0750 "$incoming"
   install -m 0600 "$source_archive" "$incoming/server-image.oci"
   install -m 0600 "$source_metadata" "$incoming/server-release-input.json"
@@ -331,10 +337,25 @@ promote_candidate() {
   CHIMERA_IMAGE="chimera-relay:$id" docker compose --file "$COMPOSE_FILE" up -d --remove-orphans
 }
 verify_running_new() {
-  local id="$1"
+  local id="$1" container
   verify_url "$LOCAL_HEALTH_URL"
   container="$(docker compose --file "$COMPOSE_FILE" ps -q relay)"
   [[ -n "$container" && "$(docker inspect --format '{{.Config.Image}}' "$container")" == "chimera-relay:$id" ]]
+}
+verify_running_release() {
+  local id="$1" digest="$2" container tag_id container_id expected_config
+  verify_running_new "$id"
+  container="$(docker compose --file "$COMPOSE_FILE" ps -q relay)"
+  tag_id="$(docker image inspect --format '{{.Id}}' "chimera-relay:$id")"
+  container_id="$(docker inspect --format '{{.Image}}' "$container")"
+  expected_config="$(python3 - "$INPUT_ROOT/$id/server-image.oci" "$digest" <<'PY'
+import json,sys,tarfile
+with tarfile.open(sys.argv[1], "r:*") as bundle:
+    manifest=json.load(bundle.extractfile(f"blobs/sha256/{sys.argv[2].removeprefix('sha256:')}"))
+    print(manifest["config"]["digest"])
+PY
+)"
+  [[ "$expected_config" =~ ^sha256:[a-f0-9]{64}$ && "$tag_id" == "$expected_config" && "$container_id" == "$expected_config" ]]
 }
 remove_candidate_if_present() {
   if docker container inspect "$CANDIDATE_NAME" >/dev/null 2>&1; then
@@ -584,21 +605,22 @@ deploy_server() {
     bootstrap_verified_release "$id" "$digest"
   fi
   old_image="$(current_image)"; old_digest="$(current_digest)"
-  prepare_image "$id" "$digest"
   if [[ "$old_image" == "chimera-relay:$id" ]]; then
     [[ "$old_digest" == "$digest" ]]
-    verify_running_old; verify_public
+    prepare_image "$id" "$digest"
+    verify_running_release "$id" "$digest"; verify_public
     rm -f -- "$STAGING_ROOT/$id.oci.partial" "$STAGING_ROOT/$id.json.partial" "$STAGING_ROOT/$id.attestation.partial"
-    printf 'deployed digest=%s\nrunning digest=%s\n' "$digest" "$(current_digest)"
+    printf 'deployed digest=%s\nrunning digest=%s\n' "$digest" "$digest"
     return
   fi
+  prepare_image "$id" "$digest"
   verify_running_old; verify_public
   trap 'rollback_failed_deploy "$id" "$old_image" "$old_digest"' ERR EXIT
   maintenance_on
   stop_runtime; assert_pglite_closed; check_snapshot_space
   create_snapshot "$id" "$old_image" "$old_digest"; open_test_snapshot "$id" "$old_image"
   migrate_candidate "$id"; start_candidate "$id"; verify_candidate "$id"
-  promote_candidate "$id" "$digest"; verify_running_new "$id"
+  promote_candidate "$id" "$digest"; verify_running_release "$id" "$digest"
   retain_server_artifacts; retain_verified_snapshots 1
   maintenance_off; verify_public
   trap - ERR EXIT

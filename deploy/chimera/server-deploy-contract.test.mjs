@@ -261,10 +261,22 @@ test('bootstrap deploy to rollback state machine permits only its bound legacy i
 
 test('same-SHA deployment retry revalidates immutable inputs and reports only healthy matching state', () => {
   const deploy = body('deploy_server', 'rollback_server');
-  const idempotent = deploy.slice(deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]'), deploy.indexOf('verify_running_old; verify_public', deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]')) + 'verify_running_old; verify_public'.length);
-  assert.ok(deploy.indexOf('prepare_image "$id" "$digest"') < deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]'));
+  const prepare = body('prepare_image', 'reload_proxy');
+  const runningBase = body('verify_running_new', 'verify_running_release');
+  const running = body('verify_running_release', 'remove_candidate_if_present');
+  const idempotent = deploy.slice(deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]'), deploy.indexOf('return', deploy.indexOf('if [[ "$old_image" == "chimera-relay:$id" ]]')) + 'return'.length);
   assert.match(idempotent, /\[\[ "\$old_digest" == "\$digest" \]\]/);
-  assert.match(idempotent, /verify_running_old; verify_public/);
+  assert.ok(idempotent.indexOf('[[ "$old_digest" == "$digest" ]]') < idempotent.indexOf('prepare_image "$id" "$digest"'));
+  assert.match(idempotent, /verify_running_release "\$id" "\$digest"; verify_public/);
+  for (const pair of [
+    ['source_archive', 'server-image.oci'],
+    ['source_metadata', 'server-release-input.json'],
+    ['source_attestation', 'server-archive-attestation.jsonl'],
+  ]) assert.match(prepare, new RegExp(`cmp -- "\\$${pair[0]}" "\\$accepted\\/${pair[1].replace('.', '\\.')}`));
+  assert.match(runningBase, /docker inspect --format '\{\{\.Config\.Image\}\}'/);
+  assert.match(running, /docker inspect --format '\{\{\.Image\}\}'/);
+  assert.match(running, /docker image inspect --format '\{\{\.Id\}\}'/);
+  assert.match(running, /"\$tag_id" == "\$expected_config" && "\$container_id" == "\$expected_config"/);
   assert.match(deploy, /rm -f -- "\$STAGING_ROOT\/\$id\.oci\.partial" "\$STAGING_ROOT\/\$id\.json\.partial" "\$STAGING_ROOT\/\$id\.attestation\.partial"[\s\S]*printf 'deployed digest=%s\\nrunning digest=%s\\n'[\s\S]*return/);
 });
 
