@@ -32,23 +32,25 @@ require_root_owned_file() {
   (( (8#$(stat -c '%a' "$file") & 8#022) == 0 )) || die
 }
 import_verified_image() {
-  local archive="$1" id="$2" expected_digest source_name actual_digest
-  IFS=$'\t' read -r expected_digest source_name < <(python3 - "$archive" <<'PY'
+  local archive="$1" id="$2" release_digest="$3" expected_manifest expected_config source_name actual_digest
+  IFS=$'\t' read -r expected_manifest expected_config source_name < <(python3 - "$archive" <<'PY'
 import json,sys,tarfile
 with tarfile.open(sys.argv[1], "r:*") as bundle:
     index=json.load(bundle.extractfile("index.json"))
     descriptor=index["manifests"][0]
-    print(descriptor["digest"], descriptor.get("annotations", {}).get("io.containerd.image.name", ""), sep="\t")
+    manifest_digest=descriptor["digest"]
+    manifest=json.load(bundle.extractfile(f"blobs/sha256/{manifest_digest.removeprefix('sha256:')}"))
+    print(manifest_digest, manifest["config"]["digest"], descriptor.get("annotations", {}).get("io.containerd.image.name", ""), sep="\t")
 PY
 )
-  [[ "$expected_digest" =~ ^sha256:[a-f0-9]{64}$ && "$source_name" == 'docker.io/library/chimera-server:candidate' ]] || die
+  [[ "$expected_manifest" == "$release_digest" && "$expected_config" =~ ^sha256:[a-f0-9]{64}$ && "$source_name" == 'docker.io/library/chimera-server:candidate' ]] || die
   docker load --input "$archive" >/dev/null
   actual_digest="$(docker image inspect --format '{{.Id}}' 'chimera-server:candidate')"
-  [[ "$actual_digest" == "$expected_digest" ]] || die
+  [[ "$actual_digest" == "$expected_manifest" || "$actual_digest" == "$expected_config" ]] || die
   docker tag 'chimera-server:candidate' "chimera-relay:$id"
   docker image rm 'chimera-server:candidate' >/dev/null
   actual_digest="$(docker image inspect --format '{{.Id}}' "chimera-relay:$id")"
-  if [[ "$actual_digest" != "$expected_digest" ]]; then
+  if [[ "$actual_digest" != "$expected_manifest" && "$actual_digest" != "$expected_config" ]]; then
     docker image rm "chimera-relay:$id" >/dev/null 2>&1 || true
     die
   fi
@@ -103,9 +105,18 @@ if m.get("commitSha") != sys.argv[2] or m.get("imageDigest") != sys.argv[3]: rai
 PY
     if ! docker image inspect "chimera-relay:$id" >/dev/null 2>&1; then
       [[ -f "$accepted/server-image.oci" ]] || die
-      import_verified_image "$accepted/server-image.oci" "$id"
+      import_verified_image "$accepted/server-image.oci" "$id" "$digest"
     else
-      [[ "$(docker image inspect --format '{{.Id}}' "chimera-relay:$id")" == "$digest" ]] || die
+      local cached_id expected_config
+      cached_id="$(docker image inspect --format '{{.Id}}' "chimera-relay:$id")"
+      expected_config="$(python3 - "$accepted/server-image.oci" "$digest" <<'PY'
+import json,sys,tarfile
+with tarfile.open(sys.argv[1], "r:*") as bundle:
+    manifest=json.load(bundle.extractfile(f"blobs/sha256/{sys.argv[2].removeprefix('sha256:')}"))
+    print(manifest["config"]["digest"])
+PY
+)"
+      [[ "$cached_id" == "$digest" || "$cached_id" == "$expected_config" ]] || die
     fi
     return
   fi
@@ -177,7 +188,7 @@ PY
     --deny-self-hosted-runners
   mv -- "$incoming" "$accepted"
   sync -f "$INPUT_ROOT"
-  import_verified_image "$accepted/server-image.oci" "$id"
+  import_verified_image "$accepted/server-image.oci" "$id" "$digest"
   sync -f "$accepted"
 }
 
@@ -215,6 +226,10 @@ verify_url() {
 }
 verify_running_old() { verify_url "$LOCAL_HEALTH_URL"; }
 verify_public() { curl --fail --silent --show-error --max-time 5 "$PUBLIC_HEALTH_URL" >/dev/null; }
+verify_public_ready() {
+  for attempt in {1..90}; do verify_public && return 0; sleep 2; done
+  return 1
+}
 stop_runtime() { docker compose --file "$COMPOSE_FILE" stop relay; }
 assert_pglite_closed() {
   command -v fuser >/dev/null 2>&1 || die
@@ -557,7 +572,7 @@ bootstrap_verified_release() {
   verify_url "$LOCAL_HEALTH_URL"
   container="$(docker compose --file "$COMPOSE_FILE" ps -q relay)"
   [[ -n "$container" && "$(docker inspect --format '{{.Config.Image}}' "$container")" == "chimera-relay:$legacy_id" ]]
-  verify_public
+  verify_public_ready
   write_current_release "chimera-relay:$legacy_id" "$digest"
   mark_oci_retention_ready "$legacy_id"
   trap - ERR EXIT

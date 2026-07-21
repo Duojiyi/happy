@@ -55,11 +55,13 @@ test('server imports only root-frozen OCI bytes bound to commit digest and metad
   const importer = body('import_verified_image', 'prepare_image');
   assert.match(importer, /io\.containerd\.image\.name/);
   assert.match(importer, /docker\.io\/library\/chimera-server:candidate/);
+  assert.match(importer, /manifest\["config"\]\["digest"\]/);
+  assert.match(importer, /expected_manifest" == "\$release_digest"/);
   assert.match(importer, /docker load --input "\$archive"/);
   assert.match(importer, /docker image inspect --format '\{\{\.Id\}\}'/);
-  assert.match(importer, /actual_digest" != "\$expected_digest"/);
+  assert.match(importer, /actual_digest" == "\$expected_manifest" \|\| "\$actual_digest" == "\$expected_config"/);
   assert.doesNotMatch(importer, /skopeo|--preserve-digests/);
-  assert.match(source, /docker image inspect --format '\{\{\.Id\}\}' "chimera-relay:\$id"\)" == "\$digest"/);
+  assert.match(source, /cached_id" == "\$digest" \|\| "\$cached_id" == "\$expected_config"/);
   assert.match(source, /require_root_owned_file "\$COMPOSE_FILE"/);
 });
 
@@ -99,7 +101,8 @@ test('fresh host bootstraps rollback state from the verified OCI image before no
   assert.match(initial, /legacy_id=.*chimera-bootstrap/);
   assert.match(initial, /docker tag "chimera-relay:\$id" "chimera-relay:\$legacy_id"/);
   assert.ok(initial.indexOf('verify_candidate') < initial.indexOf('docker compose --file "$COMPOSE_FILE" up'));
-  assert.ok(initial.indexOf('verify_public') < initial.indexOf('write_current_release'));
+  assert.ok(initial.indexOf('verify_public_ready') < initial.indexOf('write_current_release'));
+  assert.match(body('verify_public_ready', 'stop_runtime'), /for attempt in \{1\.\.90\}[\s\S]*sleep 2/);
   assert.ok(initial.indexOf('write_current_release') < initial.indexOf('mark_oci_retention_ready'));
   assert.doesNotMatch(initial, /maintenance_on|create_snapshot|old_image/);
   assert.match(deploy, /! -e "\$STATE_ROOT\/current-image"[\s\S]*! -e "\$STATE_ROOT\/current-digest"[\s\S]*bootstrap_verified_release/);
