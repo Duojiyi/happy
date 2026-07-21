@@ -4,34 +4,124 @@ on:
   pull_request: {}
   push:
     branches: [main]
-    paths:
-      - 'brand/chimera/**'
-      - 'packages/happy-app/**'
-      - 'packages/happy-server/**'
-      - 'packages/happy-wire/**'
-      - 'scripts/**'
-      - 'patches/**'
-      - '.npmrc'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'package.json'
-      - '.github/workflows/chimera-build.yml'
-      - '.github/workflows/chimera-audit-maintainability.yml'
-      - '.github/workflows/chimera-server-release.yml'
-      - 'Dockerfile'
-      - 'Dockerfile.server'
   workflow_dispatch:
 
 concurrency:
-  group: chimera-build-${{ github.event.pull_request.number || github.ref }}
+  group: chimera-build-${{ github.event_name == 'push' && github.sha || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  push-baseline:
+    name: Resolve last successful main build
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      sha: ${{ steps.baseline.outputs.sha }}
+    steps:
+      - name: Resolve successful workflow baseline
+        id: baseline
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BASELINE_SHA=$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/$GH_REPO/actions/workflows/chimera-build.yml/runs?branch=main&event=push&status=success&per_page=100" \
+            --jq '.workflow_runs[0].head_sha // ""' 2>/dev/null || true)
+          if [[ ! "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            BASELINE_SHA=''
+          fi
+          echo "sha=$BASELINE_SHA" >> "$GITHUB_OUTPUT"
+
+  classify:
+    name: Classify client build requirement
+    needs: push-baseline
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      client-required: ${{ steps.paths.outputs.client-required }}
+    steps:
+      - name: Checkout candidate history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Classify changed paths
+        id: paths
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASELINE_RESULT: ${{ needs.push-baseline.result }}
+          PUSH_BASELINE_SHA: ${{ needs.push-baseline.outputs.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo 'client-required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE_SHA="$PR_BASE_SHA"
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            BASE_SHA="$PUSH_BASELINE_SHA"
+          fi
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] ||
+             ! git cat-file -e "$BASE_SHA^{commit}" || ! git cat-file -e "$HEAD_SHA^{commit}" ||
+             ! git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA"; then
+            echo 'Unable to establish a trustworthy diff; requiring client builds' >&2
+            echo 'client-required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$EVENT_NAME" == "push" && "$PUSH_BASELINE_RESULT" != "success" ]]; then
+            echo 'Unable to resolve the last successful main build; requiring client builds' >&2
+            echo 'client-required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DIFF_RANGE="$BASE_SHA..$HEAD_SHA"
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            DIFF_RANGE="$BASE_SHA...$HEAD_SHA"
+          fi
+          CHANGED_PATHS=$(mktemp)
+          trap 'rm -f "$CHANGED_PATHS"' EXIT
+          if ! git diff --no-renames --name-only -z "$DIFF_RANGE" > "$CHANGED_PATHS"; then
+            echo 'Unable to calculate a trustworthy diff; requiring client builds' >&2
+            echo 'client-required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CLIENT_REQUIRED=false
+          while IFS= read -r -d '' CHANGED_PATH; do
+            case "$CHANGED_PATH" in
+              .github/workflows/chimera-build.yml|scripts/generate-chimera-brand.mjs)
+                CLIENT_REQUIRED=true
+                break
+                ;;
+              deploy/chimera/*|packages/happy-server/*|Dockerfile|Dockerfile.server|.github/workflows/chimera-release.yml|.github/workflows/chimera-server-release.yml|.github/workflows/chimera-audit-maintainability.yml|.github/workflows/cli-smoke-test.yml|.github/workflows/typecheck.yml|scripts/chimera/*.test.mjs)
+                ;;
+              *)
+                CLIENT_REQUIRED=true
+                break
+                ;;
+            esac
+          done < "$CHANGED_PATHS"
+          echo "client-required=$CLIENT_REQUIRED" >> "$GITHUB_OUTPUT"
+
   android:
     name: Build unsigned Android APK
+    needs: classify
+    if: ${{ needs.classify.outputs.client-required == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -60,6 +150,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
@@ -144,6 +235,8 @@ jobs:
 
   web:
     name: Build immutable Web archive
+    needs: classify
+    if: ${{ needs.classify.outputs.client-required == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -210,8 +303,8 @@ jobs:
 
   provenance:
     name: Attest unsigned artifacts
-    needs: [android, web]
-    if: ${{ needs.android.result == 'success' && needs.web.result == 'success' }}
+    needs: [classify, android, web]
+    if: ${{ needs.classify.outputs.client-required == 'true' && needs.android.result == 'success' && needs.web.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -259,3 +352,40 @@ jobs:
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with:
           subject-path: provenance/web/Chimera-web.tar.gz
+
+  client-build-policy:
+    name: client-build-policy
+    needs: [classify, android, web, provenance]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Enforce client build policy
+        shell: bash
+        env:
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CLIENT_REQUIRED: ${{ needs.classify.outputs.client-required }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+          WEB_RESULT: ${{ needs.web.result }}
+          PROVENANCE_RESULT: ${{ needs.provenance.result }}
+        run: |
+          set -euo pipefail
+          test "$CLASSIFY_RESULT" = success
+          case "$CLIENT_REQUIRED" in
+            true)
+              test "$ANDROID_RESULT" = success
+              test "$WEB_RESULT" = success
+              test "$PROVENANCE_RESULT" = success
+              ;;
+            false)
+              test "$ANDROID_RESULT" = skipped
+              test "$WEB_RESULT" = skipped
+              test "$PROVENANCE_RESULT" = skipped
+              ;;
+            *)
+              echo "Invalid client-required classification: $CLIENT_REQUIRED" >&2
+              exit 1
+              ;;
+          esac

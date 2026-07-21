@@ -52,13 +52,51 @@ export function validateBuildWorkflow(workflow) {
   assert.ok(triggers?.pull_request, 'pull_request trigger is required');
   assert.equal(triggers.pull_request.paths, undefined, 'required pull_request checks must not use path filters');
   assert.ok(triggers?.push?.branches?.includes('main'), 'main push trigger is required');
+  assert.equal(triggers.push.paths, undefined, 'main pushes must always reach the fail-closed classifier');
   assert.ok(triggers?.workflow_dispatch !== undefined, 'manual dispatch trigger is required');
-  for (const requiredPath of ['.npmrc', 'pnpm-workspace.yaml', 'patches/**', 'packages/happy-server/**']) {
-    assert.ok(triggers?.push?.paths?.includes(requiredPath), `push paths must include ${requiredPath}`);
-  }
+  assert.match(workflow.concurrency?.group ?? '', /github\.event_name == 'push' && github\.sha/, 'main push builds must use per-commit concurrency and cannot cancel earlier client evidence');
+  assert.match(workflow.concurrency?.group ?? '', /github\.event\.pull_request\.number/, 'pull request updates must share a cancellable concurrency group');
+  assert.equal(workflow.concurrency?.['cancel-in-progress'], true, 'superseded pull request builds must be cancellable');
 
   const jobs = workflow.jobs;
   assert.ok(jobs, 'jobs are required');
+  const pushBaseline = jobs['push-baseline'];
+  assert.ok(pushBaseline, 'successful main build baseline resolver is required');
+  assert.match(pushBaseline.if ?? '', /github\.event_name == 'push'/, 'baseline resolver must run only for trusted main pushes');
+  assert.deepEqual(pushBaseline.permissions, { actions: 'read', contents: 'read' }, 'baseline resolver permissions must be read-only');
+  assertNoCandidateCredentials(pushBaseline, 'push-baseline');
+  assert.match(runText(pushBaseline), /actions\/workflows\/chimera-build\.yml\/runs\?branch=main&event=push&status=success/, 'baseline must come from successful main push runs of this workflow');
+  assert.equal(pushBaseline.outputs?.sha, '${{ steps.baseline.outputs.sha }}', 'baseline SHA must come from the resolver step');
+  const classify = jobs.classify;
+  assert.ok(classify, 'client path classifier is required');
+  assert.deepEqual(classify.permissions, { contents: 'read' }, 'classifier permissions must be read-only');
+  assertNoCandidateCredentials(classify, 'classify');
+  assert.equal(classify.needs, 'push-baseline', 'classifier must observe baseline resolution');
+  assert.match(classify.if ?? '', /always\(\)/, 'classifier must still run when baseline resolution fails or skips');
+  assert.equal(classify.outputs?.['client-required'], '${{ steps.paths.outputs.client-required }}', 'classifier output must come from the path step');
+  const classifyCheckout = allSteps(classify).find((step) => step.uses?.startsWith('actions/checkout@'));
+  assert.equal(classifyCheckout?.with?.['persist-credentials'], false, 'classifier checkout must not persist credentials');
+  assert.equal(classifyCheckout?.with?.['fetch-depth'], 0, 'classifier must fetch history for trustworthy diffs');
+  const classifyText = runText(classify);
+  for (const requiredPath of ['.github/workflows/chimera-build.yml', 'scripts/generate-chimera-brand.mjs']) {
+    assert.ok(classifyText.includes(requiredPath), `classifier must include client input ${requiredPath}`);
+  }
+  assert.match(classifyText, /\.github\/workflows\/chimera-build\.yml\|scripts\/generate-chimera-brand\.mjs\)\s+CLIENT_REQUIRED=true/, 'build workflow and brand generator changes must require client builds');
+  for (const skippablePath of ['deploy/chimera/*', 'packages/happy-server/*', 'Dockerfile', 'Dockerfile.server', '.github/workflows/chimera-release.yml', '.github/workflows/chimera-server-release.yml', '.github/workflows/chimera-audit-maintainability.yml', '.github/workflows/cli-smoke-test.yml', '.github/workflows/typecheck.yml', 'scripts/chimera/*.test.mjs']) {
+    assert.ok(classifyText.includes(skippablePath), `classifier must explicitly allow ${skippablePath} to skip`);
+  }
+  assert.match(classifyText, /\*\)\s+CLIENT_REQUIRED=true/, 'unknown paths must require client builds');
+  assert.match(classifyText, /git cat-file -e/, 'classifier must verify diff commits exist');
+  assert.match(classifyText, /git merge-base --is-ancestor/, 'push baseline must be an ancestor of the current main commit');
+  assert.match(classifyText, /PUSH_BASELINE_RESULT["']? != ["']success["'][\s\S]*?client-required=true/, 'baseline lookup failure must require client builds');
+  assert.match(classifyText, /Unable to establish a trustworthy diff; requiring client builds/, 'classifier must fail closed when the diff is unavailable');
+  assert.match(classifyText, /git diff --no-renames/, 'classifier must expose both sides of client path renames');
+  assert.match(classifyText, /if ! git diff[\s\S]*?client-required=true/, 'diff command failures must require client builds');
+  assert.doesNotMatch(classifyText, /done\s*<\s*<\(/, 'classifier must not hide diff failures in process substitution');
+  assert.match(classifyText, /workflow_dispatch[\s\S]*?client-required=true/, 'manual builds must require client artifacts');
+  assert.match(classifyText, /EVENT_NAME["']? == ["']pull_request["'][\s\S]*?BASE_SHA\.\.\.\$HEAD_SHA/, 'pull requests must classify merge-base changes only');
+  assert.match(classifyText, /BASE_SHA\.\.\$HEAD_SHA/, 'pushes must classify the exact before/after range');
+
   assertBuildJob(jobs.android, 'android', [
     /pnpm\s+(?:chimera:brand:check|run\s+chimera:brand:check)/,
     /pnpm\s+(?:chimera:client:test|run\s+chimera:client:test)/,
@@ -70,6 +108,8 @@ export function validateBuildWorkflow(workflow) {
     /(?:aapt2|AAPT2)[\s\S]*?dump\s+badging/i,
     /release-input\.json/,
   ], 'chimera-android-unsigned');
+  assert.equal(jobs.android.needs, 'classify', 'android must wait for path classification');
+  assert.match(jobs.android.if ?? '', /needs\.classify\.outputs\.client-required == 'true'/, 'android must run only when client builds are required');
   assertBuildJob(jobs.web, 'web', [
     /pnpm\s+(?:chimera:brand:check|run\s+chimera:brand:check)/,
     /pnpm\s+(?:chimera:client:test|run\s+chimera:client:test)/,
@@ -77,9 +117,13 @@ export function validateBuildWorkflow(workflow) {
     /expo\s+export\s+--platform\s+web\s+--output-dir\s+\.\.\/\.\.\/dist\/chimera-web-site/,
     /release-input\.json/,
   ], 'chimera-web-unsigned');
+  assert.equal(jobs.web.needs, 'classify', 'web must wait for path classification');
+  assert.match(jobs.web.if ?? '', /needs\.classify\.outputs\.client-required == 'true'/, 'web must run only when client builds are required');
 
   const androidAssemble = allSteps(jobs.android).find((step) => step.name === 'Assemble unsigned release APK');
   assert.ok(androidAssemble, 'android assemble step is required');
+  const setupJava = allSteps(jobs.android).find((step) => step.uses?.startsWith('actions/setup-java@'));
+  assert.equal(setupJava?.with?.cache, 'gradle', 'android builds must reuse the verified Gradle dependency cache');
   assert.equal(androidAssemble.env?.GRADLE_OPTS, '-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dkotlin.daemon.jvm.options=-Xmx2g', 'android Gradle heap must be bounded at 4 GB');
   assert.equal(androidAssemble.env?.JAVA_TOOL_OPTIONS, '-Xmx4g', 'android Java heap must be bounded at 4 GB');
   assert.match(androidAssemble.run ?? '', /--max-workers=2/, 'android Gradle concurrency must be bounded');
@@ -91,7 +135,7 @@ export function validateBuildWorkflow(workflow) {
     'id-token': 'write',
     attestations: 'write',
   }, 'provenance permissions must be minimal and attestation-only');
-  assert.deepEqual(provenance.needs?.slice?.().sort(), ['android', 'web'], 'provenance must wait for both builds');
+  assert.deepEqual(provenance.needs?.slice?.().sort(), ['android', 'classify', 'web'], 'provenance must wait for classification and both builds');
   assert.equal(allSteps(provenance).some((step) => step.uses?.startsWith('actions/checkout@')), false, 'provenance must not checkout candidate source');
   assert.doesNotMatch(runText(provenance), /pnpm\s+install|npm\s+install|node\s+scripts\//, 'provenance must not execute candidate code');
   assert.ok(allSteps(provenance).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), 'provenance must download immutable build artifacts');
@@ -107,6 +151,20 @@ export function validateBuildWorkflow(workflow) {
     'provenance/android/Chimera-unsigned.apk',
     'provenance/web/Chimera-web.tar.gz',
   ], 'attestations must bind the exact files verified above');
+
+  const policy = jobs['client-build-policy'];
+  assert.ok(policy, 'stable client-build-policy job is required');
+  assert.equal(policy.name, 'client-build-policy', 'policy check context must remain stable');
+  assert.deepEqual(policy.permissions, { contents: 'read' }, 'policy permissions must be read-only');
+  assertNoCandidateCredentials(policy, 'client-build-policy');
+  assert.deepEqual(policy.needs?.slice?.().sort(), ['android', 'classify', 'provenance', 'web'], 'policy must observe classification, builds, and provenance');
+  assert.match(policy.if ?? '', /always\(\)/, 'policy must run even when dependencies fail or skip');
+  const policyText = runText(policy);
+  assert.match(policyText, /CLASSIFY_RESULT["']? = success/, 'policy must require successful classification');
+  for (const result of ['ANDROID_RESULT', 'WEB_RESULT', 'PROVENANCE_RESULT']) {
+    assert.match(policyText, new RegExp(`${result}["']? = success`), `policy must require ${result} success for client changes`);
+    assert.match(policyText, new RegExp(`${result}["']? = skipped`), `policy must require ${result} to skip for non-client changes`);
+  }
 
   const steps = Object.values(jobs).flatMap(allSteps);
   for (const step of steps) {
@@ -189,13 +247,7 @@ if (!source) {
     const workflow = parse(source);
     const triggers = workflow.on ?? workflow.true;
     assert.equal(triggers.pull_request.paths, undefined, 'required client evidence must run for every pull request');
-    for (const requiredPath of [
-        'packages/happy-server/**',
-        '.github/workflows/chimera-audit-maintainability.yml',
-        '.github/workflows/chimera-server-release.yml',
-        'Dockerfile',
-        'Dockerfile.server',
-      ]) assert.ok(triggers?.push?.paths?.includes(requiredPath), `push paths must include ${requiredPath}`);
+    assert.equal(triggers.push.paths, undefined, 'every main push must reach client classification');
     assert.ok(typecheckSource, `missing ${path.relative(root, typecheckWorkflowPath)}`);
     const typecheck = parse(typecheckSource);
     assert.ok((typecheck.on ?? typecheck.true)?.workflow_dispatch !== undefined, 'typecheck manual dispatch is required');
@@ -261,8 +313,17 @@ if (!source) {
 
   test('contract rejects missing dependency path inputs', () => {
     const workflow = parse(source);
-    workflow.on.push.paths = workflow.on.push.paths.filter((item) => item !== 'patches/**');
-    assert.throws(() => validateBuildWorkflow(workflow), /push paths must include patches/);
+    workflow.on.push.paths = ['packages/happy-app/**'];
+    assert.throws(() => validateBuildWorkflow(workflow), /main pushes must always reach/);
+  });
+
+  test('contract rejects fail-open path and diff classification', () => {
+    const workflow = parse(source);
+    const classifyStep = workflow.jobs.classify.steps.find((item) => item.id === 'paths');
+    classifyStep.run = classifyStep.run
+      .replace('git diff --no-renames', 'git diff')
+      .replace('*)\n                CLIENT_REQUIRED=true', '*)\n                ;;');
+    assert.throws(() => validateBuildWorkflow(workflow), /unknown paths must require|both sides of client path renames/);
   });
 
   test('contract rejects a package-relative Web output directory', () => {
