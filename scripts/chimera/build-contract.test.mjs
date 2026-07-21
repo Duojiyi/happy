@@ -173,6 +173,13 @@ if (!source) {
       /127\.0\.0\.1:13005\/v1\/chimera\/config/,
       /v1\/account\/profile.*401/,
     ]) assert.match(runtimeSmoke.run ?? '', pattern, `server archive runtime smoke missing ${pattern}`);
+    for (const name of ['CHIMERA_ADMIN_SESSION_SECRET', 'CHIMERA_INVITATION_PEPPER', 'CHIMERA_ACCOUNT_PSEUDONYM_KEY', 'CHIMERA_UPDATE_PUBLIC_KEY']) {
+      const value = (runtimeSmoke.run ?? '').match(new RegExp(`--env ${name}=([A-Za-z0-9_-]+)`))?.[1];
+      assert.ok(value, `server archive runtime smoke missing ${name}`);
+      const decoded = Buffer.from(value, 'base64url');
+      assert.equal(decoded.length, 32, `${name} smoke fixture must decode to 32 bytes`);
+      assert.equal(decoded.toString('base64url'), value, `${name} smoke fixture must be canonical base64url`);
+    }
   });
 
   test('release toolchain changes trigger client evidence and manual typecheck remains available', () => {
