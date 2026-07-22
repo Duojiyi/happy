@@ -927,7 +927,7 @@ jobs:
     needs: [android-mirror, web-production]
     if: ${{ always() && needs.android-mirror.result == 'success' && needs.web-production.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
