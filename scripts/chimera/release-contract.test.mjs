@@ -199,6 +199,8 @@ export function validateClientReleaseWorkflow(workflow) {
   assert.equal(webProduction?.environment, 'web-production');
   assert.deepEqual(webProduction?.permissions, { actions: 'read', attestations: 'read', contents: 'read' });
   assertNoCheckout(webProduction, 'Web production');
+  assert.match(runs(webProduction), /sort \| sed -n '1p'/, 'Web activation must consume the complete representative-asset pipeline under pipefail');
+  assert.doesNotMatch(runs(webProduction), /sort \| head -n 1/, 'Web activation must not terminate the representative-asset pipeline early');
   assertContains(runs(webProduction), [/gh attestation verify/, /StrictHostKeyChecking=yes/, /chimera-web-deploy@103\.250\.173\.136/, /\.chimera-staging\/web/, /activate-web/, /REPRESENTATIVE_ASSET/], 'Web production');
   assert.match(serialized(webProduction), /CHIMERA_WEB_DEPLOY_SSH_KEY/);
   assert.doesNotMatch(serialized(webProduction), /CHIMERA_ANDROID_DEPLOY_SSH_KEY|CHIMERA_ANDROID_KEYSTORE/);

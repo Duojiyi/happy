@@ -802,7 +802,7 @@ jobs:
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-build.yml' \
             --signer-digest "$TRUSTED_BUILD_WORKFLOW_SHA" --source-digest "$REVIEWED_SHA" \
             --source-ref refs/heads/main --deny-self-hosted-runners
-          REPRESENTATIVE_ASSET=$(tar -tzf "$ARCHIVE" | sed 's#^\./##' | grep -E '(^|/)[A-Za-z0-9_.-]*[.-][a-f0-9]{8,}\.(js|css|woff2?|png|webp)$' | sort | head -n 1)
+          REPRESENTATIVE_ASSET=$(tar -tzf "$ARCHIVE" | sed 's#^\./##' | grep -E '(^|/)[A-Za-z0-9_.-]*[.-][a-f0-9]{8,}\.(js|css|woff2?|png|webp)$' | sort | sed -n '1p')
           test -n "$REPRESENTATIVE_ASSET"
           echo "representative-asset=$REPRESENTATIVE_ASSET" >> "$GITHUB_OUTPUT"
           install -d -m 700 ~/.ssh
