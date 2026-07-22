@@ -701,7 +701,7 @@ jobs:
   android-mirror:
     name: Activate immutable Android mirror
     needs: [signing, signed-provenance, publication]
-    if: ${{ needs.publication.result == 'success' }}
+    if: ${{ always() && needs.signing.result == 'success' && ((needs.signing.outputs.no-op == 'true' && needs.signed-provenance.result == 'skipped' && needs.publication.result == 'skipped') || (needs.signing.outputs.no-op != 'true' && needs.signed-provenance.result == 'success' && needs.publication.result == 'success')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: android-mirror
@@ -711,11 +711,43 @@ jobs:
       contents: read
     steps:
       - name: Download exact signed handoff
+        if: ${{ needs.signing.outputs.no-op != 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ needs.signing.outputs.artifact-id }}
           merge-multiple: true
           path: deploy/android
+
+      - name: Recover exact immutable signed handoff
+        if: ${{ needs.signing.outputs.no-op == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.signing.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.signing.outputs.version-name }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+        run: |
+          set -euo pipefail
+          REPO='${{ github.repository }}'
+          TAG="$RELEASE_TAG"
+          VERSION="$RELEASE_VERSION"
+          EXPECTED_BODY="Immutable Chimera Android and Web release for $REVIEWED_SHA"
+          gh api "repos/$REPO/releases/tags/$TAG" > /tmp/recovery-release.json
+          jq -e --arg tag "$TAG" --arg title "Chimera $VERSION" --arg body "$EXPECTED_BODY" '
+            .draft == false and .immutable == true and .author.login == "github-actions[bot]" and
+            .tag_name == $tag and .name == $title and .body == $body and (.assets | length) == 6
+          ' /tmp/recovery-release.json
+          test "$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.sha')" = "$REVIEWED_SHA"
+          printf '%s\n' "Chimera-$VERSION.apk" "Chimera-$VERSION.apk.sha256" "Chimera-$VERSION-web.tar.gz" "Chimera-$VERSION-web.tar.gz.sha256" chimera-update.json release-metadata.json | sort > /tmp/expected-recovery-assets
+          jq -r '.assets[].name' /tmp/recovery-release.json | sort > /tmp/actual-recovery-assets
+          cmp /tmp/expected-recovery-assets /tmp/actual-recovery-assets
+          mkdir -p deploy/android
+          for NAME in "Chimera-$VERSION.apk" "Chimera-$VERSION.apk.sha256" chimera-update.json release-metadata.json; do
+            ASSET_URL=$(jq -er --arg name "$NAME" '.assets[] | select(.name == $name) | .url' /tmp/recovery-release.json)
+            REMOTE_DIGEST=$(jq -er --arg name "$NAME" '.assets[] | select(.name == $name) | .digest' /tmp/recovery-release.json)
+            gh api "$ASSET_URL" -H 'Accept: application/octet-stream' > "deploy/android/$NAME"
+            test "sha256:$(sha256sum "deploy/android/$NAME" | cut -d ' ' -f 1)" = "$REMOTE_DIGEST"
+          done
+          mv "deploy/android/Chimera-$VERSION.apk" deploy/android/Chimera.apk
 
       - name: Reverify and activate through restricted identity
         env:
@@ -723,6 +755,7 @@ jobs:
           REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
           VERSION_CODE: ${{ needs.signing.outputs.version-code }}
           RELEASE_WORKFLOW_SHA: ${{ github.sha }}
+          IMMUTABLE_RECOVERY: ${{ needs.signing.outputs.no-op }}
           SSH_PRIVATE_KEY: ${{ secrets.CHIMERA_ANDROID_DEPLOY_SSH_KEY }}
           SSH_HOST_KEY: ${{ secrets.CHIMERA_DEPLOY_HOST_KEY }}
         run: |
@@ -736,14 +769,14 @@ jobs:
             .payload.commitSha == $sha and .payload.versionCode == $code and .payload.sha256 == $digest and
             .payload.size == ($size | tonumber) and .payload.packageName == "org.chimerahub.chimera"
           ' "$MANIFEST"
-          gh attestation verify "$APK" --repo '${{ github.repository }}' \
+          ATTESTATION_ARGS=(--repo '${{ github.repository }}' \
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-release.yml' \
-            --signer-digest "$RELEASE_WORKFLOW_SHA" --source-digest "$RELEASE_WORKFLOW_SHA" \
-            --source-ref refs/heads/main --deny-self-hosted-runners
-          gh attestation verify "$MANIFEST" --repo '${{ github.repository }}' \
-            --signer-workflow '${{ github.repository }}/.github/workflows/chimera-release.yml' \
-            --signer-digest "$RELEASE_WORKFLOW_SHA" --source-digest "$RELEASE_WORKFLOW_SHA" \
-            --source-ref refs/heads/main --deny-self-hosted-runners
+            --source-ref refs/heads/main --deny-self-hosted-runners)
+          if test "$IMMUTABLE_RECOVERY" != 'true'; then
+            ATTESTATION_ARGS+=(--signer-digest "$RELEASE_WORKFLOW_SHA" --source-digest "$RELEASE_WORKFLOW_SHA")
+          fi
+          gh attestation verify "$APK" "${ATTESTATION_ARGS[@]}"
+          gh attestation verify "$MANIFEST" "${ATTESTATION_ARGS[@]}"
           install -d -m 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
@@ -760,7 +793,7 @@ jobs:
   web-production:
     name: Activate immutable Web release
     needs: [signing, publication]
-    if: ${{ needs.publication.result == 'success' }}
+    if: ${{ always() && needs.signing.result == 'success' && ((needs.signing.outputs.no-op == 'true' && needs.publication.result == 'skipped') || (needs.signing.outputs.no-op != 'true' && needs.publication.result == 'success')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: web-production
