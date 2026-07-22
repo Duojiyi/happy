@@ -436,6 +436,13 @@ jobs:
           VERSION_NAME="$VERSION_NAME_INPUT"
           VERSION_CODE="$VERSION_CODE_INPUT"
           "$AAPT2" dump badging signed/Chimera.apk | grep -F "package: name='org.chimerahub.chimera' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
+          "$AAPT2" dump permissions signed/Chimera.apk > /tmp/chimera-apk-permissions.txt
+          for FORBIDDEN_PERMISSION in com.android.vending.BILLING com.android.vending.CHECK_LICENSE; do
+            if grep -Fq "$FORBIDDEN_PERMISSION" /tmp/chimera-apk-permissions.txt; then
+              echo "Signed APK contains forbidden permission: $FORBIDDEN_PERMISSION" >&2
+              exit 1
+            fi
+          done
           SIGNED_SHA=$(sha256sum signed/Chimera.apk | cut -d ' ' -f 1)
           SIGNED_SIZE=$(stat -c '%s' signed/Chimera.apk)
           UNSIGNED_SHA=$(jq -r '.sha256' candidate/android/release-input.json)
