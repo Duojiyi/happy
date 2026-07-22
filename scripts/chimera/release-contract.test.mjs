@@ -133,6 +133,12 @@ export function validateClientReleaseWorkflow(workflow) {
   ], 'signing job');
   const signingPreflight = steps(signing).find((step) => step.id === 'preflight')?.run ?? '';
   assert.match(signingPreflight, /DRAFT_COUNT=\$\(jq -r 'length' \/tmp\/draft-matches\.json\)[\s\S]*test "\$DRAFT_COUNT" -le 1/, 'signing preflight must reject duplicate same-tag drafts');
+  const auditValidation = steps(signing).find((step) => step.name === 'Validate reviewed release and independent audit identities')?.run ?? '';
+  assert.match(auditValidation, /if test "\$EXPECTED_BASE_SHA" = "\$SHA"; then[\s\S]*HISTORICAL_AUDIT_REPLAY=true/, 'same-commit recovery must enter historical audit replay only for an empty current diff');
+  assert.match(auditValidation, /gh api --paginate "repos\/\$REPO\/compare\/\$REPORT_BASE\.\.\.\$SHA\?per_page=100"[\s\S]*replayed-audit-paths/, 'historical audit replay must reconstruct changed paths from GitHub');
+  assert.match(auditValidation, /cmp "\/tmp\/replayed-audit-paths-\$ID" "\/tmp\/reported-audit-paths-\$ID"/, 'historical audit replay must match the attested changed paths byte-for-byte');
+  assert.match(auditValidation, /sha256sum "\/tmp\/replayed-audit-paths-\$ID"[\s\S]*REPORT_DIFF/, 'historical audit replay must recompute the attested diff digest');
+  assert.match(auditValidation, /historical-audit-binding\.json[\s\S]*\.baseSha == \$base and \.diffSha256 == \$diff/, 'both historical audits must bind to the same base and diff');
   const signingRun = steps(signing).find((step) => step.name === 'Sign APK and canonical Ed25519 update manifest')?.run ?? '';
   assert.match(signingRun, /signing-draft-matches\.json[\s\S]*test "\$\(jq -r 'length' \/tmp\/signing-draft-matches\.json\)" -le 1/, 'signing must reject duplicate same-tag drafts immediately before using secrets');
   assert.ok(steps(signing).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), 'signing must download by immutable artifact ID');
@@ -675,6 +681,20 @@ if (releaseSource && serverSource) {
     const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('REMOTE_DIGEST'));
     step.run = step.run.replace('gh api --method DELETE "repos/$REPO/releases/assets/$ASSET_ID"', 'true');
     assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects historical audit replay without reconstructed path equality', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.signing.steps.find((item) => item.name === 'Validate reviewed release and independent audit identities');
+    step.run = step.run.replace('cmp "/tmp/replayed-audit-paths-$ID" "/tmp/reported-audit-paths-$ID"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /historical audit replay must match/);
+  });
+
+  test('rejects historical audit replay without a recomputed diff digest', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.signing.steps.find((item) => item.name === 'Validate reviewed release and independent audit identities');
+    step.run = step.run.replace('test "$(sha256sum "/tmp/replayed-audit-paths-$ID" | cut -d \' \' -f 1)" = "$REPORT_DIFF"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /historical audit replay must recompute/);
   });
 
   test('rejects draft discovery through the published tag endpoint', () => {
