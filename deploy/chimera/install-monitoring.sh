@@ -9,12 +9,18 @@ for file in \
   deploy/chimera/chimera-disk-check.sh \
   deploy/chimera/chimera-disk-status \
   deploy/chimera/bin/chimera-status-helper \
+  deploy/chimera/libexec/chimera-status-ssh-policy \
   deploy/chimera/sudoers/chimera-deploy \
   deploy/chimera/systemd/chimera-disk-check.service \
   deploy/chimera/systemd/chimera-disk-check.timer; do
   [[ -f "$file" && ! -L "$file" ]] || { echo "missing reviewed bootstrap file: $file" >&2; exit 1; }
 done
 mountpoint -q /srv/chimera-storage || { echo 'dedicated Chimera storage is not mounted' >&2; exit 1; }
+
+STATUS_USER=chimera-status-monitor
+STATUS_HOME=/var/lib/chimera-status-monitor
+source deploy/chimera/libexec/chimera-status-ssh-policy
+activate_status_ssh_policy /etc/ssh/sshd_config.d "$STATUS_USER" sshd systemctl
 
 SUDOERS_TMP=$(mktemp /etc/sudoers.d/.chimera-deploy.XXXXXX)
 trap 'rm -f -- "$SUDOERS_TMP"' EXIT
@@ -28,39 +34,16 @@ install -m 0755 deploy/chimera/chimera-disk-status /usr/local/libexec/chimera-di
 install -m 0644 deploy/chimera/systemd/chimera-disk-check.service /etc/systemd/system/chimera-disk-check.service
 install -m 0644 deploy/chimera/systemd/chimera-disk-check.timer /etc/systemd/system/chimera-disk-check.timer
 install -d -m 0755 -o root -g root /opt/chimera/state
-STATUS_USER=chimera-status-monitor
-STATUS_HOME=/var/lib/chimera-status-monitor
 if ! id "$STATUS_USER" >/dev/null 2>&1; then useradd --create-home --home-dir "$STATUS_HOME" --shell /bin/bash "$STATUS_USER"; fi
 install -d -m 0700 -o "$STATUS_USER" -g "$STATUS_USER" "$STATUS_HOME/.ssh"
 STATUS_KEY="$(tr -d '\r\n' < "$STATUS_KEY_FILE")"
 [[ "$STATUS_KEY" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]+([[:space:]][A-Za-z0-9._@-]+)?$ ]] || { echo 'invalid status monitor public key' >&2; exit 1; }
-printf 'command="/usr/local/bin/chimera-status-helper",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty %s\n' "$STATUS_KEY" > "$STATUS_HOME/.ssh/authorized_keys"
-chown "$STATUS_USER:$STATUS_USER" "$STATUS_HOME/.ssh/authorized_keys"
-chmod 0600 "$STATUS_HOME/.ssh/authorized_keys"
-
-SSH_ALLOW_FILE=/etc/ssh/sshd_config.d/99-chimera-status-monitor.conf
-SSH_ALLOW_TMP=$(mktemp /etc/ssh/sshd_config.d/.99-chimera-status-monitor.XXXXXX)
-SSH_ALLOW_BACKUP=
-trap 'rm -f -- "$SSH_ALLOW_TMP"; [[ -z "$SSH_ALLOW_BACKUP" ]] || rm -f -- "$SSH_ALLOW_BACKUP"' EXIT
-if [[ -e "$SSH_ALLOW_FILE" || -L "$SSH_ALLOW_FILE" ]]; then
-  [[ -f "$SSH_ALLOW_FILE" && ! -L "$SSH_ALLOW_FILE" ]] || { echo 'invalid existing status monitor SSH policy' >&2; exit 1; }
-  SSH_ALLOW_BACKUP=$(mktemp /etc/ssh/sshd_config.d/.99-chimera-status-monitor.backup.XXXXXX)
-  cp --preserve=mode,ownership,timestamps -- "$SSH_ALLOW_FILE" "$SSH_ALLOW_BACKUP"
-fi
-printf 'AllowUsers %s\n' "$STATUS_USER" > "$SSH_ALLOW_TMP"
-chmod 0644 "$SSH_ALLOW_TMP"
-mv -f -- "$SSH_ALLOW_TMP" "$SSH_ALLOW_FILE"
-if ! sshd -t || ! systemctl reload ssh; then
-  if [[ -n "$SSH_ALLOW_BACKUP" ]]; then
-    mv -f -- "$SSH_ALLOW_BACKUP" "$SSH_ALLOW_FILE"
-  else
-    rm -f -- "$SSH_ALLOW_FILE"
-  fi
-  sshd -t && systemctl reload ssh || true
-  echo 'status monitor SSH policy activation failed' >&2
-  exit 1
-fi
-[[ -z "$SSH_ALLOW_BACKUP" ]] || rm -f -- "$SSH_ALLOW_BACKUP"
+STATUS_AUTH_TMP=$(mktemp "$STATUS_HOME/.ssh/.authorized_keys.XXXXXX")
+trap 'rm -f -- "$STATUS_AUTH_TMP"' EXIT
+printf 'command="/usr/local/bin/chimera-status-helper",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty %s\n' "$STATUS_KEY" > "$STATUS_AUTH_TMP"
+chown "$STATUS_USER:$STATUS_USER" "$STATUS_AUTH_TMP"
+chmod 0600 "$STATUS_AUTH_TMP"
+mv -f -- "$STATUS_AUTH_TMP" "$STATUS_HOME/.ssh/authorized_keys"
 trap - EXIT
 
 systemctl daemon-reload
