@@ -37,6 +37,32 @@ STATUS_KEY="$(tr -d '\r\n' < "$STATUS_KEY_FILE")"
 printf 'command="/usr/local/bin/chimera-status-helper",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty %s\n' "$STATUS_KEY" > "$STATUS_HOME/.ssh/authorized_keys"
 chown "$STATUS_USER:$STATUS_USER" "$STATUS_HOME/.ssh/authorized_keys"
 chmod 0600 "$STATUS_HOME/.ssh/authorized_keys"
+
+SSH_ALLOW_FILE=/etc/ssh/sshd_config.d/99-chimera-status-monitor.conf
+SSH_ALLOW_TMP=$(mktemp /etc/ssh/sshd_config.d/.99-chimera-status-monitor.XXXXXX)
+SSH_ALLOW_BACKUP=
+trap 'rm -f -- "$SSH_ALLOW_TMP"; [[ -z "$SSH_ALLOW_BACKUP" ]] || rm -f -- "$SSH_ALLOW_BACKUP"' EXIT
+if [[ -e "$SSH_ALLOW_FILE" || -L "$SSH_ALLOW_FILE" ]]; then
+  [[ -f "$SSH_ALLOW_FILE" && ! -L "$SSH_ALLOW_FILE" ]] || { echo 'invalid existing status monitor SSH policy' >&2; exit 1; }
+  SSH_ALLOW_BACKUP=$(mktemp /etc/ssh/sshd_config.d/.99-chimera-status-monitor.backup.XXXXXX)
+  cp --preserve=mode,ownership,timestamps -- "$SSH_ALLOW_FILE" "$SSH_ALLOW_BACKUP"
+fi
+printf 'AllowUsers %s\n' "$STATUS_USER" > "$SSH_ALLOW_TMP"
+chmod 0644 "$SSH_ALLOW_TMP"
+mv -f -- "$SSH_ALLOW_TMP" "$SSH_ALLOW_FILE"
+if ! sshd -t || ! systemctl reload ssh; then
+  if [[ -n "$SSH_ALLOW_BACKUP" ]]; then
+    mv -f -- "$SSH_ALLOW_BACKUP" "$SSH_ALLOW_FILE"
+  else
+    rm -f -- "$SSH_ALLOW_FILE"
+  fi
+  sshd -t && systemctl reload ssh || true
+  echo 'status monitor SSH policy activation failed' >&2
+  exit 1
+fi
+[[ -z "$SSH_ALLOW_BACKUP" ]] || rm -f -- "$SSH_ALLOW_BACKUP"
+trap - EXIT
+
 systemctl daemon-reload
 systemctl start chimera-disk-check.service
 systemctl enable --now chimera-disk-check.timer

@@ -53,6 +53,11 @@ test('one-time production bootstrap validates host policy before activation', ()
   assert.doesNotMatch(sudoers, /\r/, 'sudoers policy must retain Unix line endings for visudo');
   assert.match(bootstrap, /visudo -cf "\$SUDOERS_TMP"/);
   assert.ok(bootstrap.indexOf('visudo -cf "$SUDOERS_TMP"') < bootstrap.indexOf('mv -f -- "$SUDOERS_TMP" /etc/sudoers.d/chimera-deploy'));
+  assert.match(bootstrap, /99-chimera-status-monitor\.conf/);
+  assert.match(bootstrap, /printf 'AllowUsers %s\\n' "\$STATUS_USER"/);
+  assert.ok(bootstrap.indexOf('sshd -t') < bootstrap.indexOf('systemctl reload ssh'));
+  assert.ok(bootstrap.indexOf('systemctl reload ssh') < bootstrap.indexOf('systemctl enable --now chimera-disk-check.timer'));
+  assert.match(bootstrap, /status monitor SSH policy activation failed/);
   assert.ok(bootstrap.indexOf('systemctl start chimera-disk-check.service') < bootstrap.indexOf('systemctl enable --now chimera-disk-check.timer'));
   assert.match(bootstrap, /chimera-disk-status \| grep -Fx ok/);
   assert.match(bootstrap, /chimera-status-monitor/);
