@@ -131,6 +131,10 @@ export function validateClientReleaseWorkflow(workflow) {
     /TAG_ONLY_TARGET[\s\S]*test "\$TAG_ONLY_TARGET" = "\$SHA"/,
     /SIGNING_TAG_TARGET[\s\S]*test "\$SIGNING_TAG_TARGET" = "\$REVIEWED_SHA_INPUT"/,
   ], 'signing job');
+  const signingPreflight = steps(signing).find((step) => step.id === 'preflight')?.run ?? '';
+  assert.match(signingPreflight, /DRAFT_COUNT=\$\(jq -r 'length' \/tmp\/draft-matches\.json\)[\s\S]*test "\$DRAFT_COUNT" -le 1/, 'signing preflight must reject duplicate same-tag drafts');
+  const signingRun = steps(signing).find((step) => step.name === 'Sign APK and canonical Ed25519 update manifest')?.run ?? '';
+  assert.match(signingRun, /signing-draft-matches\.json[\s\S]*test "\$\(jq -r 'length' \/tmp\/signing-draft-matches\.json\)" -le 1/, 'signing must reject duplicate same-tag drafts immediately before using secrets');
   assert.ok(steps(signing).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), 'signing must download by immutable artifact ID');
   assert.ok(steps(signing).some((step) => step.uses?.startsWith('actions/upload-artifact@')), 'signing must hand off signed bytes as an artifact');
   for (const [name, job] of Object.entries(workflow.jobs)) {
@@ -157,14 +161,15 @@ export function validateClientReleaseWorkflow(workflow) {
     /git\/refs\/tags|git\/ref\/tags/,
     /REVIEWED_SHA/,
     /versionCode/,
-    /release create|releases/,
-    /release create[\s\S]*Chimera-/,
+    /--method POST "repos\/\$REPO\/releases"[\s\S]*tag_name="\$TAG"[\s\S]*name="Chimera \$VERSION"/,
     /chimera-update\.json/,
     /\.sha256/,
     /chimera-release\.yml/,
-    /release create[\s\S]*--draft/,
-    /release upload/,
+    /-F draft=true/,
+    /--input "\$LOCAL" "https:\/\/uploads\.github\.com\/repos\/\$REPO\/releases\/\$RELEASE_ID\/assets\?name=\$NAME"/,
     /draft-release\.json/,
+    /releases\?per_page=100[\s\S]*draft == true and \.tag_name == \$tag/,
+    /gh api "repos\/\$REPO\/releases\/\$RELEASE_ID"/,
     /\.digest/,
     /cmp "\$LOCAL"/,
     /PATCH[\s\S]*draft=false/,
@@ -176,6 +181,8 @@ export function validateClientReleaseWorkflow(workflow) {
     /DELETE "repos\/\$REPO\/releases\/assets\/\$ASSET_ID"/,
     /if gh api "repos\/\$REPO\/git\/ref\/tags\/\$TAG" >\/tmp\/tag\.json 2>\/dev\/null; then\s+test "\$\(jq -r '\.object\.sha' \/tmp\/tag\.json\)" = "\$SHA"\s+else/,
   ], 'publication job');
+  assert.match(publish, /DRAFT_COUNT=\$\(jq -r 'length' \/tmp\/draft-matches\.json\)[\s\S]*test "\$DRAFT_COUNT" -le 1/, 'publication must reject duplicate same-tag drafts');
+  assert.match(publish, /uploads\.github\.com[\s\S]*gh api "repos\/\$REPO\/releases\/\$RELEASE_ID" > \/tmp\/draft-release\.json[\s\S]*tag_name == \$tag[\s\S]*name == \$title[\s\S]*body == \$body/, 'publication must revalidate draft identity after ID-bound asset uploads');
   assert.match(publish, /RELEASE_WORKFLOW_SHA[\s\S]*--signer-digest "\$RELEASE_WORKFLOW_SHA"[\s\S]*--source-digest "\$RELEASE_WORKFLOW_SHA"/, 'signed provenance must bind to the actual release workflow SHA');
   const signedVerification = publish.slice(publish.indexOf('for FILE in publish/signed/'), publish.indexOf('gh attestation verify publish/web/'));
   assert.doesNotMatch(signedVerification, /--signer-digest "\$REVIEWED_SHA"|--source-digest "\$REVIEWED_SHA"/, 'product commit SHA must not impersonate the release workflow signer SHA');
@@ -559,6 +566,50 @@ if (releaseSource && serverSource) {
     const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('REMOTE_DIGEST'));
     step.run = step.run.replace('gh api --method DELETE "repos/$REPO/releases/assets/$ASSET_ID"', 'true');
     assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects draft discovery through the published tag endpoint', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('/tmp/draft-matches.json'));
+    step.run = step.run.replace('repos/$REPO/releases?per_page=100', 'repos/$REPO/releases/tags/$TAG');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects draft asset upload that is not bound to the release ID', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('uploads.github.com'));
+    step.run = step.run.replace('https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$NAME', 'repos/$REPO/releases/tags/$TAG/assets?name=$NAME');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects duplicate-draft fail-open behavior during signing preflight', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.signing.steps.find((item) => item.id === 'preflight');
+    step.run = step.run.replace('test "$DRAFT_COUNT" -le 1', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /signing preflight must reject/);
+  });
+
+  test('rejects duplicate-draft fail-open behavior immediately before signing', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.signing.steps.find((item) => item.name === 'Sign APK and canonical Ed25519 update manifest');
+    step.run = step.run.replace('test "$(jq -r \'length\' /tmp/signing-draft-matches.json)" -le 1', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /signing must reject/);
+  });
+
+  test('rejects duplicate-draft fail-open behavior during publication', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('/tmp/draft-matches.json'));
+    step.run = step.run.replace('test "$DRAFT_COUNT" -le 1', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication must reject/);
+  });
+
+  test('rejects removing the final draft identity check after asset upload', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('uploads.github.com'));
+    const marker = step.run.indexOf('https://uploads.github.com');
+    const identity = '.draft == true and .immutable == false and .author.login == "github-actions[bot]" and .tag_name == $tag and .name == $title and .body == $body';
+    step.run = step.run.slice(0, marker) + step.run.slice(marker).replace(identity, '.draft == true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /revalidate draft identity/);
   });
 
   test('rejects tag-only recovery without reviewed SHA binding before signing', () => {
