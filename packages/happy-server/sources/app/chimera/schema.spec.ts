@@ -160,4 +160,34 @@ describe("Chimera Prisma security state", () => {
             await pg.close();
         }
     }, 20_000);
+
+    it("persists and reads a machine data encryption key", async () => {
+        const pgliteDir = fs.mkdtempSync(path.join(os.tmpdir(), "happy-chimera-machine-key-"));
+        tempDirs.push(pgliteDir);
+        await runMigrations({
+            pgliteDir,
+            migrationsDir: path.resolve(process.cwd(), "prisma/migrations"),
+        });
+
+        const pg = new PGlite(pgliteDir);
+        const prisma = new PrismaClient({ adapter: new PrismaPGlite(pg) } as any) as any;
+
+        try {
+            const account = await prisma.account.create({ data: { publicKey: "machine-key-account" } });
+            await prisma.machine.create({
+                data: {
+                    id: "machine-key-machine",
+                    accountId: account.id,
+                    metadata: "encrypted-metadata",
+                    dataEncryptionKey: new Uint8Array([1, 2, 3]),
+                },
+            });
+
+            const machine = await prisma.machine.findUniqueOrThrow({ where: { id: "machine-key-machine" } });
+            expect(Buffer.from(machine.dataEncryptionKey)).toEqual(Buffer.from([1, 2, 3]));
+        } finally {
+            await prisma.$disconnect();
+            await pg.close();
+        }
+    }, 20_000);
 });
