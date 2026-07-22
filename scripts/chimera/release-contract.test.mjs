@@ -136,6 +136,12 @@ export function validateClientReleaseWorkflow(workflow) {
   ], 'signing job');
   const signingPreflight = steps(signing).find((step) => step.id === 'preflight')?.run ?? '';
   assert.match(signingPreflight, /DRAFT_COUNT=\$\(jq -r 'length' \/tmp\/draft-matches\.json\)[\s\S]*test "\$DRAFT_COUNT" -le 1/, 'signing preflight must reject duplicate same-tag drafts');
+  const auditValidation = steps(signing).find((step) => step.name === 'Validate reviewed release and independent audit identities')?.run ?? '';
+  assert.match(auditValidation, /if test "\$EXPECTED_BASE_SHA" = "\$SHA"; then[\s\S]*HISTORICAL_AUDIT_REPLAY=true/, 'same-commit recovery must enter historical audit replay only for an empty current diff');
+  assert.match(auditValidation, /gh api --paginate "repos\/\$REPO\/compare\/\$REPORT_BASE\.\.\.\$SHA\?per_page=100"[\s\S]*replayed-audit-paths/, 'historical audit replay must reconstruct changed paths from GitHub');
+  assert.match(auditValidation, /cmp "\/tmp\/replayed-audit-paths-\$ID" "\/tmp\/reported-audit-paths-\$ID"/, 'historical audit replay must match the attested changed paths byte-for-byte');
+  assert.match(auditValidation, /sha256sum "\/tmp\/replayed-audit-paths-\$ID"[\s\S]*REPORT_DIFF/, 'historical audit replay must recompute the attested diff digest');
+  assert.match(auditValidation, /historical-audit-binding\.json[\s\S]*\.baseSha == \$base and \.diffSha256 == \$diff/, 'both historical audits must bind to the same base and diff');
   const signingRun = steps(signing).find((step) => step.name === 'Sign APK and canonical Ed25519 update manifest')?.run ?? '';
   assert.match(signingRun, /signing-draft-matches\.json[\s\S]*test "\$\(jq -r 'length' \/tmp\/signing-draft-matches\.json\)" -le 1/, 'signing must reject duplicate same-tag drafts immediately before using secrets');
   assert.ok(steps(signing).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), 'signing must download by immutable artifact ID');
@@ -195,7 +201,30 @@ export function validateClientReleaseWorkflow(workflow) {
   assert.ok(androidMirror?.['timeout-minutes'] >= 45, 'Android mirror timeout must accommodate the production APK transfer');
   assert.deepEqual(androidMirror?.permissions, { actions: 'read', attestations: 'read', contents: 'read' });
   assertNoCheckout(androidMirror, 'Android mirror');
-  assertContains(runs(androidMirror), [/gh attestation verify/, /StrictHostKeyChecking=yes/, /chimera-android-deploy@103\.250\.173\.136/, /\.chimera-staging\/android/, /activate-android/, /--range 0-0/], 'Android mirror');
+  assert.match(String(androidMirror.if), /always\(\)[\s\S]*needs\.signing\.outputs\.no-op == 'true'[\s\S]*needs\.signed-provenance\.result == 'skipped'[\s\S]*needs\.publication\.result == 'skipped'/, 'Android immutable recovery must require the fully verified no-op path');
+  assertContains(runs(androidMirror), [
+    /gh attestation verify/,
+    /StrictHostKeyChecking=yes/,
+    /chimera-android-deploy@103\.250\.173\.136/,
+    /\.chimera-staging\/android/,
+    /activate-android/,
+    /--range 0-0/,
+    /\.draft == false and \.immutable == true and \.author\.login == "github-actions\[bot\]"/,
+    /tag_name == \$tag[\s\S]*name == \$title[\s\S]*body == \$body/,
+    /\(\.assets \| length\) == 6/,
+    /cmp \/tmp\/expected-recovery-assets \/tmp\/actual-recovery-assets/,
+    /git\/ref\/tags\/\$TAG[\s\S]*= "\$REVIEWED_SHA"/,
+    /Accept: application\/octet-stream/,
+    /sha256:\$\(sha256sum "deploy\/android\/\$NAME"[\s\S]*= "\$REMOTE_DIGEST"/,
+    /release-metadata\.json[\s\S]*signedSha256 == \$digest[\s\S]*signedSize == \(\$size \| tonumber\)[\s\S]*signerSha256 == "58AA84B6C0D84963E841EED5EF953FC35D4B17D612C923D19A2264F96E4C8A93"/,
+    /printf '%s  Chimera\.apk\\n' "\$APK_SHA" > deploy\/android\/Chimera\.apk\.sha256/,
+    /if test "\$IMMUTABLE_RECOVERY" != 'true'; then[\s\S]*--signer-digest "\$RELEASE_WORKFLOW_SHA" --source-digest "\$RELEASE_WORKFLOW_SHA"/,
+    /PUBLIC_MANIFEST=\$\(mktemp\)[\s\S]*cmp --silent "\$MANIFEST" "\$PUBLIC_MANIFEST"[\s\S]*payload\.commitSha == \$sha[\s\S]*payload\.versionCode == \$code[\s\S]*payload\.sha256 == \$digest[\s\S]*PUBLIC_APK_SHA=\$\(curl[\s\S]*\| sha256sum[\s\S]*test "\$PUBLIC_APK_SHA" = "\$APK_SHA"[\s\S]*exit 0[\s\S]*install -d -m 700 ~\/\.ssh/,
+  ], 'Android mirror');
+  const androidDownload = steps(androidMirror).find((step) => step.name === 'Download exact signed handoff');
+  const androidRecovery = steps(androidMirror).find((step) => step.name === 'Recover exact immutable signed handoff');
+  assert.equal(androidDownload?.if, "${{ needs.signing.outputs.no-op != 'true' }}", 'normal Android handoff must exclude immutable recovery');
+  assert.equal(androidRecovery?.if, "${{ needs.signing.outputs.no-op == 'true' }}", 'immutable Android recovery must be explicit');
   assert.match(serialized(androidMirror), /CHIMERA_ANDROID_DEPLOY_SSH_KEY/);
   assert.doesNotMatch(serialized(androidMirror), /CHIMERA_WEB_DEPLOY_SSH_KEY|CHIMERA_ANDROID_KEYSTORE/);
 
@@ -203,8 +232,12 @@ export function validateClientReleaseWorkflow(workflow) {
   assert.equal(webProduction?.environment, 'web-production');
   assert.deepEqual(webProduction?.permissions, { actions: 'read', attestations: 'read', contents: 'read' });
   assertNoCheckout(webProduction, 'Web production');
+  assert.match(String(webProduction.if), /always\(\)[\s\S]*needs\.signing\.outputs\.no-op == 'true'[\s\S]*needs\.publication\.result == 'skipped'/, 'Web immutable recovery must require the fully verified no-op path');
   assert.match(runs(webProduction), /sort \| sed -n '1p'/, 'Web activation must consume the complete representative-asset pipeline under pipefail');
   assert.doesNotMatch(runs(webProduction), /sort \| head -n 1/, 'Web activation must not terminate the representative-asset pipeline early');
+  assert.match(runs(webProduction), /INDEX_MEMBER=.*index\\\.html[\s\S]*REPRESENTATIVE_MEMBER=[\s\S]*REPRESENTATIVE_ASSET=\$\{REPRESENTATIVE_MEMBER#\.\/\}/, 'Web recovery must derive public paths without changing exact tar member names');
+  assert.match(runs(webProduction), /--file "\$ARCHIVE" "\$INDEX_MEMBER"[\s\S]*--file "\$ARCHIVE" "\$REPRESENTATIVE_MEMBER"/, 'Web recovery must extract the exact discovered tar members');
+  assert.match(runs(webProduction), /tar --extract --gzip --to-stdout[\s\S]*expected-representative-asset[\s\S]*cmp --silent \/tmp\/expected-index\.html \/tmp\/public-index\.html[\s\S]*public-representative-asset[\s\S]*cmp --silent \/tmp\/expected-representative-asset \/tmp\/public-representative-asset[\s\S]*exit 0[\s\S]*install -d -m 700 ~\/\.ssh/, 'Web immutable recovery must prove exact active bytes before an idempotent success');
   assertContains(runs(webProduction), [/gh attestation verify/, /StrictHostKeyChecking=yes/, /chimera-web-deploy@103\.250\.173\.136/, /\.chimera-staging\/web/, /activate-web/, /REPRESENTATIVE_ASSET/], 'Web production');
   assert.match(serialized(webProduction), /CHIMERA_WEB_DEPLOY_SSH_KEY/);
   assert.doesNotMatch(serialized(webProduction), /CHIMERA_ANDROID_DEPLOY_SSH_KEY|CHIMERA_ANDROID_KEYSTORE/);
@@ -469,6 +502,88 @@ if (releaseSource && serverSource) {
     assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror timeout must accommodate/);
   });
 
+  test('rejects Android immutable recovery outside the verified no-op path', () => {
+    const workflow = parse(releaseSource);
+    workflow.jobs['android-mirror'].if = "${{ always() && needs.signing.result == 'success' }}";
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Android immutable recovery must require/);
+  });
+
+  test('rejects mutable or non-bot Android recovery releases', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['android-mirror'].steps.find((item) => item.name === 'Recover exact immutable signed handoff');
+    step.run = step.run.replace('.draft == false and .immutable == true and .author.login == "github-actions[bot]"', '.draft == false');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror missing/);
+  });
+
+  test('rejects Android recovery without exact asset-set and digest checks', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['android-mirror'].steps.find((item) => item.name === 'Recover exact immutable signed handoff');
+    step.run = step.run
+      .replace('cmp /tmp/expected-recovery-assets /tmp/actual-recovery-assets', 'true')
+      .replace('test "sha256:$(sha256sum "deploy/android/$NAME" | cut -d \' \' -f 1)" = "$REMOTE_DIGEST"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror missing/);
+  });
+
+  test('rejects weakening normal Android attestation during recovery support', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['android-mirror'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
+    step.run = step.run.replace('if test "$IMMUTABLE_RECOVERY" != \'true\'; then', 'if false; then');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror missing/);
+  });
+
+  test('rejects Web immutable recovery outside the verified no-op path', () => {
+    const workflow = parse(releaseSource);
+    workflow.jobs['web-production'].if = "${{ always() && needs.signing.result == 'success' }}";
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Web immutable recovery must require/);
+  });
+
+  test('rejects Android idempotent success without the exact public manifest digest', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['android-mirror'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
+    const marker = step.run.indexOf('PUBLIC_MANIFEST=$(mktemp)');
+    step.run = step.run.slice(0, marker) + step.run.slice(marker).replace('.payload.sha256 == $digest', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror missing/);
+  });
+
+  test('rejects Android idempotent success without exact manifest bytes or full APK hash', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['android-mirror'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
+    step.run = step.run
+      .replace('cmp --silent "$MANIFEST" "$PUBLIC_MANIFEST"', 'true')
+      .replace('test "$PUBLIC_APK_SHA" = "$APK_SHA"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror missing/);
+  });
+
+  test('rejects Android recovery without canonical handoff metadata and checksum layout', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['android-mirror'].steps.find((item) => item.name === 'Recover exact immutable signed handoff');
+    step.run = step.run
+      .replace('.signedSha256 == $digest', 'true')
+      .replace("printf '%s  Chimera.apk\\n' \"$APK_SHA\" > deploy/android/Chimera.apk.sha256", 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror missing/);
+  });
+
+  test('rejects Web idempotent success without exact public index bytes', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['web-production'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
+    step.run = step.run.replace('cmp --silent /tmp/expected-index.html /tmp/public-index.html', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Web immutable recovery must prove/);
+  });
+
+  test('rejects Web idempotent success without exact representative asset bytes', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['web-production'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
+    step.run = step.run.replace('cmp --silent /tmp/expected-representative-asset /tmp/public-representative-asset', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Web immutable recovery must prove/);
+  });
+
+  test('rejects Web recovery that extracts a normalized path instead of the exact tar member', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['web-production'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
+    step.run = step.run.replace('"$INDEX_MEMBER" > /tmp/expected-index.html', 'index.html > /tmp/expected-index.html');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /exact discovered tar members/);
+  });
+
   test('rejects repository script execution in publication', () => {
     const workflow = parse(releaseSource);
     workflow.jobs.publication.steps.push({ run: 'node scripts/chimera/publish.mjs' });
@@ -578,6 +693,20 @@ if (releaseSource && serverSource) {
     const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('REMOTE_DIGEST'));
     step.run = step.run.replace('gh api --method DELETE "repos/$REPO/releases/assets/$ASSET_ID"', 'true');
     assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects historical audit replay without reconstructed path equality', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.signing.steps.find((item) => item.name === 'Validate reviewed release and independent audit identities');
+    step.run = step.run.replace('cmp "/tmp/replayed-audit-paths-$ID" "/tmp/reported-audit-paths-$ID"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /historical audit replay must match/);
+  });
+
+  test('rejects historical audit replay without a recomputed diff digest', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.signing.steps.find((item) => item.name === 'Validate reviewed release and independent audit identities');
+    step.run = step.run.replace('test "$(sha256sum "/tmp/replayed-audit-paths-$ID" | cut -d \' \' -f 1)" = "$REPORT_DIFF"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /historical audit replay must recompute/);
   });
 
   test('rejects draft discovery through the published tag endpoint', () => {

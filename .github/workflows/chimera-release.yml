@@ -149,6 +149,11 @@ jobs:
           [[ "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$EXPECTED_DIFF_SHA256" =~ ^[0-9a-f]{64}$ ]]
           test "$EXPECTED_SIGNER" = '58AA84B6C0D84963E841EED5EF953FC35D4B17D612C923D19A2264F96E4C8A93'
+          HISTORICAL_AUDIT_REPLAY=false
+          if test "$EXPECTED_BASE_SHA" = "$SHA"; then
+            test "$EXPECTED_DIFF_SHA256" = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+            HISTORICAL_AUDIT_REPLAY=true
+          fi
           gh api "repos/$REPO/actions/runs/$RUN" > /tmp/build-run.json
           jq -e --arg repo "$REPO" --arg sha "$SHA" --arg workflowSha "$TRUSTED_WORKFLOW_SHA" '
             .repository.full_name == $repo and .head_sha == $sha and .head_sha == $workflowSha and
@@ -178,7 +183,35 @@ jobs:
             unzip -q "$REPORT_DIR/report.zip" -d "$REPORT_DIR/content"
             test "$(find "$REPORT_DIR/content" -type f | wc -l)" -eq 1
             REPORT="$REPORT_DIR/content/$REPORT_NAME"
-            jq -e --arg sha "$SHA" --arg base "$EXPECTED_BASE_SHA" --arg diff "$EXPECTED_DIFF_SHA256" --arg check "$NAME" --arg auditor "$AUDITOR_ID" '.reviewedSha == $sha and .baseSha == $base and .diffSha256 == $diff and .checkName == $check and .auditorId == $auditor and .resolution == "PASS" and .findings == []' "$REPORT"
+            jq -e --arg sha "$SHA" --arg check "$NAME" --arg auditor "$AUDITOR_ID" '
+              .schemaVersion == 1 and .reviewedSha == $sha and .trustedWorkflowSha == $sha and
+              .checkName == $check and .auditorId == $auditor and .resolution == "PASS" and .findings == []
+            ' "$REPORT"
+            if test "$HISTORICAL_AUDIT_REPLAY" = true; then
+              REPORT_BASE=$(jq -er '.baseSha' "$REPORT")
+              REPORT_DIFF=$(jq -er '.diffSha256' "$REPORT")
+              [[ "$REPORT_BASE" =~ ^[0-9a-f]{40}$ ]]
+              [[ "$REPORT_DIFF" =~ ^[0-9a-f]{64}$ ]]
+              test "$REPORT_BASE" != "$SHA"
+              jq -er '.changedPaths | if type == "array" and length > 0 and all(.[]; type == "string" and length > 0) then .[] else error("non-empty changed paths required") end' "$REPORT" | LC_ALL=C sort -u > "/tmp/reported-audit-paths-$ID"
+              test "$(wc -l < "/tmp/reported-audit-paths-$ID")" -eq "$(jq -r '.changedPaths | length' "$REPORT")"
+              if test "$REPORT_BASE" = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'; then
+                gh api "repos/$REPO/git/trees/$SHA?recursive=1" --jq '.tree[] | select(.type == "blob" or .type == "commit") | .path' | LC_ALL=C sort -u > "/tmp/replayed-audit-paths-$ID"
+              else
+                COMPARE_STATUS=$(gh api "repos/$REPO/compare/$REPORT_BASE...$SHA" --jq '.status')
+                test "$COMPARE_STATUS" = ahead
+                gh api --paginate "repos/$REPO/compare/$REPORT_BASE...$SHA?per_page=100" --jq '.files[].filename' | LC_ALL=C sort -u > "/tmp/replayed-audit-paths-$ID"
+              fi
+              cmp "/tmp/replayed-audit-paths-$ID" "/tmp/reported-audit-paths-$ID"
+              test "$(sha256sum "/tmp/replayed-audit-paths-$ID" | cut -d ' ' -f 1)" = "$REPORT_DIFF"
+              if test -f /tmp/historical-audit-binding.json; then
+                jq -e --arg base "$REPORT_BASE" --arg diff "$REPORT_DIFF" '.baseSha == $base and .diffSha256 == $diff' /tmp/historical-audit-binding.json
+              else
+                jq -n --arg base "$REPORT_BASE" --arg diff "$REPORT_DIFF" '{baseSha: $base, diffSha256: $diff}' > /tmp/historical-audit-binding.json
+              fi
+            else
+              jq -e --arg base "$EXPECTED_BASE_SHA" --arg diff "$EXPECTED_DIFF_SHA256" '.baseSha == $base and .diffSha256 == $diff' "$REPORT"
+            fi
             gh attestation verify "$REPORT" --repo "$REPO" \
               --signer-workflow "$REPO/$EXPECTED_PATH" \
               --signer-digest "$SHA" --source-digest "$SHA" --source-ref 'refs/heads/main' \
@@ -708,7 +741,7 @@ jobs:
   android-mirror:
     name: Activate immutable Android mirror
     needs: [signing, signed-provenance, publication]
-    if: ${{ needs.publication.result == 'success' }}
+    if: ${{ always() && needs.signing.result == 'success' && ((needs.signing.outputs.no-op == 'true' && needs.signed-provenance.result == 'skipped' && needs.publication.result == 'skipped') || (needs.signing.outputs.no-op != 'true' && needs.signed-provenance.result == 'success' && needs.publication.result == 'success')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: android-mirror
@@ -718,11 +751,51 @@ jobs:
       contents: read
     steps:
       - name: Download exact signed handoff
+        if: ${{ needs.signing.outputs.no-op != 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ needs.signing.outputs.artifact-id }}
           merge-multiple: true
           path: deploy/android
+
+      - name: Recover exact immutable signed handoff
+        if: ${{ needs.signing.outputs.no-op == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.signing.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.signing.outputs.version-name }}
+          REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
+        run: |
+          set -euo pipefail
+          REPO='${{ github.repository }}'
+          TAG="$RELEASE_TAG"
+          VERSION="$RELEASE_VERSION"
+          EXPECTED_BODY="Immutable Chimera Android and Web release for $REVIEWED_SHA"
+          gh api "repos/$REPO/releases/tags/$TAG" > /tmp/recovery-release.json
+          jq -e --arg tag "$TAG" --arg title "Chimera $VERSION" --arg body "$EXPECTED_BODY" '
+            .draft == false and .immutable == true and .author.login == "github-actions[bot]" and
+            .tag_name == $tag and .name == $title and .body == $body and (.assets | length) == 6
+          ' /tmp/recovery-release.json
+          test "$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.sha')" = "$REVIEWED_SHA"
+          printf '%s\n' "Chimera-$VERSION.apk" "Chimera-$VERSION.apk.sha256" "Chimera-$VERSION-web.tar.gz" "Chimera-$VERSION-web.tar.gz.sha256" chimera-update.json release-metadata.json | sort > /tmp/expected-recovery-assets
+          jq -r '.assets[].name' /tmp/recovery-release.json | sort > /tmp/actual-recovery-assets
+          cmp /tmp/expected-recovery-assets /tmp/actual-recovery-assets
+          mkdir -p deploy/android
+          for NAME in "Chimera-$VERSION.apk" "Chimera-$VERSION.apk.sha256" chimera-update.json release-metadata.json; do
+            ASSET_URL=$(jq -er --arg name "$NAME" '.assets[] | select(.name == $name) | .url' /tmp/recovery-release.json)
+            REMOTE_DIGEST=$(jq -er --arg name "$NAME" '.assets[] | select(.name == $name) | .digest' /tmp/recovery-release.json)
+            gh api "$ASSET_URL" -H 'Accept: application/octet-stream' > "deploy/android/$NAME"
+            test "sha256:$(sha256sum "deploy/android/$NAME" | cut -d ' ' -f 1)" = "$REMOTE_DIGEST"
+          done
+          mv "deploy/android/Chimera-$VERSION.apk" deploy/android/Chimera.apk
+          APK_SHA=$(sha256sum deploy/android/Chimera.apk | cut -d ' ' -f 1)
+          APK_SIZE=$(stat -c '%s' deploy/android/Chimera.apk)
+          jq -e --arg sha "$REVIEWED_SHA" --arg digest "$APK_SHA" --arg size "$APK_SIZE" --arg version "$VERSION" '
+            .commitSha == $sha and .versionName == $version and .signedSha256 == $digest and
+            .signedSize == ($size | tonumber) and .signerSha256 == "58AA84B6C0D84963E841EED5EF953FC35D4B17D612C923D19A2264F96E4C8A93"
+          ' deploy/android/release-metadata.json
+          rm "deploy/android/Chimera-$VERSION.apk.sha256"
+          printf '%s  Chimera.apk\n' "$APK_SHA" > deploy/android/Chimera.apk.sha256
 
       - name: Reverify and activate through restricted identity
         env:
@@ -730,6 +803,7 @@ jobs:
           REVIEWED_SHA: ${{ inputs.reviewed_commit_sha }}
           VERSION_CODE: ${{ needs.signing.outputs.version-code }}
           RELEASE_WORKFLOW_SHA: ${{ github.sha }}
+          IMMUTABLE_RECOVERY: ${{ needs.signing.outputs.no-op }}
           SSH_PRIVATE_KEY: ${{ secrets.CHIMERA_ANDROID_DEPLOY_SSH_KEY }}
           SSH_HOST_KEY: ${{ secrets.CHIMERA_DEPLOY_HOST_KEY }}
         run: |
@@ -738,19 +812,33 @@ jobs:
           APK=deploy/android/Chimera.apk
           MANIFEST=deploy/android/chimera-update.json
           APK_SHA=$(sha256sum "$APK" | cut -d ' ' -f 1)
+          printf '%s  Chimera.apk\n' "$APK_SHA" > /tmp/expected-apk.sha256
+          cmp /tmp/expected-apk.sha256 deploy/android/Chimera.apk.sha256
           APK_SIZE=$(stat -c '%s' "$APK")
           jq -e --arg sha "$REVIEWED_SHA" --arg digest "$APK_SHA" --arg size "$APK_SIZE" --argjson code "$VERSION_CODE" '
             .payload.commitSha == $sha and .payload.versionCode == $code and .payload.sha256 == $digest and
             .payload.size == ($size | tonumber) and .payload.packageName == "org.chimerahub.chimera"
           ' "$MANIFEST"
-          gh attestation verify "$APK" --repo '${{ github.repository }}' \
+          ATTESTATION_ARGS=(--repo '${{ github.repository }}' \
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-release.yml' \
-            --signer-digest "$RELEASE_WORKFLOW_SHA" --source-digest "$RELEASE_WORKFLOW_SHA" \
-            --source-ref refs/heads/main --deny-self-hosted-runners
-          gh attestation verify "$MANIFEST" --repo '${{ github.repository }}' \
-            --signer-workflow '${{ github.repository }}/.github/workflows/chimera-release.yml' \
-            --signer-digest "$RELEASE_WORKFLOW_SHA" --source-digest "$RELEASE_WORKFLOW_SHA" \
-            --source-ref refs/heads/main --deny-self-hosted-runners
+            --source-ref refs/heads/main --deny-self-hosted-runners)
+          if test "$IMMUTABLE_RECOVERY" != 'true'; then
+            ATTESTATION_ARGS+=(--signer-digest "$RELEASE_WORKFLOW_SHA" --source-digest "$RELEASE_WORKFLOW_SHA")
+          fi
+          gh attestation verify "$APK" "${ATTESTATION_ARGS[@]}"
+          gh attestation verify "$MANIFEST" "${ATTESTATION_ARGS[@]}"
+          PUBLIC_MANIFEST=$(mktemp)
+          if curl --fail --silent --show-error --max-time 20 https://103.250.173.136/downloads/chimera-update.json > "$PUBLIC_MANIFEST" &&
+             cmp --silent "$MANIFEST" "$PUBLIC_MANIFEST" &&
+             jq -e --arg sha "$REVIEWED_SHA" --arg digest "$APK_SHA" --arg size "$APK_SIZE" --argjson code "$VERSION_CODE" '
+               .payload.commitSha == $sha and .payload.versionCode == $code and .payload.sha256 == $digest and
+               .payload.size == ($size | tonumber) and .payload.packageName == "org.chimerahub.chimera"
+             ' "$PUBLIC_MANIFEST" >/dev/null; then
+            PUBLIC_APK_PATH=$(jq -er '.payload.apkPath' "$MANIFEST")
+            PUBLIC_APK_SHA=$(curl --fail --silent --show-error --max-time 2700 "https://103.250.173.136$PUBLIC_APK_PATH" | sha256sum | cut -d ' ' -f 1)
+            test "$PUBLIC_APK_SHA" = "$APK_SHA"
+            exit 0
+          fi
           install -d -m 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
@@ -767,7 +855,7 @@ jobs:
   web-production:
     name: Activate immutable Web release
     needs: [signing, publication]
-    if: ${{ needs.publication.result == 'success' }}
+    if: ${{ always() && needs.signing.result == 'success' && ((needs.signing.outputs.no-op == 'true' && needs.publication.result == 'skipped') || (needs.signing.outputs.no-op != 'true' && needs.publication.result == 'success')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: web-production
@@ -809,9 +897,20 @@ jobs:
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-build.yml' \
             --signer-digest "$TRUSTED_BUILD_WORKFLOW_SHA" --source-digest "$REVIEWED_SHA" \
             --source-ref refs/heads/main --deny-self-hosted-runners
-          REPRESENTATIVE_ASSET=$(tar -tzf "$ARCHIVE" | sed 's#^\./##' | grep -E '(^|/)[A-Za-z0-9_.-]*[.-][a-f0-9]{8,}\.(js|css|woff2?|png|webp)$' | sort | sed -n '1p')
-          test -n "$REPRESENTATIVE_ASSET"
+          INDEX_MEMBER=$(tar -tzf "$ARCHIVE" | grep -E '^(\./)?index\.html$' | sort | sed -n '1p')
+          REPRESENTATIVE_MEMBER=$(tar -tzf "$ARCHIVE" | grep -E '(^|/)[A-Za-z0-9_.-]*[.-][a-f0-9]{8,}\.(js|css|woff2?|png|webp)$' | sort | sed -n '1p')
+          test -n "$INDEX_MEMBER"
+          test -n "$REPRESENTATIVE_MEMBER"
+          REPRESENTATIVE_ASSET=${REPRESENTATIVE_MEMBER#./}
           echo "representative-asset=$REPRESENTATIVE_ASSET" >> "$GITHUB_OUTPUT"
+          tar --extract --gzip --to-stdout --file "$ARCHIVE" "$INDEX_MEMBER" > /tmp/expected-index.html
+          tar --extract --gzip --to-stdout --file "$ARCHIVE" "$REPRESENTATIVE_MEMBER" > /tmp/expected-representative-asset
+          if curl --fail --silent --show-error --max-time 20 https://103.250.173.136/ > /tmp/public-index.html &&
+             cmp --silent /tmp/expected-index.html /tmp/public-index.html &&
+             curl --fail --silent --show-error --max-time 20 "https://103.250.173.136/$REPRESENTATIVE_ASSET" > /tmp/public-representative-asset &&
+             cmp --silent /tmp/expected-representative-asset /tmp/public-representative-asset; then
+            exit 0
+          fi
           install -d -m 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
