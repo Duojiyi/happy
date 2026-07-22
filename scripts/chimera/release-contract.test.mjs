@@ -157,14 +157,15 @@ export function validateClientReleaseWorkflow(workflow) {
     /git\/refs\/tags|git\/ref\/tags/,
     /REVIEWED_SHA/,
     /versionCode/,
-    /release create|releases/,
-    /release create[\s\S]*Chimera-/,
+    /--method POST "repos\/\$REPO\/releases"[\s\S]*tag_name="\$TAG"[\s\S]*name="Chimera \$VERSION"/,
     /chimera-update\.json/,
     /\.sha256/,
     /chimera-release\.yml/,
-    /release create[\s\S]*--draft/,
-    /release upload/,
+    /-F draft=true/,
+    /--input "\$LOCAL" "https:\/\/uploads\.github\.com\/repos\/\$REPO\/releases\/\$RELEASE_ID\/assets\?name=\$NAME"/,
     /draft-release\.json/,
+    /releases\?per_page=100[\s\S]*draft == true and \.tag_name == \$tag/,
+    /gh api "repos\/\$REPO\/releases\/\$RELEASE_ID"/,
     /\.digest/,
     /cmp "\$LOCAL"/,
     /PATCH[\s\S]*draft=false/,
@@ -558,6 +559,20 @@ if (releaseSource && serverSource) {
     const workflow = parse(releaseSource);
     const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('REMOTE_DIGEST'));
     step.run = step.run.replace('gh api --method DELETE "repos/$REPO/releases/assets/$ASSET_ID"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects draft discovery through the published tag endpoint', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('/tmp/draft-matches.json'));
+    step.run = step.run.replace('repos/$REPO/releases?per_page=100', 'repos/$REPO/releases/tags/$TAG');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects draft asset upload that is not bound to the release ID', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('uploads.github.com'));
+    step.run = step.run.replace('https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$NAME', 'repos/$REPO/releases/tags/$TAG/assets?name=$NAME');
     assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
   });
 
