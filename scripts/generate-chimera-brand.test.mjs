@@ -22,6 +22,37 @@ async function product() {
   return JSON.parse(await readFile(productPath, 'utf8'));
 }
 
+function countOpaqueComponents(data, width, height) {
+  const visited = new Uint8Array(width * height);
+  const components = [];
+  const opaque = (index) => data[index * 4 + 3] > 128;
+  for (let start = 0; start < visited.length; start++) {
+    if (visited[start] || !opaque(start)) continue;
+    let size = 0;
+    const pending = [start];
+    visited[start] = 1;
+    while (pending.length) {
+      const current = pending.pop();
+      size++;
+      const x = current % width;
+      const y = Math.floor(current / width);
+      for (const next of [
+        x > 0 ? current - 1 : -1,
+        x + 1 < width ? current + 1 : -1,
+        y > 0 ? current - width : -1,
+        y + 1 < height ? current + width : -1,
+      ]) {
+        if (next >= 0 && !visited[next] && opaque(next)) {
+          visited[next] = 1;
+          pending.push(next);
+        }
+      }
+    }
+    if (size > 100) components.push(size);
+  }
+  return components.length;
+}
+
 test('accepts the fixed Chimera product metadata', async () => {
   const value = validateProduct(await product());
   assert.deepEqual(Object.keys(value).sort(), expectedKeys);
@@ -64,9 +95,10 @@ test('generates a deterministic stable product module', async () => {
   assert.match(first, /export const PRODUCT_NAME = "Chimera" as const;/);
   assert.match(first, /export const ANDROID_APPLICATION_ID = "org\.chimerahub\.chimera" as const;/);
   assert.match(first, /export const RELAY_ORIGIN = "https:\/\/103\.250\.173\.136" as const;/);
-  assert.match(first, /export const ANDROID_VERSION_CODE = 1 as const;/);
-  assert.match(first, /export const VERSION_NAME = "1\.7\.0-chimera\.1" as const;/);
-  assert.match(generateProductConfigModule(value), /export const VERSION_NAME = "1\.7\.0-chimera\.1";/);
+  const versionName = `${value.upstreamAppVersion}-chimera.${value.chimeraRevision}`;
+  assert.ok(first.includes(`export const ANDROID_VERSION_CODE = ${value.androidVersionCode} as const;`));
+  assert.ok(first.includes(`export const VERSION_NAME = "${versionName}" as const;`));
+  assert.ok(generateProductConfigModule(value).includes(`export const VERSION_NAME = "${versionName}";`));
   assert.ok(first.endsWith('\n'));
 });
 
@@ -102,6 +134,13 @@ test('generated PNG assets use the established dimensions and alpha channel', as
       if (name === 'logotype-light.png') assert.ok(foreground.every((value) => value > 220), 'dark-theme wordmark must be light');
       else assert.ok(stats.channels.slice(0, 3).every((channel) => channel.min < 35), 'light-theme wordmark must be dark');
     }
+  }
+});
+
+test('generated wordmarks contain the C mark and every letter in CHIMERA', async () => {
+  for (const name of ['logotype-light.png', 'logotype-dark.png']) {
+    const { data, info } = await sharp(path.join(images, name)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    assert.equal(countOpaqueComponents(data, info.width, info.height), 8, `${name} must render C mark plus CHIMERA`);
   }
 });
 

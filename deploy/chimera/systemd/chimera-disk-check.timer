@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Chimera disk monitor every six hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+RandomizedDelaySec=10min
+Persistent=true
+Unit=chimera-disk-check.service
+
+[Install]
+WantedBy=timers.target

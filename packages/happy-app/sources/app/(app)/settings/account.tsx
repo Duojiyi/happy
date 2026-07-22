@@ -11,10 +11,9 @@ import { ItemList } from '@/components/ItemList';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { layout } from '@/components/layout';
-import { useSettingMutable, useProfile } from '@/sync/storage';
+import { useProfile } from '@/sync/storage';
 import { sync } from '@/sync/sync';
 import { useUnistyles } from 'react-native-unistyles';
-import { Switch } from '@/components/Switch';
 import { useConnectAccount } from '@/hooks/useConnectAccount';
 import { getDisplayName } from '@/sync/profile';
 export default React.memo(() => {
@@ -22,7 +21,6 @@ export default React.memo(() => {
     const auth = useAuth();
     const [showSecret, setShowSecret] = useState(false);
     const [copiedRecently, setCopiedRecently] = useState(false);
-    const [analyticsOptOut, setAnalyticsOptOut] = useSettingMutable('analyticsOptOut');
     const { connectAccount, isLoading: isConnecting } = useConnectAccount();
     const profile = useProfile();
 
@@ -161,29 +159,6 @@ export default React.memo(() => {
                         </Pressable>
                     </ItemGroup>
                 )}
-
-                {/* Analytics Section */}
-                <ItemGroup
-                    title={t('settingsAccount.privacy')}
-                    footer={t('settingsAccount.privacyDescription')}
-                >
-                    <Item
-                        title={t('settingsAccount.analytics')}
-                        subtitle={analyticsOptOut ? t('settingsAccount.analyticsDisabled') : t('settingsAccount.analyticsEnabled')}
-                        rightElement={
-                            <Switch
-                                value={!analyticsOptOut}
-                                onValueChange={(value) => {
-                                    const optOut = !value;
-                                    setAnalyticsOptOut(optOut);
-                                }}
-                                trackColor={{ false: '#767577', true: '#34C759' }}
-                                thumbColor="#FFFFFF"
-                            />
-                        }
-                        showChevron={false}
-                    />
-                </ItemGroup>
 
                 {/* Danger Zone */}
                 <ItemGroup title={t('settingsAccount.dangerZone')}>

@@ -1,0 +1,180 @@
+name: Chimera Trusted Release Orchestrator
+
+on:
+  workflow_run:
+    workflows: [Chimera Secretless Build]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Optional successful main Chimera build run ID
+        required: false
+        type: string
+
+concurrency:
+  group: chimera-release-orchestrator
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  orchestrate:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      actions: write
+      checks: read
+      contents: read
+    steps:
+      - name: Resolve immutable successful main build
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          REQUESTED_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          RUN_ID="$EVENT_RUN_ID"
+          if test "$EVENT_NAME" = workflow_dispatch; then RUN_ID="$REQUESTED_RUN_ID"; fi
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID" > /tmp/build.json
+          jq -e --arg repo "$GH_REPO" '
+            .repository.full_name == $repo and .path == ".github/workflows/chimera-build.yml" and
+            .event == "push" and .head_branch == "main" and .status == "completed" and .conclusion == "success"
+          ' /tmp/build.json
+          SHA=$(jq -r .head_sha /tmp/build.json)
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)" = "$SHA"
+          BASE_TAG=$(gh api "repos/$GH_REPO/releases?per_page=100" --jq '[.[] | select(.draft == false and .prerelease == false and .immutable == true and (.tag_name | startswith("app-v")))][0].tag_name // empty')
+          BASE_SHA=''
+          if test -n "$BASE_TAG"; then BASE_SHA=$(gh api "repos/$GH_REPO/git/ref/tags/$BASE_TAG" --jq .object.sha); fi
+          CLIENT_REQUIRED=true
+          SERVER_REQUIRED=true
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            gh api --paginate "repos/$GH_REPO/compare/$BASE_SHA...$SHA?per_page=100" --jq '.files[].filename' | sort -u > /tmp/paths
+            CLIENT_REQUIRED=false
+            SERVER_REQUIRED=false
+            grep -Eq '^(packages/happy-app/|packages/happy-wire/|brand/chimera/|scripts/generate-chimera-brand\.mjs$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.npmrc$|patches/)' /tmp/paths && CLIENT_REQUIRED=true
+            grep -Eq '^(packages/happy-server/|packages/happy-wire/|Dockerfile\.server$|scripts/verify-chimera-server\.|scripts/chimera-standalone-blackbox\.|deploy/chimera/|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|package\.json$|\.npmrc$|patches/)' /tmp/paths && SERVER_REQUIRED=true
+          fi
+          echo "client-required=$CLIENT_REQUIRED" >> "$GITHUB_OUTPUT"
+          echo "server-required=$SERVER_REQUIRED" >> "$GITHUB_OUTPUT"
+          echo "run-id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          gh api "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" > /tmp/artifacts.json
+          ANDROID_COUNT=$(jq '[.artifacts[] | select(.name == "chimera-android-unsigned" and .expired == false)] | length' /tmp/artifacts.json)
+          WEB_COUNT=$(jq '[.artifacts[] | select(.name == "chimera-web-unsigned" and .expired == false)] | length' /tmp/artifacts.json)
+          if test "$CLIENT_REQUIRED" = false; then
+            test "$ANDROID_COUNT" -eq 0 -a "$WEB_COUNT" -eq 0 || echo 'Ignoring paired conservative client artifacts for an authoritative client-skippable diff.'
+            exit 0
+          fi
+          test "$ANDROID_COUNT" -eq 1 -a "$WEB_COUNT" -eq 1
+          ANDROID_ID=$(jq -er '.artifacts[] | select(.name == "chimera-android-unsigned" and .expired == false) | .id' /tmp/artifacts.json)
+          WEB_ID=$(jq -er '.artifacts[] | select(.name == "chimera-web-unsigned" and .expired == false) | .id' /tmp/artifacts.json)
+          for ID in "$ANDROID_ID" "$WEB_ID"; do [[ "$ID" =~ ^[1-9][0-9]*$ ]]; done
+          echo "android-id=$ANDROID_ID" >> "$GITHUB_OUTPUT"
+          echo "web-id=$WEB_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch independent audits and wait for exact checks
+        id: audits
+        if: ${{ steps.resolve.outputs.client-required == 'true' || steps.resolve.outputs.server-required == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REVIEWED_SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          set -euo pipefail
+          SECURITY_BOUNDARY=$(gh api "repos/$GH_REPO/actions/workflows/chimera-audit-security.yml/runs?event=workflow_dispatch&per_page=100" --jq '[.workflow_runs[].id] | max // 0')
+          MAINTAINABILITY_BOUNDARY=$(gh api "repos/$GH_REPO/actions/workflows/chimera-audit-maintainability.yml/runs?event=workflow_dispatch&per_page=100" --jq '[.workflow_runs[].id] | max // 0')
+          [[ "$SECURITY_BOUNDARY" =~ ^[0-9]+$ && "$MAINTAINABILITY_BOUNDARY" =~ ^[0-9]+$ ]]
+          for WORKFLOW in chimera-audit-security.yml chimera-audit-maintainability.yml; do
+            gh workflow run "$WORKFLOW" --repo "$GH_REPO" --ref main \
+              -f reviewed_commit_sha="$REVIEWED_SHA" -f trusted_workflow_sha="$REVIEWED_SHA"
+          done
+          wait_audit() {
+            local workflow=$1 job_name=$2 boundary=$3
+            for attempt in $(seq 1 90); do
+              run=$(gh api "repos/$GH_REPO/actions/workflows/$workflow/runs?branch=main&event=workflow_dispatch&per_page=20" | \
+                jq -r --arg sha "$REVIEWED_SHA" --argjson boundary "$boundary" '[.workflow_runs[] | select(.head_sha == $sha and .id > $boundary)] | sort_by(.id) | first | .id // empty')
+              if [[ "$run" =~ ^[1-9][0-9]*$ ]]; then
+                state=$(gh api "repos/$GH_REPO/actions/runs/$run" --jq '.status + ":" + (.conclusion // "")')
+                if test "$state" = completed:success; then
+                  check=$(gh api "repos/$GH_REPO/actions/runs/$run/jobs" | jq -r --arg name "$job_name" '[.jobs[] | select(.name == $name and .conclusion == "success")] | if length == 1 then .[0].id else empty end')
+                  [[ "$check" =~ ^[1-9][0-9]*$ ]] && { echo "$check"; return; }
+                elif [[ "$state" == completed:* ]]; then
+                  echo "$workflow failed: $state" >&2; return 1
+                fi
+              fi
+              sleep 20
+            done
+            echo "$workflow timed out" >&2; return 1
+          }
+          SECURITY_ID=$(wait_audit chimera-audit-security.yml 'Chimera Security Audit' "$SECURITY_BOUNDARY")
+          MAINTAINABILITY_ID=$(wait_audit chimera-audit-maintainability.yml 'Chimera Maintainability Audit' "$MAINTAINABILITY_BOUNDARY")
+          printf 'ids=["%s","%s"]\n' "$SECURITY_ID" "$MAINTAINABILITY_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Classify and complete required server release
+        id: server
+        if: ${{ steps.resolve.outputs.server-required == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REVIEWED_SHA: ${{ steps.resolve.outputs.sha }}
+          AUDIT_IDS: ${{ steps.audits.outputs.ids }}
+        run: |
+          set -euo pipefail
+          echo 'run-id=' >> "$GITHUB_OUTPUT"
+          SECURITY_ID=$(jq -er '.[0]' <<<"$AUDIT_IDS")
+          MAINTAINABILITY_ID=$(jq -er '.[1]' <<<"$AUDIT_IDS")
+          RUN_BOUNDARY=$(gh api "repos/$GH_REPO/actions/workflows/chimera-server-release.yml/runs?event=workflow_dispatch&per_page=100" --jq '[.workflow_runs[].id] | max // 0')
+          [[ "$RUN_BOUNDARY" =~ ^[0-9]+$ ]]
+          gh workflow run chimera-server-release.yml --repo "$GH_REPO" --ref main \
+            -f reviewed_commit_sha="$REVIEWED_SHA" -f trusted_workflow_sha="$REVIEWED_SHA" \
+            -f security_audit_run_id="$SECURITY_ID" -f maintainability_audit_run_id="$MAINTAINABILITY_ID"
+          for attempt in $(seq 1 120); do
+            RUN_ID=$(gh api "repos/$GH_REPO/actions/workflows/chimera-server-release.yml/runs?branch=main&event=workflow_dispatch&per_page=20" | \
+              jq -r --arg sha "$REVIEWED_SHA" --argjson boundary "$RUN_BOUNDARY" '[.workflow_runs[] | select(.head_sha == $sha and .id > $boundary)] | sort_by(.id) | first | .id // empty')
+            if [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+              STATE=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID" --jq '.status + ":" + (.conclusion // "")')
+              test "$STATE" = completed:success && { echo "run-id=$RUN_ID" >> "$GITHUB_OUTPUT"; exit 0; }
+              [[ "$STATE" == completed:* ]] && { echo "server release failed: $STATE" >&2; exit 1; }
+            fi
+            sleep 30
+          done
+          echo 'server release timed out' >&2; exit 1
+
+      - name: Dispatch protected client release with immutable inputs
+        if: ${{ steps.resolve.outputs.client-required == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REVIEWED_SHA: ${{ steps.resolve.outputs.sha }}
+          BUILD_RUN_ID: ${{ steps.resolve.outputs.run-id }}
+          ANDROID_ARTIFACT_ID: ${{ steps.resolve.outputs.android-id }}
+          WEB_ARTIFACT_ID: ${{ steps.resolve.outputs.web-id }}
+          AUDIT_IDS: ${{ steps.audits.outputs.ids }}
+          SERVER_RUN_ID: ${{ steps.server.outputs.run-id }}
+        run: |
+          set -euo pipefail
+          RUN_BOUNDARY=$(gh api "repos/$GH_REPO/actions/workflows/chimera-release.yml/runs?event=workflow_dispatch&per_page=100" --jq '[.workflow_runs[].id] | max // 0')
+          [[ "$RUN_BOUNDARY" =~ ^[0-9]+$ ]]
+          gh workflow run chimera-release.yml --repo "$GH_REPO" --ref main \
+            -f reviewed_commit_sha="$REVIEWED_SHA" -f build_run_id="$BUILD_RUN_ID" \
+            -f android_artifact_id="$ANDROID_ARTIFACT_ID" -f web_artifact_id="$WEB_ARTIFACT_ID" \
+            -f trusted_build_workflow_sha="$REVIEWED_SHA" -f audit_run_ids_json="$AUDIT_IDS" \
+            -f expected_signer_sha256='58AA84B6C0D84963E841EED5EF953FC35D4B17D612C923D19A2264F96E4C8A93' \
+            -f server_release_run_id="$SERVER_RUN_ID"
+          for attempt in $(seq 1 150); do
+            RUN_ID=$(gh api "repos/$GH_REPO/actions/workflows/chimera-release.yml/runs?branch=main&event=workflow_dispatch&per_page=20" | \
+              jq -r --arg sha "$REVIEWED_SHA" --argjson boundary "$RUN_BOUNDARY" '[.workflow_runs[] | select(.head_sha == $sha and .id > $boundary)] | sort_by(.id) | first | .id // empty')
+            if [[ "$RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+              STATE=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID" --jq '.status + ":" + (.conclusion // "")')
+              test "$STATE" = completed:success && exit 0
+              [[ "$STATE" == completed:* ]] && { echo "client release failed: $STATE" >&2; exit 1; }
+            fi
+            sleep 30
+          done
+          echo 'client release timed out' >&2; exit 1

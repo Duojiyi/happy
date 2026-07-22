@@ -61,6 +61,9 @@ for (const [name, files, rule] of [
   ['ElevenLabs initialization', { 'packages/happy-app/sources/app/(app)/index.tsx': "useConversation({ agentId: 'agent' });\n" }, 'voice-integration'],
   ['Expo project ID', { 'packages/happy-app/app.config.js': "export default { expo: { name: 'Chimera', slug: 'chimera', android: { package: 'org.chimerahub.chimera' }, updates: { enabled: false }, extra: { eas: { projectId: 'not-a-secret' } }, plugins: [] } };\n" }, 'expo-project-id'],
   ['removed settings ID', { 'packages/happy-app/sources/app/(app)/settings/index.tsx': "export const settings = [{ id: 'voice' }];\n" }, 'removed-settings-or-route'],
+  ['legacy header logo', { 'packages/happy-app/sources/components/HeaderLogo.tsx': "const logo = require('@/assets/images/logo-black.png');\n" }, 'legacy-visible-branding'],
+  ['legacy recovery copy', { 'packages/happy-app/sources/app/(app)/restore/index.tsx': "const instructions = 'Open Happy on your mobile device';\n" }, 'legacy-visible-branding'],
+  ['analytics settings control', { 'packages/happy-app/sources/app/(app)/settings/features.tsx': "const title = t('settingsFeatures.disableAnalytics');\n" }, 'disabled-integration-ui'],
 ]) {
   test(`fails when production source adds ${name}`, async () => {
     const result = await policyResult(files);

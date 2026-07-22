@@ -106,15 +106,13 @@ try {
     [IO.File]::WriteAllText($candidateConfigPath, (($candidateConfig | ConvertTo-Json -Depth 6) + "`n"), [Text.UTF8Encoding]::new($false))
 
     $bump = Join-Path $worktree 'scripts/chimera/bump-release.mjs'
-    $appConfig = Join-Path $worktree 'packages/happy-app/app.config.js'
-    if ((Test-Path -LiteralPath $bump) -and (Test-Path -LiteralPath $appConfig)) {
+    $productPath = Join-Path $worktree 'brand/chimera/product.json'
+    if ((Test-Path -LiteralPath $bump) -and (Test-Path -LiteralPath $productPath)) {
+        $product = Get-Content -Raw -LiteralPath $productPath | ConvertFrom-Json
+        $version = [string]$product.upstreamAppVersion
+        if ($version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') { throw 'Unable to resolve protected Chimera upstream SemVer' }
         Push-Location $worktree
-        try {
-            $version = (& node -e "import('./packages/happy-app/app.config.js').then(m => console.log(m.default.expo.version))" 2>&1 | Select-Object -Last 1).Trim()
-            if ($LASTEXITCODE -ne 0 -or -not $version) { throw 'Unable to resolve upstream app version' }
-            & node scripts/chimera/bump-release.mjs --upstream-app-version $version
-            if ($LASTEXITCODE -ne 0) { throw 'Release bump failed' }
-        }
+        try { & node scripts/chimera/bump-release.mjs $version; if ($LASTEXITCODE -ne 0) { throw 'Release bump failed' } }
         finally { Pop-Location }
     }
     Invoke-Git @('diff', '--quiet', 'HEAD') $worktree -AllowFailure | Out-Null
@@ -122,6 +120,9 @@ try {
         Invoke-Git @('add', '--', 'brand/chimera') $worktree | Out-Null
         if (Test-Path -LiteralPath (Join-Path $worktree 'packages/happy-app/sources/chimera')) {
             Invoke-Git @('add', '--', 'packages/happy-app/sources/chimera') $worktree | Out-Null
+        }
+        if (Test-Path -LiteralPath (Join-Path $worktree 'packages/happy-app/sources/assets/images')) {
+            Invoke-Git @('add', '--', 'packages/happy-app/sources/assets/images') $worktree | Out-Null
         }
         Invoke-Git @('commit', '-m', 'chore(sync): record upstream and bump Chimera release') $worktree | Out-Null
     }

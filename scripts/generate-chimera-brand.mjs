@@ -90,7 +90,17 @@ export function generateProductConfigModule(product) {
 const iconSvg = (mark, background, foreground = '#000000') => Buffer.from(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><rect width="1024" height="1024" fill="${background}"/><g transform="translate(128 128) scale(1.5)" fill="${foreground}">${mark}</g></svg>`,
 );
-const wordmarkSvg = (mark, foreground) => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1965 523"><g fill="${foreground}"><g transform="translate(45 5)">${mark}</g><path d="M610 112h280v64H682v171h208v64H610zm325 0h72v110h116V112h72v299h-72V286h-116v125h-72zm313 0h72v299h-72zm125 0h78l76 164 76-164h78v299h-70V236l-58 125h-52l-58-125v175h-70zm361 0h186v64h-114v53h99v62h-99v56h114v64h-186z"/></g></svg>`);
+const wordmarkSvg = (mark, foreground) => Buffer.from(
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1965 523"><g fill="${foreground}" fill-rule="evenodd"><g transform="translate(45 5)">${mark}</g>` +
+  '<path d="M720 112H570v299h150v-64h-78V176h78z"/>' +
+  '<path d="M750 112h48v123h54V112h48v299h-48V287h-54v124h-48z"/>' +
+  '<path d="M930 112h150v64h-51v171h51v64H930v-64h51V176h-51z"/>' +
+  '<path d="M1110 112h52l33 82 33-82h52v299h-48V231l-20 55h-34l-20-55v180h-48z"/>' +
+  '<path d="M1310 112h150v64h-102v53h88v62h-88v56h102v64h-150z"/>' +
+  '<path d="M1490 112h105c36 0 55 25 55 75v49c0 38-12 61-36 70l46 105h-54l-42-96h-26v96h-48zm48 64v75h50c10 0 14-8 14-24v-27c0-16-4-24-14-24z"/>' +
+  '<path d="M1690 411l65-299h70l65 299h-52l-13-68h-70l-13 68zm77-132h46l-23-116z"/>' +
+  '</g></svg>',
+);
 
 async function outputs() {
   const product = validateProduct(process.env.CHIMERA_PRODUCT_JSON ? JSON.parse(process.env.CHIMERA_PRODUCT_JSON) : JSON.parse(await readFile(productPath, 'utf8')));

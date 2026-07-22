@@ -9,6 +9,8 @@ const releasePath = path.join(root, '.github/workflows/chimera-release.yml');
 const serverPath = path.join(root, '.github/workflows/chimera-server-release.yml');
 const securityAuditPath = path.join(root, '.github/workflows/chimera-audit-security.yml');
 const maintainabilityAuditPath = path.join(root, '.github/workflows/chimera-audit-maintainability.yml');
+const orchestratorPath = path.join(root, '.github/workflows/chimera-auto-release.yml');
+const monitorPath = path.join(root, '.github/workflows/chimera-external-monitor.yml');
 const PINNED_ACTION = /^[^@\s]+@[0-9a-f]{40}$/;
 
 const steps = (job) => (job?.steps ?? []).filter((step) => step && typeof step === 'object');
@@ -126,11 +128,13 @@ export function validateClientReleaseWorkflow(workflow) {
     /cmp \/tmp\/expected-apk\.sha256/,
     /cmp "\$EXISTING_WEB" candidate\/web\/Chimera-web\.tar\.gz/,
     /cmp \/tmp\/expected-web\.sha256/,
+    /TAG_ONLY_TARGET[\s\S]*test "\$TAG_ONLY_TARGET" = "\$SHA"/,
+    /SIGNING_TAG_TARGET[\s\S]*test "\$SIGNING_TAG_TARGET" = "\$REVIEWED_SHA_INPUT"/,
   ], 'signing job');
   assert.ok(steps(signing).some((step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.['artifact-ids']), 'signing must download by immutable artifact ID');
   assert.ok(steps(signing).some((step) => step.uses?.startsWith('actions/upload-artifact@')), 'signing must hand off signed bytes as an artifact');
   for (const [name, job] of Object.entries(workflow.jobs)) {
-    if (name !== 'signing') assert.doesNotMatch(serialized(job), /\$\{\{\s*secrets\./, `${name} must not receive release secrets`);
+    if (!['signing', 'android-mirror', 'web-production'].includes(name)) assert.doesNotMatch(serialized(job), /\$\{\{\s*secrets\./, `${name} must not receive release secrets`);
   }
 
   const signedProvenance = workflow.jobs?.['signed-provenance'];
@@ -158,12 +162,114 @@ export function validateClientReleaseWorkflow(workflow) {
     /chimera-update\.json/,
     /\.sha256/,
     /chimera-release\.yml/,
+    /release create[\s\S]*--draft/,
+    /release upload/,
+    /draft-release\.json/,
+    /\.digest/,
+    /cmp "\$LOCAL"/,
+    /PATCH[\s\S]*draft=false/,
+    /immutable == true/,
+    /tag_name == \$tag[\s\S]*name == \$title[\s\S]*body == \$body/,
+    /author\.login == "github-actions\[bot\]"/,
+    /comm -23 \/tmp\/actual-draft-assets \/tmp\/expected-draft-assets/,
+    /REMOTE_DIGEST/,
+    /DELETE "repos\/\$REPO\/releases\/assets\/\$ASSET_ID"/,
+    /if gh api "repos\/\$REPO\/git\/ref\/tags\/\$TAG" >\/tmp\/tag\.json 2>\/dev\/null; then\s+test "\$\(jq -r '\.object\.sha' \/tmp\/tag\.json\)" = "\$SHA"\s+else/,
   ], 'publication job');
   assert.match(publish, /RELEASE_WORKFLOW_SHA[\s\S]*--signer-digest "\$RELEASE_WORKFLOW_SHA"[\s\S]*--source-digest "\$RELEASE_WORKFLOW_SHA"/, 'signed provenance must bind to the actual release workflow SHA');
   const signedVerification = publish.slice(publish.indexOf('for FILE in publish/signed/'), publish.indexOf('gh attestation verify publish/web/'));
   assert.doesNotMatch(signedVerification, /--signer-digest "\$REVIEWED_SHA"|--source-digest "\$REVIEWED_SHA"/, 'product commit SHA must not impersonate the release workflow signer SHA');
   assert.doesNotMatch(publish, /--clobber|release delete|git push.*--force/i, 'publication must never replace immutable assets');
+  const androidMirror = workflow.jobs?.['android-mirror'];
+  assert.equal(androidMirror?.environment, 'android-mirror');
+  assert.deepEqual(androidMirror?.permissions, { actions: 'read', attestations: 'read', contents: 'read' });
+  assertNoCheckout(androidMirror, 'Android mirror');
+  assertContains(runs(androidMirror), [/gh attestation verify/, /StrictHostKeyChecking=yes/, /chimera-android-deploy@103\.250\.173\.136/, /\.chimera-staging\/android/, /activate-android/, /--range 0-0/], 'Android mirror');
+  assert.match(serialized(androidMirror), /CHIMERA_ANDROID_DEPLOY_SSH_KEY/);
+  assert.doesNotMatch(serialized(androidMirror), /CHIMERA_WEB_DEPLOY_SSH_KEY|CHIMERA_ANDROID_KEYSTORE/);
+
+  const webProduction = workflow.jobs?.['web-production'];
+  assert.equal(webProduction?.environment, 'web-production');
+  assert.deepEqual(webProduction?.permissions, { actions: 'read', attestations: 'read', contents: 'read' });
+  assertNoCheckout(webProduction, 'Web production');
+  assertContains(runs(webProduction), [/gh attestation verify/, /StrictHostKeyChecking=yes/, /chimera-web-deploy@103\.250\.173\.136/, /\.chimera-staging\/web/, /activate-web/, /REPRESENTATIVE_ASSET/], 'Web production');
+  assert.match(serialized(webProduction), /CHIMERA_WEB_DEPLOY_SSH_KEY/);
+  assert.doesNotMatch(serialized(webProduction), /CHIMERA_ANDROID_DEPLOY_SSH_KEY|CHIMERA_ANDROID_KEYSTORE/);
+
+  const publicSmoke = workflow.jobs?.['public-smoke'];
+  assert.deepEqual(publicSmoke?.needs, ['android-mirror', 'web-production']);
+  assert.deepEqual(publicSmoke?.permissions, { contents: 'read' });
+  assert.doesNotMatch(serialized(publicSmoke), /\$\{\{\s*secrets\./);
+  assertContains(runs(publicSmoke), [/external-monitor\.mjs/, /--full-apk/, /REPRESENTATIVE_ASSET/, /curl/, /103\.250\.173\.136/], 'public smoke');
   assert.match(serialized(workflow), /server_release_run_id/);
+  return true;
+}
+
+export function validateAutomationWorkflows(orchestrator, monitor) {
+  const orchestratorTriggers = orchestrator.on ?? orchestrator.true;
+  assert.deepEqual(orchestratorTriggers.workflow_run.workflows, ['Chimera Secretless Build']);
+  assert.deepEqual(orchestratorTriggers.workflow_run.types, ['completed']);
+  assert.ok(orchestratorTriggers.workflow_dispatch);
+  assertPinned(orchestrator);
+  assertNoDirectUntrustedShellExpressions(orchestrator);
+  const job = orchestrator.jobs?.orchestrate;
+  assert.deepEqual(job?.permissions, { actions: 'write', checks: 'read', contents: 'read' });
+  assert.doesNotMatch(serialized(job), /\$\{\{\s*secrets\./);
+  assertContains(runs(job), [
+    /chimera-build\.yml/,
+    /head_branch.*main/,
+    /git\/ref\/heads\/main/,
+    /chimera-android-unsigned/,
+    /chimera-web-unsigned/,
+    /chimera-audit-security\.yml/,
+    /chimera-audit-maintainability\.yml/,
+    /chimera-server-release\.yml/,
+    /chimera-release\.yml/,
+    /audit_run_ids_json/,
+    /expected_signer_sha256/,
+    /ANDROID_COUNT.*-eq 0.*WEB_COUNT.*-eq 0/s,
+    /CLIENT_REQUIRED=false/,
+    /RUN_BOUNDARY/,
+    /\.id > \$boundary/,
+    /client release failed/,
+  ], 'release orchestrator');
+  const audits = steps(job).find((step) => step.id === 'audits');
+  const server = steps(job).find((step) => step.id === 'server');
+  const client = steps(job).find((step) => step.name === 'Dispatch protected client release with immutable inputs');
+  assert.match(audits?.if ?? '', /client-required == 'true'.*server-required == 'true'/);
+  assert.match(server?.if ?? '', /server-required == 'true'/);
+  assert.doesNotMatch(server?.if ?? '', /client-required/);
+  assert.match(client?.if ?? '', /client-required == 'true'/);
+  assertContains(runs(job), [/CLIENT_REQUIRED/, /SERVER_REQUIRED/, /packages\/happy-app/, /packages\/happy-server/], 'independent release classification');
+
+  const monitorTriggers = monitor.on ?? monitor.true;
+  assert.equal(monitorTriggers.schedule[0].cron, '23 */6 * * *');
+  assert.equal('workflow_dispatch' in monitorTriggers, true);
+  assertPinned(monitor);
+  const probe = monitor.jobs?.['public-probe'];
+  assert.deepEqual(probe?.permissions, { contents: 'read' });
+  assert.doesNotMatch(serialized(probe), /\$\{\{\s*secrets\.|issues\s*:\s*write/);
+  assertContains(runs(probe), [/external-monitor\.mjs/, /https:\/\/103\.250\.173\.136/], 'external monitor');
+  assert.doesNotMatch(runs(probe), /--full-apk/, 'scheduled monitor must not redownload the entire APK');
+  const issue = monitor.jobs?.['upsert-failure'];
+  assert.deepEqual(issue?.permissions, { contents: 'read', issues: 'write' });
+  assert.match(issue?.if ?? '', /public-probe\.result == 'failure'/);
+  assert.match(issue?.if ?? '', /disk-probe\.result == 'failure'/);
+  assertContains(runs(issue), [/issue list/, /issue comment/, /issue create/], 'monitor issue upsert');
+  const disk = monitor.jobs?.['disk-probe'];
+  assert.equal(disk?.environment, 'production-monitor');
+  assert.deepEqual(disk?.permissions, { contents: 'read' });
+  assertNoCheckout(disk, 'disk probe');
+  assertContains(runs(disk), [/StrictHostKeyChecking=yes/, /chimera-status-monitor@103\.250\.173\.136/, /status-server/, /test "\$RESULT" = ok/], 'disk probe');
+  assert.match(serialized(disk), /CHIMERA_STATUS_MONITOR_SSH_KEY/);
+  assert.doesNotMatch(serialized(disk), /CHIMERA_SERVER_DEPLOY_SSH_KEY|chimera-server-deploy@/);
+  assert.doesNotMatch(runs(disk), /disk-monitor\.json|snapshotBytes|dockerBytes/, 'disk probe must not expose filesystem details');
+  const recovered = monitor.jobs?.['close-recovered'];
+  assert.deepEqual(recovered?.permissions, { contents: 'read', issues: 'write' });
+  assert.match(recovered?.if ?? '', /public-probe\.result == 'success'/);
+  assert.match(recovered?.if ?? '', /disk-probe\.result == 'success'/);
+  assertContains(runs(recovered), [/\[ops\] Chimera external monitor is failing/, /issue list/, /\.title == \$title/, /issue close/, /--reason completed/], 'monitor issue recovery');
+  assert.match(runs(probe) + serialized(monitor), /50001|external-monitor\.mjs/, 'monitor must execute the checked-in public port policy');
   return true;
 }
 
@@ -300,11 +406,13 @@ function stringify(value) {
   return JSON.stringify(value);
 }
 
-const [releaseSource, serverSource, securityAuditSource, maintainabilityAuditSource] = await Promise.all([
+const [releaseSource, serverSource, securityAuditSource, maintainabilityAuditSource, orchestratorSource, monitorSource] = await Promise.all([
   readFile(releasePath, 'utf8').catch(() => null),
   readFile(serverPath, 'utf8').catch(() => null),
   readFile(securityAuditPath, 'utf8').catch(() => null),
   readFile(maintainabilityAuditPath, 'utf8').catch(() => null),
+  readFile(orchestratorPath, 'utf8').catch(() => null),
+  readFile(monitorPath, 'utf8').catch(() => null),
 ]);
 
 test('Chimera client release workflow contract', () => {
@@ -321,6 +429,18 @@ test('Chimera independent audit workflow contracts', () => {
   assert.ok(securityAuditSource, `missing ${path.relative(root, securityAuditPath)}`);
   assert.ok(maintainabilityAuditSource, `missing ${path.relative(root, maintainabilityAuditPath)}`);
   validateAuditWorkflows(parse(securityAuditSource), parse(maintainabilityAuditSource));
+});
+
+test('Chimera automatic release and external monitor contracts', () => {
+  assert.ok(orchestratorSource, `missing ${path.relative(root, orchestratorPath)}`);
+  assert.ok(monitorSource, `missing ${path.relative(root, monitorPath)}`);
+  validateAutomationWorkflows(parse(orchestratorSource), parse(monitorSource));
+});
+
+test('rejects coupling server-only orchestration to client release artifacts', () => {
+  const workflow = parse(orchestratorSource);
+  workflow.jobs.orchestrate.steps.find((step) => step.id === 'server').if = "${{ steps.resolve.outputs.client-required == 'true' }}";
+  assert.throws(() => validateAutomationWorkflows(workflow, parse(monitorSource)), /server-required|client-required/);
 });
 
 if (releaseSource && serverSource) {
@@ -411,6 +531,48 @@ if (releaseSource && serverSource) {
     const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('oci-attestations.jsonl'));
     step.run = step.run.replace('https://spdx.dev/Document/v2.3', 'https://example.invalid/unchecked');
     assert.throws(() => validateServerReleaseWorkflow(workflow), /server publication missing/);
+  });
+
+  test('rejects draft resume without an exact draft identity check', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('EXPECTED_BODY='));
+    step.run = step.run.replaceAll('.tag_name == $tag and .name == $title and .body == $body', '.draft == true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects draft resume without GitHub Actions ownership binding', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('EXPECTED_BODY='));
+    step.run = step.run.replaceAll('.author.login == "github-actions[bot]" and ', '');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects draft resume that permits unexpected assets', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('actual-draft-assets'));
+    step.run = step.run.replace('test -z "$(comm -23 /tmp/actual-draft-assets /tmp/expected-draft-assets)"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects draft resume without exact mismatched-asset deletion', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('REMOTE_DIGEST'));
+    step.run = step.run.replace('gh api --method DELETE "repos/$REPO/releases/assets/$ASSET_ID"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
+  });
+
+  test('rejects tag-only recovery without reviewed SHA binding before signing', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.signing.steps.find((item) => item.id === 'preflight');
+    step.run = step.run.replace('test "$TAG_ONLY_TARGET" = "$SHA"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /signing job missing/);
+  });
+
+  test('rejects tag-only recovery without reviewed SHA binding before draft creation', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs.publication.steps.find((item) => item.run?.includes('/tmp/tag.json'));
+    step.run = step.run.replace('test "$(jq -r \'.object.sha\' /tmp/tag.json)" = "$SHA"', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /publication job missing/);
   });
 
   test('rejects audit workflow coupling', () => {

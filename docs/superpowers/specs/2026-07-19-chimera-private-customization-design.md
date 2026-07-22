@@ -30,7 +30,8 @@ It must not become a collection of fragile search-and-replace patches.
   for executable changes.
 - Deploy web releases atomically and publish immutable APK releases with a safe
   Android update path.
-- Deploy and harden the relay on backup server A, then hand the running web app
+- Deploy and harden the relay on the dedicated production server at
+  `103.250.173.136`, then hand the running web app
   and APK to the user for acceptance testing.
 
 ## Non-Goals
@@ -123,7 +124,7 @@ Caddy routing:
 - `/chimera-control/*` proxies to the Chimera Control module.
 - `/downloads/*` serves the current and previous signed Android APK plus update
   manifests.
-- `/.well-known/acme-challenge/*` serves Certbot webroot challenges.
+- Port 80 redirects to HTTPS and remains reachable for Caddy's ACME validation.
 
 The standalone server uses PGlite, local file storage, and its in-memory event
 bus. No external Postgres, Redis, or S3 service is introduced at this scale.
@@ -493,8 +494,9 @@ Future server deployment is path-sensitive:
   short maintenance window to guarantee consistency.
 
 Sensitive server/protocol/dependency changes do not auto-merge merely because
-unit tests pass. They require the protected `server-release` GitHub Environment
-approval. This is the intentional human boundary in the semi-automatic model.
+unit tests pass. They require two independent audit artifacts bound to the exact
+candidate SHA. Signing and deployment secrets remain isolated in protected
+GitHub Environments; automation may proceed only after those fail-closed gates.
 
 ## Upstream Synchronization
 
@@ -592,10 +594,9 @@ manifest, and server image remain available for rollback.
 ### Public IP TLS
 
 Let's Encrypt IP certificates are generally available and must use the
-`shortlived` profile. Certbot 5.4 or newer obtains the certificate with webroot
-validation and `--ip-address 103.250.173.136`. Certificates are valid for 160 hours.
+`shortlived` profile. Caddy obtains and renews the certificate through its ACME
+issuer using a persistent data volume. Certificates are valid for 160 hours.
 
-- A systemd timer runs renewal checks every six hours with randomized delay.
 - Caddy renews the short-lived certificate automatically and public smoke tests
   validate its chain, IP SAN, and expiry.
 - A scheduled GitHub workflow independently checks the public certificate and
@@ -617,7 +618,7 @@ Before application deployment:
 - Disable and mask unused RPC services exposing port 111.
 - Enable UFW with only SSH, 80, and 443 allowed; apply equivalent Alibaba Cloud
   security-group rules.
-- Bind the relay container only as `127.0.0.1:3005:3005`, publish no metrics
+- Bind the relay process only on `127.0.0.1:3000`, publish no metrics
   port, and add a `DOCKER-USER` default-deny rule so Docker cannot bypass UFW.
 - Verify the public port surface from an external GitHub runner, not only from
   local firewall output.
@@ -712,7 +713,8 @@ release manifests, health endpoints, or client bundles.
 
 1. Implement and gate the Chimera customization layer locally.
 2. Provision GitHub environments/secrets and validate unsigned CI builds.
-3. Harden backup server A and establish public-IP HTTPS.
+3. Harden the dedicated production server at `103.250.173.136` and establish
+   public-IP HTTPS.
 4. Deploy and initialize the standalone relay and Chimera Control.
 5. Create the first administrator password hash and one test invitation.
 6. Deploy web and run browser smoke tests.
