@@ -232,6 +232,8 @@ export function validateClientReleaseWorkflow(workflow) {
   assert.match(String(webProduction.if), /always\(\)[\s\S]*needs\.signing\.outputs\.no-op == 'true'[\s\S]*needs\.publication\.result == 'skipped'/, 'Web immutable recovery must require the fully verified no-op path');
   assert.match(runs(webProduction), /sort \| sed -n '1p'/, 'Web activation must consume the complete representative-asset pipeline under pipefail');
   assert.doesNotMatch(runs(webProduction), /sort \| head -n 1/, 'Web activation must not terminate the representative-asset pipeline early');
+  assert.match(runs(webProduction), /INDEX_MEMBER=.*index\\\.html[\s\S]*REPRESENTATIVE_MEMBER=[\s\S]*REPRESENTATIVE_ASSET=\$\{REPRESENTATIVE_MEMBER#\.\/\}/, 'Web recovery must derive public paths without changing exact tar member names');
+  assert.match(runs(webProduction), /--file "\$ARCHIVE" "\$INDEX_MEMBER"[\s\S]*--file "\$ARCHIVE" "\$REPRESENTATIVE_MEMBER"/, 'Web recovery must extract the exact discovered tar members');
   assert.match(runs(webProduction), /tar --extract --gzip --to-stdout[\s\S]*expected-representative-asset[\s\S]*cmp --silent \/tmp\/expected-index\.html \/tmp\/public-index\.html[\s\S]*public-representative-asset[\s\S]*cmp --silent \/tmp\/expected-representative-asset \/tmp\/public-representative-asset[\s\S]*exit 0[\s\S]*install -d -m 700 ~\/\.ssh/, 'Web immutable recovery must prove exact active bytes before an idempotent success');
   assertContains(runs(webProduction), [/gh attestation verify/, /StrictHostKeyChecking=yes/, /chimera-web-deploy@103\.250\.173\.136/, /\.chimera-staging\/web/, /activate-web/, /REPRESENTATIVE_ASSET/], 'Web production');
   assert.match(serialized(webProduction), /CHIMERA_WEB_DEPLOY_SSH_KEY/);
@@ -570,6 +572,13 @@ if (releaseSource && serverSource) {
     const step = workflow.jobs['web-production'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
     step.run = step.run.replace('cmp --silent /tmp/expected-representative-asset /tmp/public-representative-asset', 'true');
     assert.throws(() => validateClientReleaseWorkflow(workflow), /Web immutable recovery must prove/);
+  });
+
+  test('rejects Web recovery that extracts a normalized path instead of the exact tar member', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['web-production'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
+    step.run = step.run.replace('"$INDEX_MEMBER" > /tmp/expected-index.html', 'index.html > /tmp/expected-index.html');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /exact discovered tar members/);
   });
 
   test('rejects repository script execution in publication', () => {

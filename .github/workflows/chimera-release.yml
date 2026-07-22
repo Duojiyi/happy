@@ -890,11 +890,14 @@ jobs:
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-build.yml' \
             --signer-digest "$TRUSTED_BUILD_WORKFLOW_SHA" --source-digest "$REVIEWED_SHA" \
             --source-ref refs/heads/main --deny-self-hosted-runners
-          REPRESENTATIVE_ASSET=$(tar -tzf "$ARCHIVE" | sed 's#^\./##' | grep -E '(^|/)[A-Za-z0-9_.-]*[.-][a-f0-9]{8,}\.(js|css|woff2?|png|webp)$' | sort | sed -n '1p')
-          test -n "$REPRESENTATIVE_ASSET"
+          INDEX_MEMBER=$(tar -tzf "$ARCHIVE" | grep -E '^(\./)?index\.html$' | sort | sed -n '1p')
+          REPRESENTATIVE_MEMBER=$(tar -tzf "$ARCHIVE" | grep -E '(^|/)[A-Za-z0-9_.-]*[.-][a-f0-9]{8,}\.(js|css|woff2?|png|webp)$' | sort | sed -n '1p')
+          test -n "$INDEX_MEMBER"
+          test -n "$REPRESENTATIVE_MEMBER"
+          REPRESENTATIVE_ASSET=${REPRESENTATIVE_MEMBER#./}
           echo "representative-asset=$REPRESENTATIVE_ASSET" >> "$GITHUB_OUTPUT"
-          tar --extract --gzip --to-stdout --file "$ARCHIVE" index.html > /tmp/expected-index.html
-          tar --extract --gzip --to-stdout --file "$ARCHIVE" "$REPRESENTATIVE_ASSET" > /tmp/expected-representative-asset
+          tar --extract --gzip --to-stdout --file "$ARCHIVE" "$INDEX_MEMBER" > /tmp/expected-index.html
+          tar --extract --gzip --to-stdout --file "$ARCHIVE" "$REPRESENTATIVE_MEMBER" > /tmp/expected-representative-asset
           if curl --fail --silent --show-error --max-time 20 https://103.250.173.136/ > /tmp/public-index.html &&
              cmp --silent /tmp/expected-index.html /tmp/public-index.html &&
              curl --fail --silent --show-error --max-time 20 "https://103.250.173.136/$REPRESENTATIVE_ASSET" > /tmp/public-representative-asset &&
