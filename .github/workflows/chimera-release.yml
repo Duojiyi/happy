@@ -748,6 +748,14 @@ jobs:
             test "sha256:$(sha256sum "deploy/android/$NAME" | cut -d ' ' -f 1)" = "$REMOTE_DIGEST"
           done
           mv "deploy/android/Chimera-$VERSION.apk" deploy/android/Chimera.apk
+          APK_SHA=$(sha256sum deploy/android/Chimera.apk | cut -d ' ' -f 1)
+          APK_SIZE=$(stat -c '%s' deploy/android/Chimera.apk)
+          jq -e --arg sha "$REVIEWED_SHA" --arg digest "$APK_SHA" --arg size "$APK_SIZE" --arg version "$VERSION" '
+            .commitSha == $sha and .versionName == $version and .signedSha256 == $digest and
+            .signedSize == ($size | tonumber) and .signerSha256 == "58AA84B6C0D84963E841EED5EF953FC35D4B17D612C923D19A2264F96E4C8A93"
+          ' deploy/android/release-metadata.json
+          rm "deploy/android/Chimera-$VERSION.apk.sha256"
+          printf '%s  Chimera.apk\n' "$APK_SHA" > deploy/android/Chimera.apk.sha256
 
       - name: Reverify and activate through restricted identity
         env:
@@ -764,6 +772,8 @@ jobs:
           APK=deploy/android/Chimera.apk
           MANIFEST=deploy/android/chimera-update.json
           APK_SHA=$(sha256sum "$APK" | cut -d ' ' -f 1)
+          printf '%s  Chimera.apk\n' "$APK_SHA" > /tmp/expected-apk.sha256
+          cmp /tmp/expected-apk.sha256 deploy/android/Chimera.apk.sha256
           APK_SIZE=$(stat -c '%s' "$APK")
           jq -e --arg sha "$REVIEWED_SHA" --arg digest "$APK_SHA" --arg size "$APK_SIZE" --argjson code "$VERSION_CODE" '
             .payload.commitSha == $sha and .payload.versionCode == $code and .payload.sha256 == $digest and
@@ -779,12 +789,14 @@ jobs:
           gh attestation verify "$MANIFEST" "${ATTESTATION_ARGS[@]}"
           PUBLIC_MANIFEST=$(mktemp)
           if curl --fail --silent --show-error --max-time 20 https://103.250.173.136/downloads/chimera-update.json > "$PUBLIC_MANIFEST" &&
+             cmp --silent "$MANIFEST" "$PUBLIC_MANIFEST" &&
              jq -e --arg sha "$REVIEWED_SHA" --arg digest "$APK_SHA" --arg size "$APK_SIZE" --argjson code "$VERSION_CODE" '
                .payload.commitSha == $sha and .payload.versionCode == $code and .payload.sha256 == $digest and
                .payload.size == ($size | tonumber) and .payload.packageName == "org.chimerahub.chimera"
              ' "$PUBLIC_MANIFEST" >/dev/null; then
-            PUBLIC_APK_PATH=$(jq -er '.payload.apkPath' "$PUBLIC_MANIFEST")
-            curl --fail --silent --show-error --max-time 20 --range 0-0 -o /dev/null "https://103.250.173.136$PUBLIC_APK_PATH"
+            PUBLIC_APK_PATH=$(jq -er '.payload.apkPath' "$MANIFEST")
+            PUBLIC_APK_SHA=$(curl --fail --silent --show-error --max-time 2700 "https://103.250.173.136$PUBLIC_APK_PATH" | sha256sum | cut -d ' ' -f 1)
+            test "$PUBLIC_APK_SHA" = "$APK_SHA"
             exit 0
           fi
           install -d -m 700 ~/.ssh
@@ -849,9 +861,11 @@ jobs:
           test -n "$REPRESENTATIVE_ASSET"
           echo "representative-asset=$REPRESENTATIVE_ASSET" >> "$GITHUB_OUTPUT"
           tar --extract --gzip --to-stdout --file "$ARCHIVE" index.html > /tmp/expected-index.html
+          tar --extract --gzip --to-stdout --file "$ARCHIVE" "$REPRESENTATIVE_ASSET" > /tmp/expected-representative-asset
           if curl --fail --silent --show-error --max-time 20 https://103.250.173.136/ > /tmp/public-index.html &&
              cmp --silent /tmp/expected-index.html /tmp/public-index.html &&
-             curl --fail --silent --show-error --max-time 20 -o /dev/null "https://103.250.173.136/$REPRESENTATIVE_ASSET"; then
+             curl --fail --silent --show-error --max-time 20 "https://103.250.173.136/$REPRESENTATIVE_ASSET" > /tmp/public-representative-asset &&
+             cmp --silent /tmp/expected-representative-asset /tmp/public-representative-asset; then
             exit 0
           fi
           install -d -m 700 ~/.ssh
