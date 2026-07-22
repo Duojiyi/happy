@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 
 const root = new URL('./', import.meta.url);
-const [script, status, forcedServer, forcedStatus, sudoers, service, timer, installer, bootstrap] = await Promise.all([
+const [script, status, forcedServer, forcedStatus, sudoers, service, timer, installer, bootstrap, sshPolicy] = await Promise.all([
   readFile(new URL('chimera-disk-check.sh', root), 'utf8'),
   readFile(new URL('chimera-disk-status', root), 'utf8'),
   readFile(new URL('bin/chimera-server-helper', root), 'utf8'),
@@ -14,6 +14,7 @@ const [script, status, forcedServer, forcedStatus, sudoers, service, timer, inst
   readFile(new URL('systemd/chimera-disk-check.timer', root), 'utf8'),
   readFile(new URL('install-deploy-user.sh', root), 'utf8'),
   readFile(new URL('install-monitoring.sh', root), 'utf8'),
+  readFile(new URL('libexec/chimera-status-ssh-policy', root), 'utf8'),
 ]);
 
 test('disk monitor checks both filesystems and bounded storage categories', () => {
@@ -53,6 +54,16 @@ test('one-time production bootstrap validates host policy before activation', ()
   assert.doesNotMatch(sudoers, /\r/, 'sudoers policy must retain Unix line endings for visudo');
   assert.match(bootstrap, /visudo -cf "\$SUDOERS_TMP"/);
   assert.ok(bootstrap.indexOf('visudo -cf "$SUDOERS_TMP"') < bootstrap.indexOf('mv -f -- "$SUDOERS_TMP" /etc/sudoers.d/chimera-deploy'));
+  assert.match(sshPolicy, /99-chimera-status-monitor\.conf/);
+  assert.match(sshPolicy, /printf 'AllowUsers %s\\n' "\$status_user"/);
+  for (const requiredUser of ['root', 'chimera-server-deploy', 'chimera-android-deploy', 'chimera-web-deploy']) assert.match(sshPolicy, new RegExp(requiredUser));
+  assert.match(sshPolicy, /existing SSH allowlist is missing required identity/);
+  assert.ok(bootstrap.indexOf('activate_status_ssh_policy') < bootstrap.indexOf('STATUS_AUTH_TMP='));
+  assert.match(bootstrap, /STATUS_AUTH_TMP=\$\(mktemp/);
+  assert.ok(bootstrap.indexOf('mv -f -- "$STATUS_AUTH_TMP"') > bootstrap.indexOf('chmod 0600 "$STATUS_AUTH_TMP"'));
+  assert.ok(sshPolicy.indexOf('"$sshd_bin" -t') < sshPolicy.indexOf('"$systemctl_bin" reload ssh'));
+  assert.ok(bootstrap.indexOf('activate_status_ssh_policy') < bootstrap.indexOf('systemctl enable --now chimera-disk-check.timer'));
+  assert.match(sshPolicy, /status monitor SSH policy activation failed/);
   assert.ok(bootstrap.indexOf('systemctl start chimera-disk-check.service') < bootstrap.indexOf('systemctl enable --now chimera-disk-check.timer'));
   assert.match(bootstrap, /chimera-disk-status \| grep -Fx ok/);
   assert.match(bootstrap, /chimera-status-monitor/);

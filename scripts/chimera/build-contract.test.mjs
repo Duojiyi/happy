@@ -164,6 +164,8 @@ export function validateBuildWorkflow(workflow) {
   assert.equal(policy.name, 'client-build-policy', 'policy check context must remain stable');
   assert.deepEqual(policy.permissions, { contents: 'read' }, 'policy permissions must be read-only');
   assertNoCandidateCredentials(policy, 'client-build-policy');
+  const policyCheckout = allSteps(policy).find((step) => step.uses?.startsWith('actions/checkout@'));
+  assert.equal(policyCheckout?.with?.['persist-credentials'], false, 'client-build-policy checkout must not persist credentials');
   assert.deepEqual(policy.needs?.slice?.().sort(), ['android', 'classify', 'provenance', 'web'], 'policy must observe classification, builds, and provenance');
   assert.match(policy.if ?? '', /always\(\)/, 'policy must run even when dependencies fail or skip');
   const policyText = runText(policy);
@@ -316,6 +318,13 @@ if (!source) {
     const checkout = workflow.jobs.web.steps.find((item) => item.uses?.startsWith('actions/checkout@'));
     checkout.with['persist-credentials'] = true;
     assert.throws(() => validateBuildWorkflow(workflow), /checkout must not persist credentials/);
+  });
+
+  test('contract rejects persisted policy checkout credentials', () => {
+    const workflow = parse(source);
+    const checkout = workflow.jobs['client-build-policy'].steps.find((item) => item.uses?.startsWith('actions/checkout@'));
+    checkout.with['persist-credentials'] = true;
+    assert.throws(() => validateBuildWorkflow(workflow), /client-build-policy checkout must not persist credentials/);
   });
 
   test('contract rejects missing dependency path inputs', () => {

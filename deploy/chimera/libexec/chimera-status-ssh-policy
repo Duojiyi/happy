@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+
+activate_status_ssh_policy() {
+  local config_dir="$1" status_user="$2" sshd_bin="$3" systemctl_bin="$4"
+  local allow_file="$config_dir/99-chimera-status-monitor.conf"
+  local allow_tmp allow_backup=
+  local -a allowed_users
+
+  mapfile -t allowed_users < <("$sshd_bin" -T | awk '$1 == "allowusers" { print $2 }')
+  for required_user in root chimera-server-deploy chimera-android-deploy chimera-web-deploy; do
+    printf '%s\n' "${allowed_users[@]}" | grep -Fx "$required_user" >/dev/null || {
+      echo "existing SSH allowlist is missing required identity: $required_user" >&2
+      return 1
+    }
+  done
+
+  allow_tmp=$(mktemp "$config_dir/.99-chimera-status-monitor.XXXXXX")
+  trap 'rm -f -- "$allow_tmp"; [[ -z "$allow_backup" ]] || rm -f -- "$allow_backup"' RETURN
+  if [[ -e "$allow_file" || -L "$allow_file" ]]; then
+    [[ -f "$allow_file" && ! -L "$allow_file" ]] || { echo 'invalid existing status monitor SSH policy' >&2; return 1; }
+    allow_backup=$(mktemp "$config_dir/.99-chimera-status-monitor.backup.XXXXXX")
+    cp --preserve=mode,ownership,timestamps -- "$allow_file" "$allow_backup"
+  fi
+  printf 'AllowUsers %s\n' "$status_user" > "$allow_tmp"
+  chmod 0644 "$allow_tmp"
+  mv -f -- "$allow_tmp" "$allow_file"
+  if ! "$sshd_bin" -t || ! "$systemctl_bin" reload ssh; then
+    if [[ -n "$allow_backup" ]]; then
+      mv -f -- "$allow_backup" "$allow_file"
+    else
+      rm -f -- "$allow_file"
+    fi
+    "$sshd_bin" -t && "$systemctl_bin" reload ssh || true
+    echo 'status monitor SSH policy activation failed' >&2
+    return 1
+  fi
+  [[ -z "$allow_backup" ]] || rm -f -- "$allow_backup"
+  trap - RETURN
+}
