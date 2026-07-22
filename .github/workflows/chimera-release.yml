@@ -703,7 +703,7 @@ jobs:
     needs: [signing, signed-provenance, publication]
     if: ${{ needs.publication.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     environment: android-mirror
     permissions:
       actions: read

@@ -189,6 +189,7 @@ export function validateClientReleaseWorkflow(workflow) {
   assert.doesNotMatch(publish, /--clobber|release delete|git push.*--force/i, 'publication must never replace immutable assets');
   const androidMirror = workflow.jobs?.['android-mirror'];
   assert.equal(androidMirror?.environment, 'android-mirror');
+  assert.ok(androidMirror?.['timeout-minutes'] >= 45, 'Android mirror timeout must accommodate the production APK transfer');
   assert.deepEqual(androidMirror?.permissions, { actions: 'read', attestations: 'read', contents: 'read' });
   assertNoCheckout(androidMirror, 'Android mirror');
   assertContains(runs(androidMirror), [/gh attestation verify/, /StrictHostKeyChecking=yes/, /chimera-android-deploy@103\.250\.173\.136/, /\.chimera-staging\/android/, /activate-android/, /--range 0-0/], 'Android mirror');
@@ -457,6 +458,12 @@ if (releaseSource && serverSource) {
     const workflow = parse(releaseSource);
     workflow.jobs.signing.steps.unshift({ uses: 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' });
     assert.throws(() => validateClientReleaseWorkflow(workflow), /must not checkout/);
+  });
+
+  test('rejects an Android mirror timeout shorter than the observed APK transfer', () => {
+    const workflow = parse(releaseSource);
+    workflow.jobs['android-mirror']['timeout-minutes'] = 15;
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror timeout must accommodate/);
   });
 
   test('rejects repository script execution in publication', () => {
