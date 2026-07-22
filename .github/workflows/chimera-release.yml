@@ -298,7 +298,19 @@ jobs:
           VERSION_CODE="$VERSION_CODE_INPUT"
           DRAFT_RELEASE_ID=0
           echo 'no-op=false' >> "$GITHUB_OUTPUT"
+          EXISTING_RELEASE_KIND=none
           if gh api "repos/$REPO/releases/tags/$TAG" >/tmp/existing-release.json 2>/dev/null; then
+            EXISTING_RELEASE_KIND=published
+          else
+            gh api --paginate "repos/$REPO/releases?per_page=100" | jq -s --arg tag "$TAG" '[.[][] | select(.draft == true and .tag_name == $tag)]' > /tmp/draft-matches.json
+            DRAFT_COUNT=$(jq -r 'length' /tmp/draft-matches.json)
+            test "$DRAFT_COUNT" -le 1
+            if test "$DRAFT_COUNT" -eq 1; then
+              jq -e '.[0]' /tmp/draft-matches.json > /tmp/existing-release.json
+              EXISTING_RELEASE_KIND=draft
+            fi
+          fi
+          if test "$EXISTING_RELEASE_KIND" != none; then
             if jq -e '.draft == true' /tmp/existing-release.json >/dev/null; then
               EXPECTED_BODY="Immutable Chimera Android and Web release for $SHA"
               jq -e --arg tag "$TAG" --arg title "Chimera $VERSION" --arg body "$EXPECTED_BODY" '
@@ -390,7 +402,18 @@ jobs:
           chmod 600 "$PRIVATE/chimera-release.jks" "$PRIVATE/manifest.pk8"
           REPO='${{ github.repository }}'
           TAG="$RELEASE_TAG"
+          SIGNING_RELEASE_FOUND=false
           if gh api "repos/$REPO/releases/tags/$TAG" >/tmp/signing-release.json 2>/dev/null; then
+            SIGNING_RELEASE_FOUND=true
+          else
+            gh api --paginate "repos/$REPO/releases?per_page=100" | jq -s --arg tag "$TAG" '[.[][] | select(.draft == true and .tag_name == $tag)]' > /tmp/signing-draft-matches.json
+            test "$(jq -r 'length' /tmp/signing-draft-matches.json)" -le 1
+            if test "$(jq -r 'length' /tmp/signing-draft-matches.json)" -eq 1; then
+              jq -e '.[0]' /tmp/signing-draft-matches.json > /tmp/signing-release.json
+              SIGNING_RELEASE_FOUND=true
+            fi
+          fi
+          if test "$SIGNING_RELEASE_FOUND" = true; then
             EXPECTED_BODY="Immutable Chimera Android and Web release for $REVIEWED_SHA_INPUT"
             jq -e --arg tag "$TAG" --arg title "Chimera $VERSION_NAME_INPUT" --arg body "$EXPECTED_BODY" '
               .draft == true and .immutable == false and .author.login == "github-actions[bot]" and .tag_name == $tag and .name == $title and .body == $body
@@ -607,7 +630,11 @@ jobs:
           test "$TAG" = "app-v$VERSION"
           jq -e --arg sha "$SHA" --argjson code "$VERSION_CODE" '.payload.commitSha == $sha and .payload.versionCode == $code' publish/signed/chimera-update.json
           EXPECTED_BODY="Immutable Chimera Android and Web release for $SHA"
-          if gh api "repos/$REPO/releases/tags/$TAG" >/tmp/draft-release.json 2>/dev/null; then
+          gh api --paginate "repos/$REPO/releases?per_page=100" | jq -s --arg tag "$TAG" '[.[][] | select(.draft == true and .tag_name == $tag)]' > /tmp/draft-matches.json
+          DRAFT_COUNT=$(jq -r 'length' /tmp/draft-matches.json)
+          test "$DRAFT_COUNT" -le 1
+          if test "$DRAFT_COUNT" -eq 1; then
+            jq -e '.[0]' /tmp/draft-matches.json > /tmp/draft-release.json
             jq -e --arg tag "$TAG" --arg title "Chimera $VERSION" --arg body "$EXPECTED_BODY" '
               .draft == true and .immutable == false and .author.login == "github-actions[bot]" and .tag_name == $tag and .name == $title and .body == $body
             ' /tmp/draft-release.json
@@ -619,9 +646,10 @@ jobs:
               gh api --method POST "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/tmp/tag.json
               test "$(jq -r '.object.sha' /tmp/tag.json)" = "$SHA"
             fi
-            gh release create "$TAG" --repo "$REPO" --verify-tag --draft --title "Chimera $VERSION" --notes "$EXPECTED_BODY"
-            gh api "repos/$REPO/releases/tags/$TAG" > /tmp/draft-release.json
+            gh api --method POST "repos/$REPO/releases" -f tag_name="$TAG" -f name="Chimera $VERSION" -f body="$EXPECTED_BODY" -F draft=true > /tmp/draft-release.json
           fi
+          RELEASE_ID=$(jq -er '.id' /tmp/draft-release.json)
+          [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
           printf '%s\n' "Chimera-$VERSION.apk" "Chimera-$VERSION.apk.sha256" "Chimera-$VERSION-web.tar.gz" "Chimera-$VERSION-web.tar.gz.sha256" chimera-update.json release-metadata.json | sort > /tmp/expected-draft-assets
           jq -r '.assets[].name' /tmp/draft-release.json | sort > /tmp/actual-draft-assets
           test "$(wc -l < /tmp/actual-draft-assets)" -eq "$(sort -u /tmp/actual-draft-assets | wc -l)"
@@ -644,13 +672,13 @@ jobs:
               [[ "$ASSET_ID" =~ ^[1-9][0-9]*$ ]]
               gh api --method DELETE "repos/$REPO/releases/assets/$ASSET_ID"
             fi
-            gh release upload "$TAG" --repo "$REPO" "$LOCAL"
-            gh api "repos/$REPO/releases/tags/$TAG" > /tmp/draft-release.json
+            gh api --method POST -H 'Content-Type: application/octet-stream' --input "$LOCAL" "https://uploads.github.com/repos/$REPO/releases/$RELEASE_ID/assets?name=$NAME" >/tmp/uploaded-asset.json
+            test "$(jq -r '.name' /tmp/uploaded-asset.json)" = "$NAME"
+            gh api "repos/$REPO/releases/$RELEASE_ID" > /tmp/draft-release.json
           done
-          gh api "repos/$REPO/releases/tags/$TAG" > /tmp/draft-release.json
+          gh api "repos/$REPO/releases/$RELEASE_ID" > /tmp/draft-release.json
           jq -e --arg tag "$TAG" --arg title "Chimera $VERSION" --arg body "$EXPECTED_BODY" '.draft == true and .immutable == false and .author.login == "github-actions[bot]" and .tag_name == $tag and .name == $title and .body == $body and (.assets | length) == 6' /tmp/draft-release.json
           mkdir /tmp/draft-assets
-          gh release download "$TAG" --repo "$REPO" --dir /tmp/draft-assets
           for LOCAL in \
             "publish/signed/Chimera-$VERSION.apk" \
             "publish/signed/Chimera-$VERSION.apk.sha256" \
@@ -661,11 +689,11 @@ jobs:
             NAME=$(basename "$LOCAL")
             LOCAL_SHA=$(sha256sum "$LOCAL" | cut -d ' ' -f 1)
             test "$(jq -r --arg name "$NAME" '.assets[] | select(.name == $name) | .digest' /tmp/draft-release.json)" = "sha256:$LOCAL_SHA"
+            ASSET_URL=$(jq -er --arg name "$NAME" '.assets[] | select(.name == $name) | .url' /tmp/draft-release.json)
+            gh api "$ASSET_URL" -H 'Accept: application/octet-stream' > "/tmp/draft-assets/$NAME"
             cmp "$LOCAL" "/tmp/draft-assets/$NAME"
           done
           test "$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.sha')" = "$SHA"
-          RELEASE_ID=$(jq -er '.id' /tmp/draft-release.json)
-          [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]
           gh api --method PATCH "repos/$REPO/releases/$RELEASE_ID" -F draft=false > /tmp/published-release.json
           jq -e '.draft == false and .immutable == true and (.assets | length) == 6' /tmp/published-release.json
           gh api "repos/$REPO/releases/tags/$TAG" | jq -e '.draft == false and .immutable == true and (.assets | length) == 6'
@@ -675,7 +703,7 @@ jobs:
     needs: [signing, signed-provenance, publication]
     if: ${{ needs.publication.result == 'success' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     environment: android-mirror
     permissions:
       actions: read
@@ -774,7 +802,7 @@ jobs:
             --signer-workflow '${{ github.repository }}/.github/workflows/chimera-build.yml' \
             --signer-digest "$TRUSTED_BUILD_WORKFLOW_SHA" --source-digest "$REVIEWED_SHA" \
             --source-ref refs/heads/main --deny-self-hosted-runners
-          REPRESENTATIVE_ASSET=$(tar -tzf "$ARCHIVE" | sed 's#^\./##' | grep -E '(^|/)[A-Za-z0-9_.-]*[.-][a-f0-9]{8,}\.(js|css|woff2?|png|webp)$' | sort | head -n 1)
+          REPRESENTATIVE_ASSET=$(tar -tzf "$ARCHIVE" | sed 's#^\./##' | grep -E '(^|/)[A-Za-z0-9_.-]*[.-][a-f0-9]{8,}\.(js|css|woff2?|png|webp)$' | sort | sed -n '1p')
           test -n "$REPRESENTATIVE_ASSET"
           echo "representative-asset=$REPRESENTATIVE_ASSET" >> "$GITHUB_OUTPUT"
           install -d -m 700 ~/.ssh
