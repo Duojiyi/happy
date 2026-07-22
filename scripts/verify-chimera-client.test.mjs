@@ -8,7 +8,7 @@ import { verifyChimeraClient } from './verify-chimera-client.mjs';
 async function fixture(files = {}) {
   const root = await mkdtemp(join(tmpdir(), 'chimera-client-policy-'));
   const defaults = {
-    'packages/happy-app/app.config.js': "export default { expo: { name: 'Chimera', slug: 'chimera', android: { package: 'org.chimerahub.chimera' }, updates: { enabled: false }, plugins: [] } };\n",
+    'packages/happy-app/app.config.js': "export default { expo: { name: 'Chimera', slug: 'chimera', android: { package: 'org.chimerahub.chimera', blockedPermissions: ['com.android.vending.BILLING', 'com.android.vending.CHECK_LICENSE'] }, updates: { enabled: false }, plugins: [] } };\n",
     'packages/happy-app/sources/app/(app)/settings/index.tsx': "export const settings = ['account', 'appearance', 'language'];\n",
     'packages/happy-app/sources/app/(app)/index.tsx': "export const title = 'Chimera';\n",
   };
@@ -68,6 +68,17 @@ for (const [name, files, rule] of [
   test(`fails when production source adds ${name}`, async () => {
     const result = await policyResult(files);
     assert(result.some((finding) => finding.rule === rule), JSON.stringify(result));
+  });
+}
+
+for (const permission of ['com.android.vending.BILLING', 'com.android.vending.CHECK_LICENSE']) {
+  test(`fails when ${permission} is not explicitly blocked`, async () => {
+    const blockedPermissions = ['com.android.vending.BILLING', 'com.android.vending.CHECK_LICENSE']
+      .filter((candidate) => candidate !== permission);
+    const result = await policyResult({
+      'packages/happy-app/app.config.js': `export default { expo: { name: 'Chimera', slug: 'chimera', android: { package: 'org.chimerahub.chimera', blockedPermissions: ${JSON.stringify(blockedPermissions)} }, updates: { enabled: false }, plugins: [] } };\n`,
+    });
+    assert(result.some((finding) => finding.rule === 'android-store-permissions'), JSON.stringify(result));
   });
 }
 

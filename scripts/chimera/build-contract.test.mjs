@@ -107,6 +107,9 @@ export function validateBuildWorkflow(workflow) {
     /gradlew\s+assembleRelease/,
     /(?:apksigner|APKSIGNER)[\s\S]*?verify/i,
     /(?:aapt2|AAPT2)[\s\S]*?dump\s+badging/i,
+    /(?:aapt2|AAPT2)[\s\S]*?dump\s+permissions/i,
+    /com\.android\.vending\.BILLING/,
+    /com\.android\.vending\.CHECK_LICENSE/,
     /release-input\.json/,
   ], 'chimera-android-unsigned');
   assert.equal(jobs.android.needs, 'classify', 'android must wait for path classification');
@@ -132,6 +135,10 @@ export function validateBuildWorkflow(workflow) {
   assert.equal(androidAssemble.env?.GRADLE_OPTS, '-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8 -Dkotlin.daemon.jvm.options=-Xmx2g', 'android Gradle heap must be bounded at 4 GB');
   assert.equal(androidAssemble.env?.JAVA_TOOL_OPTIONS, '-Xmx4g', 'android Java heap must be bounded at 4 GB');
   assert.match(androidAssemble.run ?? '', /--max-workers=2/, 'android Gradle concurrency must be bounded');
+  const androidVerification = allSteps(jobs.android).find((step) => step.name === 'Verify candidate is unsigned and has Chimera identity')?.run ?? '';
+  for (const permission of ['com.android.vending.BILLING', 'com.android.vending.CHECK_LICENSE']) {
+    assert.match(androidVerification, new RegExp(`dump permissions[\\s\\S]*${permission.replaceAll('.', '\\.')}`), `${permission} must be rejected from the merged APK`);
+  }
 
   const provenance = jobs.provenance;
   assert.ok(provenance, 'provenance job is required');

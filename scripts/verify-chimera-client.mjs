@@ -7,6 +7,10 @@ const APP_ROOT = 'packages/happy-app';
 const SOURCE_ROOTS = ['sources'];
 const WEB_EXPORT_ROOT = 'dist';
 const TEXT_FILE = /\.(?:[cm]?[jt]sx?|json|html|css)$/i;
+const BLOCKED_ANDROID_STORE_PERMISSIONS = [
+  'com.android.vending.BILLING',
+  'com.android.vending.CHECK_LICENSE',
+];
 
 const RULES = [
   ['happy-logo', /happy[-_ ]?logo/i],
@@ -109,6 +113,10 @@ async function scanExpoConfig(findings, root) {
     }
     if ((config.plugins ?? []).some((plugin) => /(?:expo-notifications|expo-updates)/i.test(String(pluginName(plugin))))) {
       addFinding(findings, root, path, 'push-integration');
+    }
+    const blockedPermissions = new Set(config.android?.blockedPermissions ?? []);
+    if (BLOCKED_ANDROID_STORE_PERMISSIONS.some((permission) => !blockedPermissions.has(permission))) {
+      addFinding(findings, root, path, 'android-store-permissions');
     }
   } catch {
     addFinding(findings, root, path, 'invalid-expo-config');

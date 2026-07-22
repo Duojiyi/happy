@@ -211,6 +211,13 @@ jobs:
           fi
           grep -Eiq 'DOES NOT VERIFY|not verified|failed' /tmp/chimera-apksigner.txt
           "$AAPT2" dump badging "$APK" | grep -F "package: name='org.chimerahub.chimera' versionCode='$VERSION_CODE' versionName='$VERSION_NAME'"
+          "$AAPT2" dump permissions "$APK" > /tmp/chimera-apk-permissions.txt
+          for FORBIDDEN_PERMISSION in com.android.vending.BILLING com.android.vending.CHECK_LICENSE; do
+            if grep -Fq "$FORBIDDEN_PERMISSION" /tmp/chimera-apk-permissions.txt; then
+              echo "Candidate APK contains forbidden permission: $FORBIDDEN_PERMISSION" >&2
+              exit 1
+            fi
+          done
           mkdir -p ../../dist/chimera-android
           cp "$APK" ../../dist/chimera-android/Chimera-unsigned.apk
           APK_SHA=$(sha256sum ../../dist/chimera-android/Chimera-unsigned.apk | cut -d ' ' -f 1)

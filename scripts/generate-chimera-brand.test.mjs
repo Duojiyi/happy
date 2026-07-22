@@ -98,7 +98,9 @@ test('generates a deterministic stable product module', async () => {
   const versionName = `${value.upstreamAppVersion}-chimera.${value.chimeraRevision}`;
   assert.ok(first.includes(`export const ANDROID_VERSION_CODE = ${value.androidVersionCode} as const;`));
   assert.ok(first.includes(`export const VERSION_NAME = "${versionName}" as const;`));
-  assert.ok(generateProductConfigModule(value).includes(`export const VERSION_NAME = "${versionName}";`));
+  const configModule = generateProductConfigModule(value);
+  assert.equal(configModule, first.replaceAll(' as const', ''));
+  assert.ok(configModule.includes('export const RELAY_ORIGIN = "https://103.250.173.136";'));
   assert.ok(first.endsWith('\n'));
 });
 
