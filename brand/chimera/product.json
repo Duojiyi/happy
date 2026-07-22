@@ -9,8 +9,8 @@
   "relayOrigin": "https://103.250.173.136",
   "repository": "Duojiyi/happy",
   "upstreamAppVersion": "1.7.0",
-  "chimeraRevision": 3,
-  "androidVersionCode": 3,
+  "chimeraRevision": 4,
+  "androidVersionCode": 4,
   "updatePublicKey": "ze6ngKGbk7dgWN5d6rXGO0YRE5y54hbLMULFoW5YTHc",
   "androidSignerSha256": "58AA84B6C0D84963E841EED5EF953FC35D4B17D612C923D19A2264F96E4C8A93"
 }

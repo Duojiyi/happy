@@ -29,6 +29,7 @@ import { useTauriDrag } from '@/hooks/useTauriDrag';
 import { BrowserNavigationShortcuts } from '@/hooks/useBrowserNavigationShortcuts';
 import { useStartupAnnouncement } from '@/chimera/useStartupAnnouncement';
 import { useAndroidUpdater } from '@/chimera/useAndroidUpdater';
+import { loadFontsWithFallback } from '@/chimera/fontLoading';
 
 
 export {
@@ -94,7 +95,7 @@ async function loadFonts() {
 
         if (!isTauri) {
             // Normal font loading for non-Tauri environments (native and regular web)
-            await Fonts.loadAsync({
+            await loadFontsWithFallback(() => Fonts.loadAsync({
                 // Keep existing font
                 SpaceMono: require('@/assets/fonts/SpaceMono-Regular.ttf'),
 
@@ -112,7 +113,7 @@ async function loadFonts() {
                 'BricolageGrotesque-Bold': require('@/assets/fonts/BricolageGrotesque-Bold.ttf'),
 
                 ...FontAwesome.font,
-            });
+            }));
         } else {
             // For Tauri, skip Font Face Observer as fonts are loaded via CSS
             console.log('Do not wait for fonts to load');
