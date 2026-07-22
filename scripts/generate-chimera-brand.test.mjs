@@ -139,6 +139,18 @@ test('generated PNG assets use the established dimensions and alpha channel', as
   }
 });
 
+test('adaptive Android icon foreground is white for the dark launcher background', async () => {
+  for (const name of ['icon-adaptive.png', 'icon-monochrome.png']) {
+    const { data } = await sharp(path.join(images, name)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const opaquePixels = [];
+    for (let index = 0; index < data.length; index += 4) {
+      if (data[index + 3] > 240) opaquePixels.push(data.subarray(index, index + 3));
+    }
+    assert.ok(opaquePixels.length > 0, `${name} must have an opaque foreground`);
+    assert.ok(opaquePixels.every((pixel) => pixel[0] > 220 && pixel[1] > 220 && pixel[2] > 220), `${name} foreground must be white`);
+  }
+});
+
 test('generated wordmarks contain the C mark and every letter in CHIMERA', async () => {
   for (const name of ['logotype-light.png', 'logotype-dark.png']) {
     const { data, info } = await sharp(path.join(images, name)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
