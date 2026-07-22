@@ -208,6 +208,7 @@ export function validateClientReleaseWorkflow(workflow) {
     /Accept: application\/octet-stream/,
     /sha256:\$\(sha256sum "deploy\/android\/\$NAME"[\s\S]*= "\$REMOTE_DIGEST"/,
     /if test "\$IMMUTABLE_RECOVERY" != 'true'; then[\s\S]*--signer-digest "\$RELEASE_WORKFLOW_SHA" --source-digest "\$RELEASE_WORKFLOW_SHA"/,
+    /PUBLIC_MANIFEST=\$\(mktemp\)[\s\S]*payload\.commitSha == \$sha[\s\S]*payload\.versionCode == \$code[\s\S]*payload\.sha256 == \$digest[\s\S]*--range 0-0[\s\S]*exit 0[\s\S]*install -d -m 700 ~\/\.ssh/,
   ], 'Android mirror');
   const androidDownload = steps(androidMirror).find((step) => step.name === 'Download exact signed handoff');
   const androidRecovery = steps(androidMirror).find((step) => step.name === 'Recover exact immutable signed handoff');
@@ -223,6 +224,7 @@ export function validateClientReleaseWorkflow(workflow) {
   assert.match(String(webProduction.if), /always\(\)[\s\S]*needs\.signing\.outputs\.no-op == 'true'[\s\S]*needs\.publication\.result == 'skipped'/, 'Web immutable recovery must require the fully verified no-op path');
   assert.match(runs(webProduction), /sort \| sed -n '1p'/, 'Web activation must consume the complete representative-asset pipeline under pipefail');
   assert.doesNotMatch(runs(webProduction), /sort \| head -n 1/, 'Web activation must not terminate the representative-asset pipeline early');
+  assert.match(runs(webProduction), /tar --extract --gzip --to-stdout[\s\S]*cmp --silent \/tmp\/expected-index\.html \/tmp\/public-index\.html[\s\S]*\$REPRESENTATIVE_ASSET[\s\S]*exit 0[\s\S]*install -d -m 700 ~\/\.ssh/, 'Web immutable recovery must prove exact active bytes before an idempotent success');
   assertContains(runs(webProduction), [/gh attestation verify/, /StrictHostKeyChecking=yes/, /chimera-web-deploy@103\.250\.173\.136/, /\.chimera-staging\/web/, /activate-web/, /REPRESENTATIVE_ASSET/], 'Web production');
   assert.match(serialized(webProduction), /CHIMERA_WEB_DEPLOY_SSH_KEY/);
   assert.doesNotMatch(serialized(webProduction), /CHIMERA_ANDROID_DEPLOY_SSH_KEY|CHIMERA_ANDROID_KEYSTORE/);
@@ -520,6 +522,21 @@ if (releaseSource && serverSource) {
     const workflow = parse(releaseSource);
     workflow.jobs['web-production'].if = "${{ always() && needs.signing.result == 'success' }}";
     assert.throws(() => validateClientReleaseWorkflow(workflow), /Web immutable recovery must require/);
+  });
+
+  test('rejects Android idempotent success without the exact public manifest digest', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['android-mirror'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
+    const marker = step.run.indexOf('PUBLIC_MANIFEST=$(mktemp)');
+    step.run = step.run.slice(0, marker) + step.run.slice(marker).replace('.payload.sha256 == $digest', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror missing/);
+  });
+
+  test('rejects Web idempotent success without exact public index bytes', () => {
+    const workflow = parse(releaseSource);
+    const step = workflow.jobs['web-production'].steps.find((item) => item.name === 'Reverify and activate through restricted identity');
+    step.run = step.run.replace('cmp --silent /tmp/expected-index.html /tmp/public-index.html', 'true');
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /Web immutable recovery must prove/);
   });
 
   test('rejects repository script execution in publication', () => {

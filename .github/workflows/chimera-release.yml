@@ -777,6 +777,16 @@ jobs:
           fi
           gh attestation verify "$APK" "${ATTESTATION_ARGS[@]}"
           gh attestation verify "$MANIFEST" "${ATTESTATION_ARGS[@]}"
+          PUBLIC_MANIFEST=$(mktemp)
+          if curl --fail --silent --show-error --max-time 20 https://103.250.173.136/downloads/chimera-update.json > "$PUBLIC_MANIFEST" &&
+             jq -e --arg sha "$REVIEWED_SHA" --arg digest "$APK_SHA" --arg size "$APK_SIZE" --argjson code "$VERSION_CODE" '
+               .payload.commitSha == $sha and .payload.versionCode == $code and .payload.sha256 == $digest and
+               .payload.size == ($size | tonumber) and .payload.packageName == "org.chimerahub.chimera"
+             ' "$PUBLIC_MANIFEST" >/dev/null; then
+            PUBLIC_APK_PATH=$(jq -er '.payload.apkPath' "$PUBLIC_MANIFEST")
+            curl --fail --silent --show-error --max-time 20 --range 0-0 -o /dev/null "https://103.250.173.136$PUBLIC_APK_PATH"
+            exit 0
+          fi
           install -d -m 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
@@ -838,6 +848,12 @@ jobs:
           REPRESENTATIVE_ASSET=$(tar -tzf "$ARCHIVE" | sed 's#^\./##' | grep -E '(^|/)[A-Za-z0-9_.-]*[.-][a-f0-9]{8,}\.(js|css|woff2?|png|webp)$' | sort | sed -n '1p')
           test -n "$REPRESENTATIVE_ASSET"
           echo "representative-asset=$REPRESENTATIVE_ASSET" >> "$GITHUB_OUTPUT"
+          tar --extract --gzip --to-stdout --file "$ARCHIVE" index.html > /tmp/expected-index.html
+          if curl --fail --silent --show-error --max-time 20 https://103.250.173.136/ > /tmp/public-index.html &&
+             cmp --silent /tmp/expected-index.html /tmp/public-index.html &&
+             curl --fail --silent --show-error --max-time 20 -o /dev/null "https://103.250.173.136/$REPRESENTATIVE_ASSET"; then
+            exit 0
+          fi
           install -d -m 700 ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           printf '%s\n' "$SSH_HOST_KEY" > ~/.ssh/known_hosts
