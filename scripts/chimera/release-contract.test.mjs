@@ -241,6 +241,7 @@ export function validateClientReleaseWorkflow(workflow) {
 
   const publicSmoke = workflow.jobs?.['public-smoke'];
   assert.deepEqual(publicSmoke?.needs, ['android-mirror', 'web-production']);
+  assert.ok(publicSmoke?.['timeout-minutes'] >= 45, 'public smoke timeout must accommodate the full production APK hash');
   assert.deepEqual(publicSmoke?.permissions, { contents: 'read' });
   assert.doesNotMatch(serialized(publicSmoke), /\$\{\{\s*secrets\./);
   assertContains(runs(publicSmoke), [/external-monitor\.mjs/, /--full-apk/, /REPRESENTATIVE_ASSET/, /curl/, /103\.250\.173\.136/], 'public smoke');
@@ -497,6 +498,12 @@ if (releaseSource && serverSource) {
     const workflow = parse(releaseSource);
     workflow.jobs['android-mirror']['timeout-minutes'] = 15;
     assert.throws(() => validateClientReleaseWorkflow(workflow), /Android mirror timeout must accommodate/);
+  });
+
+  test('rejects a public smoke timeout shorter than the full APK transfer', () => {
+    const workflow = parse(releaseSource);
+    workflow.jobs['public-smoke']['timeout-minutes'] = 15;
+    assert.throws(() => validateClientReleaseWorkflow(workflow), /public smoke timeout must accommodate/);
   });
 
   test('rejects Android immutable recovery outside the verified no-op path', () => {
